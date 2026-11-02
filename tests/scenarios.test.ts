@@ -281,3 +281,12 @@ test('director may submit and request a deadline for a visible employee task wit
  assert.equal((await request('director',`/tasks/${id}/approvals`,{type:'deadline',reason:'Изменён срок работы сотрудника',plan:'Проверить материалы и завершить задачу',proposedDeadline:proposed,expectedVersion:1})).status,201);
  const approval=(await db.pool.query("SELECT requester_id FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rows[0];assert.equal(approval.requester_id,'director');
 });
+test('bot accepts positive review without comment only after confirmation',async()=>{
+ const {botView,botClick}=await import('../server/bot.js');const director=users.find(u=>u.id==='director')!;
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Результат работы передан',expectedVersion:1})).status,200);
+ const view=await botView(director,'preview',{op:'task',id});const prepare=botButton(view,'Принять без комментария');
+ assert.equal((await request('director',`/tasks/${id}`)).data.task.status,'review');
+ const confirm=await botClick(director,'preview',prepare);await botClick(director,'preview',botButton(confirm,'Да, принять результат'));
+ const detail=(await request('director',`/tasks/${id}`)).data;assert.equal(detail.task.status,'completed');assert.equal(detail.submissions[0].remark,null);
+});

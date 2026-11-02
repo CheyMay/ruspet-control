@@ -6,7 +6,7 @@ import {hashPassword} from '../server/passwords.js';
 
 // Run once on the server with an output path outside the repository.
 const path=process.argv[2];
-if(!path||!path.startsWith('/root/'))throw new Error('Укажите защищённый файл внутри /root/.');
+if(!path||!path.startsWith('/opt/ruspet/.access/'))throw new Error('Укажите защищённый файл внутри /opt/ruspet/.access/.');
 try{await access(path);throw new Error('Файл с доступами уже существует. Не меняем пароли повторно.');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
 const words=['Kedr','Volna','Sosna','Bereg','Maysky','Reka','Yantar','List','Ozero','Lipa','Kamen','Klen'];
 const accounts=[{username:'admin',role:'admin'},{username:'director',role:'director'}] as const;

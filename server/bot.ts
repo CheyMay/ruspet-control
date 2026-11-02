@@ -1,7 +1,7 @@
 import {randomBytes} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {assert,canRequest} from './domain.js';
-import {bootstrap,detail,answerControl,requestApproval,decide,config,getReport,listReports} from './service.js';
+import {bootstrap,detail,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
 import {reviewTask} from './workflow.js';
 import {actionItems,canReview} from '../shared/actions.js';
 import {taskQueue} from '../shared/queues.js';
@@ -41,9 +41,12 @@ export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<Bo
   const rows:ReturnType<typeof button>[][]=[];const pending=d.approvals.find(a=>a.state==='pending');
   const form=(label:string,kind:string,target?:string,step?:number)=>button(label,'form',{kind,id:t.id,version:t.version,target,step});
   if(pending){text+=`\n\nОжидается решение: ${name(pending.route[pending.current_step].userId)}\nПричина: ${pending.reason.slice(0,500)}\nПлан: ${pending.plan.slice(0,500)}`;if(pending.proposed_deadline)text+=`\nПредложенный срок: ${date(pending.proposed_deadline)} МСК`;
-   if(pending.route[pending.current_step].userId===u.id)rows.push([form('Согласовать','approve',pending.id,pending.current_step),form('Отклонить','reject',pending.id,pending.current_step)],[button('Напомнить через час','confirm',{kind:'later',id:t.id,target:pending.id,step:pending.current_step,minutes:60,values:{}})]);
+   const waiting=!!pending.clarification_requested_at&&!pending.clarification_answered_at;
+   if(pending.clarification_question)text+=`\n\nУточнение: ${pending.clarification_question.slice(0,500)}${pending.clarification_answer?'\nОтвет: '+pending.clarification_answer.slice(0,500):''}`;
+   if(waiting&&pending.requester_id===u.id)rows.push([form('Ответить на уточнение','clarification',pending.id,pending.current_step)]);
+   if(!waiting&&pending.route[pending.current_step].userId===u.id)rows.push([form('Согласовать','approve',pending.id,pending.current_step),form('Отклонить','reject',pending.id,pending.current_step)],[form('Уточнить','clarify',pending.id,pending.current_step),button('Напомнить через час','confirm',{kind:'later',id:t.id,target:pending.id,step:pending.current_step,minutes:60,values:{}})]);
   }else if(t.status==='active'&&canRequest(u,t))rows.push([form(last?.state==='returned'?'Отправить доработку':'Сдать результат','submit')],[form('Предложить новый срок','deadline')]);
-  else if(t.status==='review'&&canReview(u,t))rows.push([form('Принять результат','accept'),form('Вернуть с замечаниями','return')]);
+  else if(t.status==='review'&&canReview(u,t))rows.push([button('Принять без комментария','accept_prepare',{id:t.id,version:t.version}),form('Принять результат','accept')],[form('Вернуть с замечаниями','return')]);
   const control=d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));if(control)rows.push([form('Ответить на запрос','answer',control.id)]);
   rows.push([button('История','history',{id:t.id}),button('Меню','home')]);return screen(u,ch,text,rows);
  }
@@ -72,22 +75,24 @@ export function parseMoscowInput(value:string){const match=value.match(/^(\d{2})
 async function prompt(u:User,ch:string,d:Dialog,db:Db){const f=d.fields[d.index];return screen(u,ch,`Задача #${d.payload.id}\nШаг ${d.index+1}/${d.fields.length}\n\n${f.label}\n${f.key==='deadline'?'Формат: ДД.ММ.ГГГГ ЧЧ:ММ · Москва':`Минимум ${f.min} символов. Можно указать ссылку на материалы.`}`,[[button('Отменить ввод','cancel')]],db)}
 export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>{
  const b=(await pool.query('SELECT * FROM bot_buttons WHERE token=$1 AND actor_id=$2 AND channel=$3 AND expires_at>now()',[token,u.id,ch])).rows[0];assert(b,409,'Кнопка устарела. Откройте меню заново.');const p=b.payload as Payload;
- if(!['form','confirm','cancel'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
+ if(!['form','confirm','cancel','accept_prepare'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
   const record=(await db.query('SELECT * FROM bot_buttons WHERE token=$1 FOR UPDATE',[token])).rows[0];if(record.receipt)return record.receipt as BotScreen;assert(!record.revoked,409,'Этот ввод отменён или заменён новым. Откройте актуальную задачу.');
   if(p.op==='cancel'||p.op==='form')await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch]);
   if(p.op==='cancel'){await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);return screen(u,ch,'Ввод отменён. Изменения не отправлены.',[[button('Меню','home')]],db)}
+  if(p.op==='accept_prepare')return screen(u,ch,`Принять результат по задаче #${p.id} без комментария?`,[[button('Да, принять результат','confirm',{kind:'accept',id:p.id,version:p.version,values:{comment:''}})],[button('Отмена','cancel')]],db);
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;
-   const fields:Field[]=p.kind==='answer'?[{key:'reason',label:'Что помешало выполнить задачу?',min},{key:'progress',label:'Что уже сделано?',min},{key:'plan',label:'Что будете делать дальше?',min}]:p.kind==='deadline'?[{key:'deadline',label:'Предложите новый срок',min:1},{key:'reason',label:'Почему нужен новый срок?',min},{key:'plan',label:'Что будет сделано к новому сроку?',min}]:[{key:'comment',label:p.kind==='submit'?'Опишите готовый результат':p.kind==='return'?'Что конкретно нужно исправить?':p.kind==='reject'?'Почему запрос отклонён?':'Комментарий к решению',min:5}];
+   const fields:Field[]=p.kind==='answer'?[{key:'reason',label:'Что помешало выполнить задачу?',min},{key:'progress',label:'Что уже сделано?',min},{key:'plan',label:'Что будете делать дальше?',min}]:p.kind==='deadline'?[{key:'deadline',label:'Предложите новый срок',min:1},{key:'reason',label:'Почему нужен новый срок?',min},{key:'plan',label:'Что будет сделано к новому сроку?',min}]:p.kind==='clarification'?[{key:'answer',label:'Ответьте на вопрос согласующего',min:5}]:[{key:'comment',label:p.kind==='submit'?'Опишите готовый результат':p.kind==='return'?'Что конкретно нужно исправить?':p.kind==='reject'?'Почему запрос отклонён?':p.kind==='clarify'?'Что нужно уточнить?':'Комментарий к решению',min:5}];
    const d:Dialog={payload:p,fields,index:0,values:{}};await db.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+interval '1 hour') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(d)]);return prompt(u,ch,d,db);
   }
   const v=p.values||{};let result='Действие сохранено.';
   if(p.kind==='answer'){await answerControl(u,p.target!,{reason:v.reason,progress:v.progress,plan:v.plan});result='Ответ сохранён и доступен руководителю.'}
   else if(p.kind==='deadline'){await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,plan:v.plan,proposedDeadline:v.deadline,expectedVersion:p.version!});result='Новый срок предложен. Текущий срок изменится после согласования.'}
-  else if(['approve','reject','later'].includes(p.kind!)){const r=await decide(u,p.target!,{decision:p.kind as 'approve'|'reject'|'later',comment:v.comment||'',expectedStep:p.step,remindMinutes:p.minutes});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':'Согласование завершено.'}
-  else{await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return',v.comment,p.version!);result=p.kind==='submit'?'Результат передан на приёмку. Ожидается решение руководителя.':p.kind==='return'?'Задача возвращена. Замечания сохранены для исполнителя.':'Результат принят. Задача завершена.'}
+  else if(p.kind==='clarification'){await answerClarification(u,p.target!,v.answer);result='Ответ отправлен согласующему. Этап ожидает его решения.'}
+  else if(['approve','reject','later','clarify'].includes(p.kind!)){const r=await decide(u,p.target!,{decision:p.kind as 'approve'|'reject'|'later'|'clarify',comment:v.comment||'',expectedStep:p.step,remindMinutes:p.minutes});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':'Согласование завершено.'}
+  else{await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return',v.comment||'',p.version!);result=p.kind==='submit'?'Результат передан на приёмку. Ожидается решение руководителя.':p.kind==='return'?'Задача возвращена. Замечания сохранены для исполнителя.':'Результат принят. Задача завершена.'}
   const response=await screen(u,ch,result,[[button('К задаче','task',{id:p.id}),button('Нужно действие','inbox')]],db);
   await db.query('UPDATE bot_buttons SET receipt=$2 WHERE token=$1',[token,JSON.stringify(response)]);await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);return response;
  });
