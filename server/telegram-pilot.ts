@@ -56,7 +56,7 @@ async function deliver(){
  try{const home=await botView(u,'telegram:'+binding.chat_id);const sent=await send(binding.chat_id,{text:`РУСПЭТ · новые события (${rows.length})\n\n${rows.map(r=>r.body.slice(0,220)).join('\n\n')}\n\nАктуальные действия — в меню ниже.`,buttons:home.buttons});await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id])}
  catch{await pool.query("UPDATE telegram_delivery SET state='uncertain',error='Нет подтверждения Telegram. Автоповтор остановлен, чтобы не дублировать возможную доставку.' WHERE id=$1",[id])}
 }
-export function startPilot(){let stopped=false,lastCleanup=0;const run=async()=>{while(!stopped){let lock;try{
+export function startPilot(){if(process.env.TELEGRAM_WORKER_DISABLED==='true')return ()=>{};let stopped=false,lastCleanup=0;const run=async()=>{while(!stopped){let lock;try{
   if(Date.now()-lastCleanup>3600000){await pool.query('DELETE FROM bot_buttons WHERE expires_at<now()');await pool.query('DELETE FROM bot_sessions WHERE expires_at<now()');await pool.query("DELETE FROM bot_inputs WHERE created_at<now()-interval '7 days'");lastCleanup=Date.now()}
   const cfg=(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled){await sleep(3000);continue}
   lock=await pool.connect();if(!(await lock.query('SELECT pg_try_advisory_lock(431009) ok')).rows[0].ok){lock.release();lock=undefined;await sleep(3000);continue}
