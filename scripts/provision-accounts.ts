@@ -1,12 +1,13 @@
 import 'dotenv/config';
 import {randomInt} from 'node:crypto';
-import {writeFile} from 'node:fs/promises';
+import {writeFile,access} from 'node:fs/promises';
 import {pool} from '../server/db.js';
 import {hashPassword} from '../server/passwords.js';
 
 // Run once on the server with an output path outside the repository.
 const path=process.argv[2];
 if(!path||!path.startsWith('/root/'))throw new Error('Укажите защищённый файл внутри /root/.');
+try{await access(path);throw new Error('Файл с доступами уже существует. Не меняем пароли повторно.');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
 const words=['Kedr','Volna','Sosna','Bereg','Maysky','Reka','Yantar','List','Ozero','Lipa','Kamen','Klen'];
 const accounts=[{username:'admin',role:'admin'},{username:'director',role:'director'}] as const;
 const lines=['РУСПЭТ · отдельные входы','Сохраните пароли в защищённом месте. Учётные записи сейчас привязаны к тестовым ролям.',''];

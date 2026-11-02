@@ -126,3 +126,5 @@ tbody tr:hover{background:#f7faf6}
 .clarification-thread p:last-child{margin-bottom:0}
 
 .date-filter{display:flex;align-items:center;gap:7px;color:#657568;font-size:12px;white-space:nowrap}.date-filter input{min-width:135px;max-width:150px;height:36px;padding:6px 8px;border:1px solid #d9e2d9;border-radius:4px;background:#fff;color:#304733}
+
+.manager-action-note{padding:10px 13px;border-left:3px solid #77977e;background:#f3f7f2;color:#4d6353;font-size:12px;line-height:1.55}

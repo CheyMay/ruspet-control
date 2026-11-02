@@ -38,10 +38,11 @@ export async function handlePilotUpdate(update:any){
  if(c){try{await call('answerCallbackQuery',{callback_query_id:c.id})}catch{};try{await send(chat,await botClick(u,ch,String(c.data)),m.message_id)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',buttons:(await botView(u,ch)).buttons})}return}
  try{
   const text=String(m.text||'').trim();let response:BotScreen;
-  if(code||/^\/(start|menu|status|cancel|task|today|tasks|inbox|reports)(\s|$)/.test(text))await clearBotDraft(u,ch);
+  if(code||/^\/(start|menu|status|cancel|task|today|tasks|inbox|reports|search)(\s|$)/.test(text))await clearBotDraft(u,ch);
   if(code||['/start','/menu','/status'].includes(text))response=await botView(u,ch);
   else if(text==='/cancel'){await pool.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);await pool.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op'='confirm'",[u.id,ch]);response=await botView(u,ch)}
   else if(/^\/task\s+\S+$/.test(text))response=await botView(u,ch,{op:'task',id:text.split(/\s/)[1]});
+  else if(/^\/search\s+\S/.test(text))response=await botView(u,ch,{op:'search',query:text.slice(8).trim()});
   else if(['/today','/tasks','/inbox','/reports'].includes(text))response=await botView(u,ch,{op:({'/today':'day','/tasks':'tasks','/inbox':'inbox','/reports':'reports'} as Record<string,string>)[text]});
   else if(!text)response={text:'Пока принимаются текст и ссылки на материалы. Опишите результат и добавьте ссылку; загрузка файлов будет отдельным этапом.',buttons:[]};
   else response=await botText(u,ch,text,String(update.update_id));

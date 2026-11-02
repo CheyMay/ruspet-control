@@ -269,3 +269,15 @@ test('positive task review accepts empty comment, return still requires a reason
  assert.equal((await request('director',`/tasks/${id}/review`,{action:'return',comment:'',expectedVersion:2})).status,400);
  assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'',expectedVersion:2})).status,200);
 });
+test('bot search finds a visible task by number or title and keeps access scope',async()=>{
+ const {botView}=await import('../server/bot.js');const anna=users.find(u=>u.id==='anna')!;
+ const own=(await service.bootstrap(anna)).tasks[0];
+ const found=await botView(anna,'preview',{op:'search',query:own.id});assert(found.text.includes('#'+own.id));
+ const foreign=await botView(anna,'preview',{op:'search',query:'2403'});assert(!foreign.text.includes('#2403'));
+});
+test('director may submit and request a deadline for a visible employee task with own audit identity',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ const proposed=new Date(Date.now()+86400000*12).toISOString();
+ assert.equal((await request('director',`/tasks/${id}/approvals`,{type:'deadline',reason:'Изменён срок работы сотрудника',plan:'Проверить материалы и завершить задачу',proposedDeadline:proposed,expectedVersion:1})).status,201);
+ const approval=(await db.pool.query("SELECT requester_id FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rows[0];assert.equal(approval.requester_id,'director');
+});

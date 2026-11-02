@@ -8,7 +8,7 @@ import {taskQueue} from '../shared/queues.js';
 import {summarize,queueLabels} from '../shared/analytics.js';
 import type {User,Task} from '../shared/types.js';
 export type BotScreen={text:string;buttons:{text:string;token:string}[][]};
-type Payload={op:string;id?:string;page?:number;filter?:string;kind?:string;version?:number;target?:string;step?:number;values?:Record<string,string>;minutes?:number};
+type Payload={op:string;id?:string;page?:number;filter?:string;query?:string;kind?:string;version?:number;target?:string;step?:number;values?:Record<string,string>;minutes?:number};
 type Field={key:string;label:string;min:number};
 type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};
 const date=(s:string|null)=>s?new Date(s).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'}):'Не назначен';
@@ -20,6 +20,12 @@ const home=[button('📅 Срок сегодня','day'),button('📥 Ждут �
 export async function clearBotDraft(u:User,ch:string){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch])})}
 export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<BotScreen>{
  const data=await bootstrap(u),now=new Date(data.serverTime),name=(id:string)=>data.users.find(x=>x.id===id)?.name||id;
+ if(p.op==='search'){
+  const query=(p.query||'').trim().toLocaleLowerCase('ru-RU');assert(query.length>=2&&query.length<=100,400,'Для поиска введите не менее 2 символов после /search.');
+  const list=data.tasks.filter(t=>t.id.toLocaleLowerCase('ru-RU').includes(query)||t.title.toLocaleLowerCase('ru-RU').includes(query)||name(t.assignee_id).toLocaleLowerCase('ru-RU').includes(query));
+  const page=Math.max(0,Math.min(p.page||0,Math.max(0,Math.ceil(list.length/6)-1))),slice=list.slice(page*6,page*6+6);
+  return screen(u,ch,`Поиск: ${p.query}\nНайдено задач: ${list.length}\n\n${slice.map((t,i)=>`${i+1}. #${t.id} ${t.title.slice(0,150)}`).join('\n')||'Совпадений нет.'}\n\nСтраница ${page+1}/${Math.max(1,Math.ceil(list.length/6))}`, [...slice.map((t,i)=>[button(`${i+1}. Открыть #${t.id}`,'task',{id:t.id})]),[...(page?[button('← Назад','search',{query:p.query,page:page-1})]:[]),...(page*6+6<list.length?[button('Далее →','search',{query:p.query,page:page+1})]:[])],[button('Меню','home')]]);
+ }
  if(['task','history'].includes(p.op)){
   const d=await detail(u,p.id!),t=d.task;
   if(p.op==='history'){
