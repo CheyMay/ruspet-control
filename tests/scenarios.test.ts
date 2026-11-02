@@ -214,3 +214,19 @@ test('personal Telegram transport ignores strangers and pairing cannot replace t
  const next=await pilot.pairPilot(admin);await pilot.handlePilotUpdate({update_id:3,message:{chat:{id:200,type:'private'},text:'/start '+new URL(next.url).searchParams.get('start')}});assert.equal(sends.length,1);assert.equal((await db.pool.query('SELECT chat_id FROM telegram_binding')).rows[0].chat_id,'100');
  }finally{globalThis.fetch=originalFetch;if(previousToken===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previousToken;await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');}
 });
+
+test('excluded routines stay in storage but disappear from tasks, checks, reports and bot access',async()=>{
+ const {createTask}=await import('../server/workflow.js');const {botView}=await import('../server/bot.js');
+ const admin=users.find(u=>u.id==='admin')!;
+ const before=await service.bootstrap(admin),hidden:string[]=[];
+ for(const title of ['ЕЗМ* Свериться с УТРЕННИМ чек-листом','ЕЗМ* Займись анализом невыполненных задач за сегодня']){
+  const t=await createTask(admin,{title,description:'Служебная задача',assigneeId:'anna',deadline:'2026-01-01T10:00:00Z',plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null});hidden.push(t.id);
+  await service.notify(db.pool,t.id,admin.id,'Старое уведомление','excluded-test:'+t.id);
+ }
+ const current=await service.bootstrap(admin);assert.equal(current.tasks.length,before.tasks.length);assert.equal(current.selection!.checklist,before.selection!.checklist+1);assert.equal(current.selection!.unfinishedAnalysis,before.selection!.unfinishedAnalysis+1);
+ assert(!current.notifications.some(n=>hidden.includes(n.task_id||'')));
+ await service.runChecks(admin);assert.equal((await db.pool.query('SELECT count(*)::int n FROM control_requests WHERE task_id=ANY($1)',[hidden])).rows[0].n,0);
+ const report=await service.makeReport(admin,'snapshot','selection-test');assert(!report.rows.some((t:{id:string})=>hidden.includes(t.id)));
+ for(const id of hidden){await assert.rejects(()=>service.detail(admin,id),/недоступна/);await assert.rejects(()=>botView(admin,'preview',{op:'task',id}),/недоступна/);}
+ assert.equal((await db.pool.query('SELECT count(*)::int n FROM tasks WHERE id=ANY($1)',[hidden])).rows[0].n,2);
+});

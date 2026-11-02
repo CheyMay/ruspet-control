@@ -1,3 +1,4 @@
+import {visibleTasks} from './service.js';
 import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {pool,transaction} from './db.js';
@@ -50,7 +51,8 @@ export async function handlePilotUpdate(update:any){
 async function deliver(){
  const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled||!cfg.delivery)return;
  const binding=(await pool.query('SELECT b.*,u.name,u.role,u.branch_id,u.position FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.id=1')).rows[0];if(!binding)return;
- const rows=(await pool.query("SELECT o.* FROM outbox o WHERE o.recipient_id=$1 AND o.created_at>=greatest($2::timestamptz,$3::timestamptz) AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text) ORDER BY o.created_at LIMIT 12",[binding.user_id,cfg.enabled_at,binding.paired_at])).rows;if(!rows.length)return;
+ const included=(await visibleTasks({...binding,id:binding.user_id} as User)).map(t=>t.id);
+ const rows=(await pool.query("SELECT o.* FROM outbox o WHERE o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[])) AND o.created_at>=greatest($2::timestamptz,$3::timestamptz) AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text) ORDER BY o.created_at LIMIT 12",[binding.user_id,cfg.enabled_at,binding.paired_at,included])).rows;if(!rows.length)return;
  const id=randomUUID();await pool.query("INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state) VALUES($1,$2,$3,'sending')",[id,binding.chat_id,JSON.stringify(rows.map(r=>r.id))]);
  const u={...binding,id:binding.user_id} as User;
  try{const home=await botView(u,'telegram:'+binding.chat_id);const sent=await send(binding.chat_id,{text:`РУСПЭТ · новые события (${rows.length})\n\n${rows.map(r=>r.body.slice(0,220)).join('\n\n')}\n\nАктуальные действия — в меню ниже.`,buttons:home.buttons});await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id])}

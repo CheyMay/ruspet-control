@@ -1,15 +1,17 @@
 import type { Task, User, Rules, Metrics, Approval, ControlRequest } from '../shared/types.js';
+import {exclusionReason} from '../shared/task-selection.js';
 import {plannedInterval} from '../shared/analytics.js';
 import { taskQueue, elapsedToday, taskCode, businessDay } from '../shared/queues.js';
 export class AppError extends Error { constructor(public status: number, message: string) { super(message); } }
 export function assert(condition: unknown, status: number, message: string): asserts condition { if(!condition) throw new AppError(status,message); }
 export const globalAccess = (u:User) => ['director','admin','sales_head'].includes(u.role);
-export const canSee = (u:User,t:Task) => globalAccess(u) || (u.role==='branch_manager' && u.branch_id===t.branch_id) || t.assignee_id===u.id || t.creator_id===u.id;
+export const canAccess = (u:User,t:Task) => globalAccess(u) || (u.role==='branch_manager' && u.branch_id===t.branch_id) || t.assignee_id===u.id || t.creator_id===u.id;
+export const canSee = (u:User,t:Task) => canAccess(u,t)&&!exclusionReason(t);
 export const canRequest = (u:User,t:Task) => u.id===t.assignee_id || u.id===t.creator_id || u.role==='admin' || (u.role==='branch_manager' && u.branch_id===t.branch_id);
 export const canManage = (u:User) => ['admin','director','branch_manager','sales_head'].includes(u.role);
 export function moscowDay(date: Date|string = new Date()): string { return new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)); }
 export function evaluate(task: Task, rules: Rules, now = new Date(), allTasks:Task[] = []) {
- if(task.status==='completed') return [];
+ if(task.status==='completed'||exclusionReason(task)) return [];
  const result: {rule:string;severity:string;message:string}[]=[];
  const add=(rule:string,message:string,severity='warning')=>result.push({rule,message,severity});
  if(rules.overdue && taskQueue(task,now)==='overdue') add('overdue','Срок прошёл до начала сегодняшнего дня','critical');

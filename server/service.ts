@@ -1,10 +1,11 @@
+import {exclusionReason} from '../shared/task-selection.js';
 import {reportAnalysis} from '../shared/reporting.js';
 import {plannedMinutesOn,plannedInterval} from '../shared/analytics.js';
 import { taskQueue } from '../shared/queues.js';
 import { randomUUID } from 'node:crypto';
 import { pool, transaction, type Db } from './db.js';
 import type { Task, User, Rules, Approval, ControlRequest, Step } from '../shared/types.js';
-import { assert, canSee, canRequest, canManage, globalAccess, evaluate, metrics, moscowDay } from './domain.js';
+import { assert, canAccess, canSee, canRequest, canManage, globalAccess, evaluate, metrics, moscowDay } from './domain.js';
 import { providers } from './providers.js';
 const adapters=providers();
 export async function event(db:Db,taskId:string|null,actor:string|null,kind:string,message:string,data:object={}) {
@@ -26,10 +27,12 @@ export async function bootstrap(user:User) {
  const approvals=(await db.query('SELECT * FROM approvals WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const controls=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const users=(await db.query('SELECT * FROM users ORDER BY name')).rows.filter((u:User)=>globalAccess(user)||u.branch_id===user.branch_id||u.id===user.id||tasks.some(t=>t.creator_id===u.id)||approvals.some((a:Approval)=>a.route.some(s=>s.userId===u.id)));
- return {user,users,tasks,approvals,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
+ const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
+ const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
+ return {selection,user,users,tasks,approvals,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows,
  events:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
- notifications:(await db.query('SELECT * FROM outbox WHERE recipient_id=$1 OR ($2 AND (task_id=ANY($3) OR (task_id IS NULL AND $4))) ORDER BY created_at DESC LIMIT 150',[user.id,canManage(user),ids,globalAccess(user)])).rows,
+ notifications:(await db.query('SELECT * FROM outbox WHERE (recipient_id=$1 OR ($2 AND (task_id=ANY($3) OR (task_id IS NULL AND $4)))) AND (task_id IS NULL OR task_id=ANY($3)) ORDER BY created_at DESC LIMIT 150',[user.id,canManage(user),ids,globalAccess(user)])).rows,
  reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version FROM reports WHERE scope=$1 ORDER BY created_at DESC LIMIT 100',[scopeFor(user)])).rows};
  });
 }
@@ -187,7 +190,7 @@ export async function makeReport(user:User,kind='snapshot',slot='manual',capture
    analysis.targetDay=moscowDay(next);analysis.excludedWithoutPlan=allTasks.filter(t=>{if(t.status!=='active')return false;const p=plannedInterval(t);return !p.start||!p.end||new Date(p.end)<=new Date(p.start)}).length;
    analysis.notes.unshift(`План на ${analysis.targetDay}. Из всех задач в работе ${analysis.excludedWithoutPlan} не имеют полного корректного плана и не могут попасть в этот отчёт.`);
   }
-  const report=(await db.query('INSERT INTO reports(id,day,scope,metrics,rows,rules_version,kind,activity,slot,formula_version,analysis) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[randomUUID(),day,scope,JSON.stringify(m),JSON.stringify(tasks),cfg.version,kind,JSON.stringify(activity),slot,'v3-report-analysis',JSON.stringify(analysis)])).rows[0];
+  const report=(await db.query('INSERT INTO reports(id,day,scope,metrics,rows,rules_version,kind,activity,slot,formula_version,analysis) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[randomUUID(),day,scope,JSON.stringify(m),JSON.stringify(tasks),cfg.version,kind,JSON.stringify(activity),slot,'v4-task-selection',JSON.stringify(analysis)])).rows[0];
   await notify(db,null,user.id,'Готов отчёт за '+day+': '+tasks.length+' задач; просрочено '+m.overdue+', срок сегодня '+m.today+', на приёмке '+m.review+'.','report:'+report.id);return report;
  });
 }
