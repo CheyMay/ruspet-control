@@ -2,6 +2,7 @@ import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
+import {hashPassword} from '../server/passwords.js';
 import pg from 'pg';
 import type {Server} from 'node:http';
 // All fixtures and mutations are isolated in a newly created disposable database.
@@ -23,6 +24,7 @@ test('bot leadership brief enforces role and uses only the managers visible task
  assert(!brief.text.includes(foreign.name));
  assert(brief.buttons.flat().some(b=>b.text==='Архив отчётов'));
 });
+
 before(async()=>{
  const current=process.env.DATABASE_URL||JSON.parse(await readFile('.local/connection.json','utf8')).url;
  adminConnection=new pg.Client({connectionString:current});await adminConnection.connect();await adminConnection.query(`CREATE DATABASE ${database}`);
@@ -229,4 +231,41 @@ test('excluded routines stay in storage but disappear from tasks, checks, report
  const report=await service.makeReport(admin,'snapshot','selection-test');assert(!report.rows.some((t:{id:string})=>hidden.includes(t.id)));
  for(const id of hidden){await assert.rejects(()=>service.detail(admin,id),/недоступна/);await assert.rejects(()=>botView(admin,'preview',{op:'task',id}),/недоступна/);}
  assert.equal((await db.pool.query('SELECT count(*)::int n FROM tasks WHERE id=ANY($1)',[hidden])).rows[0].n,2);
+});
+
+test('individual accounts require password, support two sessions and hide demo role switching',async()=>{
+ await db.pool.query('INSERT INTO login_accounts(username,user_id,password_hash) VALUES($1,$2,$3),($4,$5,$6)',['panel-admin','admin',await hashPassword('Simple-phrase-2026'),'panel-director','director',await hashPassword('Another-phrase-2026')]);
+ const previous=process.env.DEMO_AUTH;process.env.DEMO_AUTH='false';
+ try{
+  assert.equal((await fetch(base+'/api/demo/users')).status,403);
+  const login=async(username:string,password:string)=>fetch(base+'/api/auth/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password})});
+  assert.equal((await login('panel-admin','wrong')).status,401);
+  const first=await login('panel-admin','Simple-phrase-2026'),second=await login('panel-director','Another-phrase-2026');assert.equal(first.status,200);assert.equal(second.status,200);
+  const a=first.headers.get('set-cookie')!.split(';')[0],b=second.headers.get('set-cookie')!.split(';')[0];
+  assert.equal((await (await fetch(base+'/api/auth/me',{headers:{Cookie:a}})).json()).id,'admin');
+  assert.equal((await (await fetch(base+'/api/auth/me',{headers:{Cookie:b}})).json()).id,'director');
+  assert.equal((await fetch(base+'/api/auth/logout',{method:'POST',headers:{Cookie:a}})).status,200);
+  assert.equal((await fetch(base+'/api/auth/me',{headers:{Cookie:a}})).status,401);
+  assert.equal((await fetch(base+'/api/auth/me',{headers:{Cookie:b}})).status,200);
+ }finally{if(previous===undefined)delete process.env.DEMO_AUTH;else process.env.DEMO_AUTH=previous;}
+});
+test('clarification stays on the same approval stage until requester replies',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ const a=await service.requestApproval(users.find(u=>u.id==='anna')!,id,{type:'deadline',reason:'Нужен срок для проверки результата',plan:'Проверить данные и представить итоговый отчёт',proposedDeadline:new Date(Date.now()+86400000*10).toISOString(),expectedVersion:1});
+ const path=`/approvals/${a.id}`;
+ assert.equal((await request('lead-msk',path+'/decision',{decision:'clarify',comment:'Какие данные уже проверены?',expectedStep:0})).status,200);
+ assert.equal((await request('lead-msk',path+'/decision',{decision:'approve',expectedStep:0})).status,409);
+ assert.equal((await request('director',path+'/clarification',{answer:'Ответ другого человека'})).status,403);
+ assert.equal((await request('anna',path+'/clarification',{answer:'Проверены строки исходной выгрузки'})).status,200);
+ assert.equal((await request('anna',path+'/clarification',{answer:'Повторный ответ'})).status,409);
+ assert.equal((await request('lead-msk',path+'/decision',{decision:'approve',expectedStep:0})).status,200);
+ const detail=(await request('anna',`/tasks/${id}`)).data;
+ assert(detail.comments.some((c:any)=>c.kind==='clarification'));
+ assert.equal(detail.approvals[0].current_step,1);
+});
+test('positive task review accepts empty comment, return still requires a reason',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Готовый результат передан',expectedVersion:1})).status,200);
+ assert.equal((await request('director',`/tasks/${id}/review`,{action:'return',comment:'',expectedVersion:2})).status,400);
+ assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'',expectedVersion:2})).status,200);
 });

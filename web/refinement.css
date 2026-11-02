@@ -115,3 +115,14 @@ tbody tr:hover{background:#f7faf6}
 @media(max-width:1250px){main{padding:26px 24px 30px}.topbar{padding-left:24px;padding-right:24px}.queue-grid{gap:10px}}
 @media(max-width:850px){.page-heading{flex-wrap:wrap}.heading-actions{padding-top:0}.start-path{gap:9px}.total-banner{gap:20px;padding:20px}.queue-card{padding:16px}.management-focus>span{white-space:normal}}
 @media(max-width:650px){main{padding:22px 15px 28px}.topbar{height:64px;padding:0 15px}.page-heading h1{font-size:24px}.start-path button{padding:13px 15px}.panel-heading{padding:17px 16px}.total-banner{gap:14px}.queue-card{padding:15px 13px}.queue-card>strong{font-size:30px}.sidebar.mobile-open{box-shadow:6px 0 20px #263b2614}.bot-preview{padding:14px}}
+
+.action-metrics button{background:#fff;border:1px solid #dfe5e0;border-radius:5px;padding:20px;text-align:left;display:flex;flex-direction:column;gap:10px;color:#334b3c}.action-metrics button:hover,.action-metrics button.selected{background:#f1f6f1;border-color:#9eb9a7}.action-metrics button strong{font-size:30px;font-weight:550}.action-metrics button span{font-size:12px;color:#657568}
+
+.login-page{min-height:100vh;max-width:none;display:grid;place-items:center;padding:24px;background:#f2f5f1}.login-card{width:min(100%,400px);display:flex;flex-direction:column;gap:19px;background:#fff;border:1px solid #dfe5de;border-radius:7px;padding:32px;box-shadow:0 14px 45px #273d2b0d}.login-card h1{font-size:25px}.login-card p{font-size:12px;color:#6a786c;margin-top:7px}.login-card label{display:flex;flex-direction:column;gap:7px;font-size:12px;font-weight:550;color:#4a5c4d}.login-card input{height:41px;padding:10px 12px;border:1px solid #ced9ce;border-radius:4px;font-size:14px}.login-card .button{width:100%;height:41px}.login-card .login-error{color:#a4473c}.user-switch strong{display:block;font-size:12px;font-weight:550}.user-switch small{display:block;margin-top:3px;font-size:10px}.user-switch .text-button{margin-left:10px}
+.route-stage{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap;padding:12px 14px;margin:14px 0;background:#f2f6f4;border:1px solid #dce7e0;border-radius:9px;font-size:13px}
+.route-stage span{color:#476058}
+.clarification-thread{border-left:3px solid #b79046;background:#fbf8f1;padding:10px 14px;margin:14px 0;font-size:13px}
+.clarification-thread p{margin:5px 0 11px;white-space:pre-wrap}
+.clarification-thread p:last-child{margin-bottom:0}
+
+.date-filter{display:flex;align-items:center;gap:7px;color:#657568;font-size:12px;white-space:nowrap}.date-filter input{min-width:135px;max-width:150px;height:36px;padding:6px 8px;border:1px solid #d9e2d9;border-radius:4px;background:#fff;color:#304733}

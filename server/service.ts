@@ -108,7 +108,7 @@ export async function requestApproval(user:User,id:string,input:{type:'deadline'
   return {id:approvalId};
  });
 }
-export async function decide(user:User,id:string,input:{decision:'approve'|'reject'|'later';comment:string;expectedStep?:number;remindMinutes?:number}) {
+export async function decide(user:User,id:string,input:{decision:'approve'|'reject'|'later'|'clarify';comment:string;expectedStep?:number;remindMinutes?:number}) {
  return transaction(async db=>{
   const first=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[id])).rows[0]; assert(first,404,'Согласование не найдено.');
   const task=await taskFor(db,first.task_id,user,true);
@@ -116,11 +116,20 @@ export async function decide(user:User,id:string,input:{decision:'approve'|'reje
   assert(input.expectedStep===undefined||input.expectedStep===a.current_step,409,'Этот этап уже завершён. Откройте актуальное решение.');
   assert(a.state==='pending',409,'Решение уже принято или запрос устарел.');
   assert(a.route[a.current_step].userId===user.id,403,'Сейчас решение принимает другой согласующий.');
+  assert(!a.clarification_requested_at||a.clarification_answered_at,409,'Сначала дождитесь ответа на уточнение.');
   if(a.task_version!==task.version) {
    await db.query("UPDATE approvals SET state='stale' WHERE id=$1",[id]); await event(db,task.id,user.id,'approval_stale','Согласование остановлено: задача изменилась',{approvalId:id});
    return {state:'stale'};
   }
   await db.query('INSERT INTO decisions(id,approval_id,actor_id,step_index,decision,comment) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),id,user.id,a.current_step,input.decision,input.comment]);
+  if(input.decision==='clarify') {
+   assert(input.comment.trim().length>=5,400,'Напишите вопрос для автора запроса (не менее 5 символов).');
+   await db.query('UPDATE approvals SET clarification_question=$2,clarification_answer=NULL,clarification_requested_at=now(),clarification_answered_at=NULL,deferred_until=NULL WHERE id=$1',[id,input.comment]);
+   await db.query("INSERT INTO comments(id,task_id,author_id,body,kind) VALUES($1,$2,$3,$4,'clarification')",[randomUUID(),task.id,user.id,`Уточнение по согласованию: ${input.comment}`]);
+   await event(db,task.id,user.id,'approval_clarification_requested','Согласующий запросил уточнение',{approvalId:id,question:input.comment});
+   await notify(db,task.id,a.requester_id,`По задаче #${task.id} нужен ответ: ${input.comment}`,`clarify:${id}:${Date.now()}`);
+   await adapters.telegram.dispatch(db);return {state:'pending',clarification:'requested'};
+  }
   if(input.decision==='later') {
    const cfg=await config(db); await db.query("UPDATE approvals SET deferred_until=now()+($2 * interval '1 minute') WHERE id=$1",[id,input.remindMinutes||cfg.config.reminderMinutes]);
    await event(db,task.id,user.id,'approval_later','Согласующий вернётся к решению позже',{approvalId:id,comment:input.comment}); return {state:'pending'};
@@ -149,6 +158,20 @@ export async function decide(user:User,id:string,input:{decision:'approve'|'reje
    await notify(db,task.id,a.requester_id,`Изменение по задаче #${task.id} согласовано и применено в локальной системе.`,`approved:${id}`);
   }
   await adapters.telegram.dispatch(db); return {state:input.decision==='reject'?'rejected':a.current_step===a.route.length-1?'approved':'pending'};
+ });
+}
+export async function answerClarification(user:User,id:string,answer:string){
+ return transaction(async db=>{
+  const found=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[id])).rows[0];assert(found,404,'Согласование не найдено.');
+  await taskFor(db,found.task_id,user);
+  const a=(await db.query('SELECT * FROM approvals WHERE id=$1 FOR UPDATE',[id])).rows[0] as Approval;
+  assert(a.requester_id===user.id,403,'Ответить может автор запроса.');
+  assert(a.state==='pending'&&a.clarification_requested_at&&!a.clarification_answered_at,409,'Здесь не ожидается уточнение.');
+  await db.query('UPDATE approvals SET clarification_answer=$2,clarification_answered_at=now() WHERE id=$1',[id,answer]);
+  await db.query("INSERT INTO comments(id,task_id,author_id,body,kind) VALUES($1,$2,$3,$4,'clarification')",[randomUUID(),a.task_id,user.id,`Ответ на уточнение: ${answer}`]);
+  await event(db,a.task_id,user.id,'approval_clarification_answered','Автор запроса ответил на уточнение',{approvalId:id,answer});
+  await notify(db,a.task_id,a.route[a.current_step].userId,`Получен ответ по задаче #${a.task_id}: ${answer}`,`clarification-answer:${id}:${Date.now()}`);
+  await adapters.telegram.dispatch(db);return {state:'pending',clarification:'answered'};
  });
 }
 export async function remind(user:User,now=new Date()) {

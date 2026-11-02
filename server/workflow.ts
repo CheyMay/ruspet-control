@@ -35,17 +35,17 @@ export async function reviewTask(u:User,id:string,action:'submit'|'accept'|'retu
  const reviewer=u.id===before.creator_id||u.role==='admin'||u.role==='director'||(canManage(u)&&(globalAccess(u)||u.branch_id===before.branch_id));
  if(action==='submit'){assert(canRequest(u,before),403,'Нет права сдавать задачу.');assert(before.status==='active',409,'Задача уже передана или завершена.');}
  else {assert(reviewer,403,'Решение принимает постановщик или руководитель.');assert(before.status==='review',409,'Задача не ожидает приёмки.');assert(u.id!==before.assignee_id,403,'Нельзя принимать собственную работу.');}
- assert(comment.trim().length>=5,400,'Укажите результат или причину, минимум 5 символов.');
+ if(action!=='accept')assert(comment.trim().length>=5,400,'Укажите результат или причину, минимум 5 символов.');
  assert(!(await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rowCount,409,'Сначала завершите активное согласование.');
  const status=action==='submit'?'review':action==='accept'?'completed':'active';
  const after=(await db.query("UPDATE tasks SET status=$2,completed_at=CASE WHEN $2='completed' THEN now() ELSE NULL END,version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[id,status])).rows[0];
  await provider.applyApprovedChange(db,after,before.version);
  if(action==='submit')await db.query("INSERT INTO task_submissions(id,task_id,round,result,author_id,state) SELECT $1,$2,coalesce(max(round),0)+1,$3,$4,'review' FROM task_submissions WHERE task_id=$2",[randomUUID(),id,comment,u.id]);
- else await db.query("UPDATE task_submissions SET state=$2,reviewer_id=$3,remark=$4,decided_at=now() WHERE task_id=$1 AND state='review'",[id,action==='accept'?'accepted':'returned',u.id,comment]);
+ else await db.query("UPDATE task_submissions SET state=$2,reviewer_id=$3,remark=$4,decided_at=now() WHERE task_id=$1 AND state='review'",[id,action==='accept'?'accepted':'returned',u.id,comment||null]);
  const labels={submit:'Работа передана на приёмку',accept:'Результат принят, задача завершена',return:'Задача возвращена в работу'};
- await db.query("INSERT INTO comments(id,task_id,author_id,body,kind) VALUES($1,$2,$3,$4,'review')",[randomUUID(),id,u.id,comment]);
+ if(comment.trim())await db.query("INSERT INTO comments(id,task_id,author_id,body,kind) VALUES($1,$2,$3,$4,'review')",[randomUUID(),id,u.id,comment]);
  await event(db,id,u.id,action==='accept'?'task_completed':action==='submit'?'review_submitted':'review_returned',labels[action],{before,after,comment});
  await refreshTaskFindings(db,after,u);
  if(action==='accept')await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);
- await notify(db,id,action==='submit'?before.creator_id:before.assignee_id,`${labels[action]} · #${id}: ${comment}`,`review:${id}:${after.version}`);return {state:status};
+ await notify(db,id,action==='submit'?before.creator_id:before.assignee_id,`${labels[action]} · #${id}${comment.trim()?': '+comment:''}`,`review:${id}:${after.version}`);return {state:status};
 });}

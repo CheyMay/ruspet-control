@@ -2,6 +2,7 @@ import {botView,botClick,botText,clearBotDraft} from './bot.js';
 import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
 import {printReport} from './report-print.js';
 import express from 'express';
+import {verifyPassword} from './passwords.js';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { resolve } from 'node:path';
 import { z, ZodError } from 'zod';
@@ -19,9 +20,11 @@ const taskInput=z.object({title:z.string().trim().min(3).max(500),description:z.
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 export function createApp() {
  const app=express(); app.disable('x-powered-by'); app.use(express.json({limit:'32kb'}));
+ const loginAttempts=new Map<string,{count:number;since:number}>();
  app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'");next();});
  app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.get('origin')){const allowed=[`http://${req.get('host')}`,'http://127.0.0.1:5173','http://localhost:5173'];if(process.env.PUBLIC_ORIGIN)allowed.push(new URL(process.env.PUBLIC_ORIGIN).origin);if(!allowed.includes(req.get('origin')!))return res.status(403).json({error:'Запрос с другого сайта запрещён.'});}next();});
  app.get('/api/health',async(_req,res)=>{await pool.query('SELECT 1');res.json({ok:true,database:'postgresql',taskProvider:'mock',telegram:(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0]?.enabled?'personal-pilot':'disabled'});});
+ app.get('/api/auth/mode',(_req,res)=>res.json({demo:process.env.DEMO_AUTH!=='false'}));
  app.get('/api/demo/users',async(_req,res)=>{assert(process.env.DEMO_AUTH!=='false',403,'Демонстрационный вход отключён.');res.json((await pool.query('SELECT * FROM users ORDER BY id')).rows);});
  app.post('/api/demo/login',async(req,res)=>{
   assert(process.env.DEMO_AUTH!=='false',403,'Демонстрационный вход отключён.');
@@ -30,6 +33,19 @@ export function createApp() {
   const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '8 hours')",[hash(token),userId]);
   res.cookie('ruspet_session',token,{httpOnly:true,sameSite:'strict',maxAge:8*60*60*1000,path:'/'});res.json({user});
  });
+ app.post('/api/auth/login',async(req,res)=>{
+  const key=req.ip||'unknown',now=Date.now(),attempt=loginAttempts.get(key);
+  if(attempt&&now-attempt.since<60_000&&attempt.count>=8)throw new AppError(429,'Слишком много попыток. Повторите через минуту.');
+  const {username,password}=z.object({username:z.string().trim().toLowerCase().min(3).max(32),password:z.string().min(1).max(200)}).parse(req.body);
+  const account=(await pool.query('SELECT a.password_hash,u.* FROM login_accounts a JOIN users u ON u.id=a.user_id WHERE a.username=$1 AND a.enabled',[username])).rows[0];
+  if(!account||!await verifyPassword(password,account.password_hash)){loginAttempts.set(key,{count:now-(attempt?.since||0)<60_000?(attempt?.count||0)+1:1,since:now-(attempt?.since||0)<60_000?attempt!.since:now});throw new AppError(401,'Неверный логин или пароль.');}
+  loginAttempts.delete(key);
+  const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",[hash(token),account.id]);
+  res.cookie('ruspet_session',token,{httpOnly:true,sameSite:'strict',secure:!!process.env.PUBLIC_ORIGIN?.startsWith('https://'),maxAge:12*60*60*1000,path:'/'});
+  delete account.password_hash;res.json({user:account});
+ });
+ app.get('/api/auth/me',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(!token)return res.status(401).json({error:'Войдите в систему.'});const user=(await pool.query('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()',[hash(token)])).rows[0];if(!user)return res.status(401).json({error:'Сессия завершена.'});res.json(user);});
+ app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
  app.use('/api',async(req,_res,next)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=(await pool.query('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()',[hash(token)])).rows[0];assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
  app.get('/api/bootstrap',async(req,res)=>res.json(await service.bootstrap(req.actor)));
  app.get('/api/operations',async(req,res)=>{assert(req.actor.role!=='employee',403,'Расписание доступно руководителю.');res.json(await operationsStatus());});
@@ -43,11 +59,12 @@ export function createApp() {
  app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,'preview',input.text,input.inputId))});
  app.post('/api/tasks',async(req,res)=>res.status(201).json(await createTask(req.actor,taskInput.parse(req.body))));
  app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion));});
- app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:text,expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});
+ app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});
  app.get('/api/tasks/:id',async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));
  app.post('/api/tasks/:id/comments',async(req,res)=>{await service.addComment(req.actor,String(req.params.id),z.object({body:text}).parse(req.body).body);res.json({ok:true});});
  app.post('/api/tasks/:id/approvals',async(req,res)=>res.status(201).json(await service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:text,proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
- app.post('/api/approvals/:id/decision',async(req,res)=>res.json(await service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
+ app.post('/api/approvals/:id/decision',async(req,res)=>res.json(await service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
+ app.post('/api/approvals/:id/clarification',async(req,res)=>res.json(await service.answerClarification(req.actor,z.uuid().parse(req.params.id),z.object({answer:z.string().trim().min(5).max(4000)}).parse(req.body).answer)));
  app.post('/api/controls/:id/answer',async(req,res)=>{await service.answerControl(req.actor,z.uuid().parse(req.params.id),z.object({reason:text,progress:text,plan:text}).parse(req.body));res.json({ok:true});});
  app.post('/api/checks/run',async(req,res)=>res.json(await service.runChecks(req.actor)));
  app.post('/api/reminders/run',async(req,res)=>res.json(await service.remind(req.actor)));
