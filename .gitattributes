@@ -1,0 +1,10 @@
+* text=auto
+*.ts text eol=lf
+*.tsx text eol=lf
+*.css text eol=lf
+*.sql text eol=lf
+*.json text eol=lf
+*.md text eol=lf
+*.cmd text eol=crlf
+# Keep the original source bytes: the importer uses their SHA-256 identity.
+data/first-sheet.json -text

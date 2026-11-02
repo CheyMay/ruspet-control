@@ -1,0 +1,13 @@
+ALTER TABLE reports ADD COLUMN kind text NOT NULL DEFAULT 'snapshot';
+ALTER TABLE reports ADD COLUMN activity jsonb NOT NULL DEFAULT '{}';
+ALTER TABLE reports ADD COLUMN formula_version text NOT NULL DEFAULT 'v1-exact-deadline';
+ALTER TABLE reports ADD COLUMN slot text NOT NULL DEFAULT 'manual';
+ALTER TABLE reports DROP CONSTRAINT reports_day_scope_key;
+ALTER TABLE reports ADD UNIQUE(day,scope,kind,slot);
+CREATE TABLE automation_config (id integer PRIMARY KEY CHECK(id=1), enabled boolean NOT NULL DEFAULT false, morning text NOT NULL DEFAULT '09:00', evening text NOT NULL DEFAULT '18:00');
+INSERT INTO automation_config(id) VALUES(1);
+CREATE TABLE job_runs (job_key text PRIMARY KEY, state text NOT NULL, attempts integer NOT NULL DEFAULT 0, error text, updated_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE telegram_pairings (token_hash text PRIMARY KEY, user_id text NOT NULL REFERENCES users, expires_at timestamptz NOT NULL);
+CREATE TABLE telegram_binding (id integer PRIMARY KEY CHECK(id=1), chat_id text NOT NULL, user_id text NOT NULL REFERENCES users, paired_at timestamptz NOT NULL DEFAULT now());
+CREATE TABLE telegram_cursor (id integer PRIMARY KEY CHECK(id=1), next_update bigint NOT NULL DEFAULT 0);
+INSERT INTO telegram_cursor(id) VALUES(1);

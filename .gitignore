@@ -1,0 +1,15 @@
+node_modules/
+dist/
+.local/
+.env
+.env.*
+!.env.example
+*.log
+coverage/
+backups/
+*.dump
+*.backup
+*.pem
+*.key
+.DS_Store
+Thumbs.db

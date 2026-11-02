@@ -1,0 +1,11 @@
+import type {Bootstrap,Task,User} from './types.js';
+export type ActionItem={key:string;kind:'answer'|'decision'|'review'|'rework';taskId:string;title:string;label:string;ownerId:string;since:string|null;due:string|null;mine:boolean;targetId:string};
+export function canReview(u:User,t:Task){return u.id!==t.assignee_id&&(u.id===t.creator_id||['admin','director','sales_head'].includes(u.role)||u.role==='branch_manager'&&u.branch_id===t.branch_id)}
+export function actionItems(data:Bootstrap):ActionItem[]{
+ const result:ActionItem[]=[],tasks=new Map(data.tasks.map(t=>[t.id,t]));
+ for(const c of data.controls){const t=tasks.get(c.task_id);if(!t||!['waiting','escalated'].includes(c.state))continue;result.push({key:'answer:'+c.id,kind:'answer',taskId:t.id,title:t.title,label:'Ответить на запрос',ownerId:c.assignee_id,since:c.created_at,due:c.due_at,mine:c.assignee_id===data.user.id||data.user.role==='admin',targetId:c.id})}
+ for(const a of data.approvals){const t=tasks.get(a.task_id);if(!t||a.state!=='pending')continue;const ownerId=a.route[a.current_step]?.userId;if(!ownerId)continue;result.push({key:'decision:'+a.id,kind:'decision',taskId:t.id,title:t.title,label:a.type==='deadline'?'Решить перенос срока':'Проверить закрытие',ownerId,since:a.created_at,due:a.deferred_until,mine:ownerId===data.user.id,targetId:a.id})}
+ for(const t of data.tasks){if(t.status==='review'&&!data.approvals.some(a=>a.task_id===t.id&&a.state==='pending')){const sub=data.submissions?.find(s=>s.task_id===t.id&&s.state==='review');result.push({key:'review:'+t.id,kind:'review',taskId:t.id,title:t.title,label:'Принять результат',ownerId:t.creator_id!==t.assignee_id?t.creator_id:'',since:sub?.submitted_at||null,due:null,mine:canReview(data.user,t),targetId:t.id})}
+ if(t.status==='active'){const last=data.submissions?.filter(s=>s.task_id===t.id).sort((a,b)=>b.round-a.round)[0];if(last?.state==='returned')result.push({key:'rework:'+t.id,kind:'rework',taskId:t.id,title:t.title,label:'Исправить замечания',ownerId:t.assignee_id,since:last.decided_at,due:t.deadline,mine:t.assignee_id===data.user.id,targetId:t.id})}}
+ return result.sort((a,b)=>Number(b.mine)-Number(a.mine)||(a.since||'9999').localeCompare(b.since||'9999'));
+}
