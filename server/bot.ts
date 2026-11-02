@@ -40,7 +40,7 @@ export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<Bo
   const last=d.submissions[0];if(last)text+=`\n\nСдача №${last.round}: ${last.result.slice(0,500)}${last.remark?'\nЗамечание: '+last.remark.slice(0,500):''}`;
   const rows:ReturnType<typeof button>[][]=[];const pending=d.approvals.find(a=>a.state==='pending');
   const form=(label:string,kind:string,target?:string,step?:number)=>button(label,'form',{kind,id:t.id,version:t.version,target,step});
-  if(pending){text+=`\n\nОжидается решение: ${name(pending.route[pending.current_step].userId)}\nПричина: ${pending.reason.slice(0,500)}\nПлан: ${pending.plan.slice(0,500)}`;if(pending.proposed_deadline)text+=`\nПредложенный срок: ${date(pending.proposed_deadline)} МСК`;
+  if(pending){text+=`\n\nОжидается решение: ${name(pending.route[pending.current_step].userId)}\nПричина: ${pending.reason.slice(0,500)}\nПлан: ${pending.plan.slice(0,500)}`;if(pending.proposed_deadline)text+=`\nПредложенный крайний срок: ${date(pending.proposed_deadline)} МСК`;
    const waiting=!!pending.clarification_requested_at&&!pending.clarification_answered_at;
    if(pending.clarification_question)text+=`\n\nУточнение: ${pending.clarification_question.slice(0,500)}${pending.clarification_answer?'\nОтвет: '+pending.clarification_answer.slice(0,500):''}`;
    if(waiting&&pending.requester_id===u.id)rows.push([form('Ответить на уточнение','clarification',pending.id,pending.current_step)]);
@@ -89,7 +89,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   }
   const v=p.values||{};let result='Действие сохранено.';
   if(p.kind==='answer'){await answerControl(u,p.target!,{reason:v.reason,progress:v.progress,plan:v.plan});result='Ответ сохранён и доступен руководителю.'}
-  else if(p.kind==='deadline'){await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,plan:v.plan,proposedDeadline:v.deadline,expectedVersion:p.version!});result='Новый срок предложен. Текущий срок изменится после согласования.'}
+  else if(p.kind==='deadline'){await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,plan:v.plan,proposedDeadline:v.deadline,expectedVersion:p.version!});result='Новый срок предложен. Текущий крайний срок изменится после согласования.'}
   else if(p.kind==='clarification'){await answerClarification(u,p.target!,v.answer);result='Ответ отправлен согласующему. Этап ожидает его решения.'}
   else if(['approve','reject','later','clarify'].includes(p.kind!)){const r=await decide(u,p.target!,{decision:p.kind as 'approve'|'reject'|'later'|'clarify',comment:v.comment||'',expectedStep:p.step,remindMinutes:p.minutes});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':'Согласование завершено.'}
   else{await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return',v.comment||'',p.version!);result=p.kind==='submit'?'Результат передан на приёмку. Ожидается решение руководителя.':p.kind==='return'?'Задача возвращена. Замечания сохранены для исполнителя.':'Результат принят. Задача завершена.'}
