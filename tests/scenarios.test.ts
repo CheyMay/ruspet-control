@@ -9,6 +9,20 @@ let server:Server,base:string,db:typeof import('../server/db.js'),service:typeof
 let adminConnection:pg.Client,users:typeof import('../scripts/seed.js').demoUsers;
 const database='ruspet_test_'+randomBytes(6).toString('hex');
 const cookies=new Map<string,string>();
+
+test('bot leadership brief enforces role and uses only the managers visible tasks',async()=>{
+ const {botView}=await import('../server/bot.js');
+ const employee=users.find(u=>u.role==='employee')!,lead=users.find(u=>u.role==='branch_manager')!;
+ await assert.rejects(()=>botView(employee,'preview',{op:'brief'}),/руководителям/);
+ const employeeMenu=await botView(employee,'preview');assert(!employeeMenu.buttons.flat().some(b=>b.text.includes('Сводка команды')));
+ const visible=await service.bootstrap(lead),brief=await botView(lead,'preview',{op:'brief'});
+ assert(brief.text.includes('Всего задач: '+visible.tasks.length+'\n'));
+ const {summarize}=await import('../shared/analytics.js');const s=summarize(visible.tasks,new Date(visible.serverTime));
+ assert(brief.text.includes('Просрочены ранее: '+s.overdue+'\n'));
+ const foreign=users.find(u=>u.role==='employee'&&u.branch_id!==lead.branch_id)!;
+ assert(!brief.text.includes(foreign.name));
+ assert(brief.buttons.flat().some(b=>b.text==='Архив отчётов'));
+});
 before(async()=>{
  const current=process.env.DATABASE_URL||JSON.parse(await readFile('.local/connection.json','utf8')).url;
  adminConnection=new pg.Client({connectionString:current});await adminConnection.connect();await adminConnection.query(`CREATE DATABASE ${database}`);

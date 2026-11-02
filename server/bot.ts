@@ -16,7 +16,7 @@ async function screen(u:User,ch:string,text:string,rows:{text:string;payload:Pay
  const buttons=[];for(const row of rows){const result=[];for(const b of row){const token=randomBytes(18).toString('base64url');await db.query("INSERT INTO bot_buttons(token,actor_id,channel,payload,expires_at) VALUES($1,$2,$3,$4,now()+interval '24 hours')",[token,u.id,ch,JSON.stringify(b.payload)]);result.push({text:b.text,token})}buttons.push(result)}return {text,buttons};
 }
 const button=(text:string,op:string,extra:Partial<Payload>={})=>({text,payload:{op,...extra}});
-const home=[button('Мой день','day'),button('Нужно действие','inbox')];
+const home=[button('📅 Срок сегодня','day'),button('📥 Ждут решения','inbox')];
 export async function clearBotDraft(u:User,ch:string){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch])})}
 export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<BotScreen>{
  const data=await bootstrap(u),now=new Date(data.serverTime),name=(id:string)=>data.users.find(x=>x.id===id)?.name||id;
@@ -41,12 +41,18 @@ export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<Bo
   const control=d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));if(control)rows.push([form('Ответить на запрос','answer',control.id)]);
   rows.push([button('История','history',{id:t.id}),button('Меню','home')]);return screen(u,ch,text,rows);
  }
+ if(p.op==='brief'){
+  assert(u.role!=='employee',403,'Сводка команды доступна руководителям.');
+  const s=summarize(data.tasks,now),pending=data.approvals.filter(a=>a.state==='pending').length;
+  const urgent=data.tasks.filter(t=>taskQueue(t,now)==='overdue').sort((a,b)=>Number(!!b.customer_risk)-Number(!!a.customer_risk)||(a.deadline||'').localeCompare(b.deadline||'')).slice(0,3);
+  return screen(u,ch,`📊 РУСПЭТ · сводка руководителя\n${date(data.serverTime)} МСК · ваша область доступа\n\nВсего задач: ${s.total}\nПросрочены ранее: ${s.overdue}\nПоследний день сегодня: ${s.today}\nСрок впереди: ${s.upcoming}\nБез срока: ${s.no_deadline}\nНа приёмке: ${s.review}\nЗавершены: ${s.completed}\n\nОтдельно: ${pending} согласований — входят в задачи выше.\n\nВ первую очередь\n${urgent.map(t=>`• #${t.id} ${t.title.slice(0,110)}\n  ${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n')||'Просрочек с прошлых дней нет.'}\n\nЭто текущая сводка. Сохранённые снимки — в архиве.`,[[button('Обновить сводку','brief')],[button('Архив отчётов','reports')],...urgent.map(t=>[button('Открыть #'+t.id,'task',{id:t.id})]),[button('В меню','home')]]);
+ }
  if(p.op==='reports'){
   const page=p.page||0,archive=await listReports(u,{page:Math.floor(page/2)}),report=p.id?await getReport(u,p.id):null;
   const names:Record<string,string>={snapshot:'Обзор',today:'Сегодня',overdue:'Просрочки',review:'Приёмка',daily:'Итоги дня',nextday:'План'};
-  const text=report?names[report.kind]+' · '+date(report.created_at)+' МСК\nВсего: '+report.metrics.total+'\nПросрочены ранее: '+report.metrics.overdue+'\nСегодня: '+report.metrics.today+'\nПриёмка: '+report.metrics.review+'\nЗавершены: '+report.metrics.completed+'\n\n'+(report.analysis?.notes||[]).join('\n\n'):'Сводки · '+archive.total+' отчётов. Выберите сохранённый снимок.';
+  const text=report?names[report.kind]+' · '+date(report.created_at)+' МСК\nВсего: '+report.metrics.total+'\nПросрочены ранее: '+report.metrics.overdue+'\nСегодня: '+report.metrics.today+'\nПриёмка: '+report.metrics.review+'\nЗавершены: '+report.metrics.completed+'\n\n'+(report.analysis?.notes||[]).join('\n\n'):'📁 Архив · '+archive.total+' отчётов.\nВыберите снимок: значения зафиксированы на момент создания.\n'+(!archive.total?'Первый отчёт можно сформировать в панели → Отчёты. Текущие цифры доступны в сводке руководителя.':'');
   const rows=archive.items.slice((page%2)*10,(page%2)*10+10).map((r:any)=>[button(date(r.created_at)+' · '+names[r.kind],'reports',{id:r.id,page})]);
-  rows.push([...(page?[button('← Назад','reports',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1})]:[])],home,[button('Меню','home')]);return screen(u,ch,text,rows);
+  rows.push([...(page?[button('← Назад','reports',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1})]:[])],home,[button('Меню','home')]);return screen(u,ch,text.slice(0,3800),rows);
  }
  if(['inbox','tasks','day'].includes(p.op)){
   const actions=actionItems(data).filter(a=>a.mine);const list=p.op==='inbox'?actions.map(a=>({id:a.taskId,label:a.label+' · '+a.title})):data.tasks.filter(t=>(t.assignee_id===u.id||u.role!=='employee')&&(p.op==='tasks'||taskQueue(t,now)==='today')).map(t=>({id:t.id,label:t.title}));
@@ -54,7 +60,7 @@ export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<Bo
   return screen(u,ch,`${p.op==='inbox'?'Нужно ваше действие':p.op==='day'?'Последний день сегодня':'Доступные задачи'} · ${list.length}\n${slice.map((t,i)=>`${i+1}. #${t.id} ${t.label.slice(0,180)}`).join('\n\n')||'Список пуст.'}\n\nСтраница ${page+1}/${Math.max(1,Math.ceil(list.length/6))}`, [...slice.map((t,i)=>[button(`${i+1}. Открыть #${t.id}`,'task',{id:t.id})]),[...(page?[button('← Назад',p.op,{page:page-1})]:[]),...(page*6+6<list.length?[button('Далее →',p.op,{page:page+1})]:[])],home,[button('Все задачи','tasks'),button('Меню','home')]]);
  }
  const s=summarize(data.tasks,now),actions=actionItems(data).filter(a=>a.mine).length;
- return screen(u,ch,`РУСПЭТ · ${u.name}\n\nНужно ваше действие: ${actions}\nПросрочены ранее: ${s.overdue}\nПоследний день сегодня: ${s.today}\nНа приёмке: ${s.review}\n\nДанные локальной копии. Битрикс24 пока не подключён.`,[home,[button('Мои задачи','tasks'),button('Сводки','reports')]]);
+ return screen(u,ch,`РУСПЭТ · ${u.role==='employee'?'Мои задачи':'Пульт руководителя'}\n${u.name}\n\n📥 Ждут вашего действия: ${actions}\n\nВсего доступно: ${s.total}\nПросрочены ранее: ${s.overdue}\nСрок сегодня: ${s.today}\nНа приёмке: ${s.review}\n\nНачните с «Ждут решения» — там ответы, приёмка и согласования. Откройте задачу, чтобы увидеть историю или отправить результат.\n\nПЭТ-преформы · крышки · упаковка\nБитрикс24 пока не подключён.`,[home,[button(u.role==='employee'?'Мои задачи':'Задачи команды','tasks')],...(u.role!=='employee'?[[button('📊 Сводка команды','brief'),button('📁 Отчёты','reports')]]:[])]);
 }
 export function parseMoscowInput(value:string){const match=value.match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2})$/);assert(match,400,'Введите дату в формате ДД.ММ.ГГГГ ЧЧ:ММ, время московское.');const [,d,m,y,h,min]=match,raw=`${y}-${m}-${d}T${h}:${min}:00+03:00`,date=new Date(raw);assert(!isNaN(date.getTime())&&new Date(date.getTime()+10800000).toISOString().slice(0,16)===`${y}-${m}-${d}T${h}:${min}`,400,'Такой даты или времени нет.');assert(date>new Date(),400,'Новый срок должен быть в будущем.');return date.toISOString();}
 async function prompt(u:User,ch:string,d:Dialog,db:Db){const f=d.fields[d.index];return screen(u,ch,`Задача #${d.payload.id}\nШаг ${d.index+1}/${d.fields.length}\n\n${f.label}\n${f.key==='deadline'?'Формат: ДД.ММ.ГГГГ ЧЧ:ММ · Москва':`Минимум ${f.min} символов. Можно указать ссылку на материалы.`}`,[[button('Отменить ввод','cancel')]],db)}
