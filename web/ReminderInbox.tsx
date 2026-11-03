@@ -1,0 +1,9 @@
+import {useEffect,useState} from 'react';
+import {api} from './api.js';
+type Alert={id:string;task_id:string|null;body:string;due_at:string;acknowledged_at:string|null;canceled_at:string|null;delivery_state:string|null};
+export function ReminderInbox({userId}:{userId:string}){
+ const [alerts,setAlerts]=useState<Alert[]>([]),[error,setError]=useState(''),[busy,setBusy]=useState(false);
+ async function refresh(){setAlerts(await api<Alert[]>('/alerts'));}
+ useEffect(()=>{let live=true;const load=()=>api<Alert[]>('/alerts').then(a=>{if(live)setAlerts(a)}).catch(e=>{if(live)setError(e.message)});void load();const timer=setInterval(load,30000);return()=>{live=false;clearInterval(timer)}},[userId]);
+ return <section className="panel reminder-inbox"><h2>Мои напоминания и подтверждения</h2>{error&&<p className="alert error" role="alert">{error}</p>}{alerts.length?alerts.map(a=><article key={a.id}><small>{new Date(a.due_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})} МСК</small><p>{a.body}</p>{!a.acknowledged_at&&!a.canceled_at&&<p className="muted">{a.delivery_state==='uncertain'?'Исход отправки в Telegram неизвестен. Автоповтор остановлен.':a.delivery_state==='sent'?'Telegram подтвердил отправку. Ожидается ваше ОК.':a.delivery_state==='failed'?'Telegram отклонил отправку.':'Пока нет подтверждения отправки в Telegram.'}</p>}{a.acknowledged_at?<strong>Подтверждено: {new Date(a.acknowledged_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})} МСК</strong>:a.canceled_at?<span className="muted">Напоминание отменено</span>:<button className="button primary" disabled={busy} onClick={async()=>{setBusy(true);setError('');try{await api('/alerts/'+a.id+'/ack','POST',{});await refresh();}catch(e){setError((e as Error).message)}finally{setBusy(false)}}}>ОК, увидел</button>}</article>):<p className="empty">Пока нет напоминаний. Расписание можно настроить внутри карточки задачи.</p>}</section>;
+}

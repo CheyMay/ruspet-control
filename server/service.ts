@@ -1,3 +1,4 @@
+import {parseWrittenRule} from '../shared/written-rules.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {reportAnalysis} from '../shared/reporting.js';
 import {plannedMinutesOn,plannedInterval} from '../shared/analytics.js';
@@ -8,13 +9,16 @@ import type { Task, User, Rules, Approval, ControlRequest, Step } from '../share
 import { assert, canAccess, canSee, canRequest, canManage, globalAccess, evaluate, metrics, moscowDay } from './domain.js';
 import { providers } from './providers.js';
 const adapters=providers();
+const planningFindings=new Set(['planned_overdue','missing_plan_start','missing_plan_end','negative_plan','long_plan','plan_after_deadline','plan_before_creation','child_plan','parent_unavailable','child_deadline','children_unavailable']);
 export async function event(db:Db,taskId:string|null,actor:string|null,kind:string,message:string,data:object={}) {
+ const after=(data as {after?:Task}).after;
+ if(taskId&&after?.version&&['created','task_edited','review_submitted','review_returned','task_completed','deadline_changed'].includes(kind))await db.query('INSERT INTO task_sync_queue(id,task_id,task_version,payload) VALUES($1,$2,$3,$4) ON CONFLICT(task_id,task_version) DO NOTHING',[randomUUID(),taskId,after.version,JSON.stringify({kind,after,context:Object.fromEntries(Object.entries(data).filter(([key])=>!['before','after'].includes(key)))})]);
  await db.query('INSERT INTO task_events(id,task_id,actor_id,kind,message,data) VALUES ($1,$2,$3,$4,$5,$6)',[randomUUID(),taskId,actor,kind,message,JSON.stringify(data)]);
 }
 export async function notify(db:Db,taskId:string|null,recipient:string,body:string,key:string) {
  await db.query('INSERT INTO outbox(id,task_id,recipient_id,body,dedupe_key) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),taskId,recipient,body,key]);
 }
-export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { return (await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0]; }
+export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{showPlanning:false,writtenRules:[],...row.config}}; }
 export async function visibleTasks(user:User,db:Db=pool):Promise<Task[]> { return (await db.query('SELECT * FROM tasks ORDER BY deadline ASC NULLS LAST,id')).rows.filter(t=>canSee(user,t)); }
 async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
  const task=(await db.query(`SELECT * FROM tasks WHERE id=$1${lock?' FOR UPDATE':''}`,[id])).rows[0];
@@ -26,14 +30,14 @@ export async function bootstrap(user:User) {
  const tasks=await visibleTasks(user,db), ids=tasks.map(t=>t.id), cfg=await config(db);
  const approvals=(await db.query('SELECT * FROM approvals WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const controls=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
- const users=(await db.query('SELECT * FROM users ORDER BY name')).rows.filter((u:User)=>globalAccess(user)||u.branch_id===user.branch_id||u.id===user.id||tasks.some(t=>t.creator_id===u.id)||approvals.some((a:Approval)=>a.route.some(s=>s.userId===u.id)));
+ const users=(await db.query('SELECT * FROM users ORDER BY name')).rows.filter((u:User)=>globalAccess(user)||u.branch_id===user.branch_id||u.id===user.id||tasks.some(t=>t.creator_id===u.id||t.assignee_id===u.id)||approvals.some((a:Approval)=>a.route.some(s=>s.userId===u.id)));
  const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
  const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
  return {selection,user,users,tasks,approvals,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
- findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows,
+ findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
  events:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
  notifications:(await db.query('SELECT * FROM outbox WHERE (recipient_id=$1 OR ($2 AND (task_id=ANY($3) OR (task_id IS NULL AND $4)))) AND (task_id IS NULL OR task_id=ANY($3)) ORDER BY created_at DESC LIMIT 150',[user.id,canManage(user),ids,globalAccess(user)])).rows,
- reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version FROM reports WHERE scope=$1 ORDER BY created_at DESC LIMIT 100',[scopeFor(user)])).rows};
+ reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version FROM reports WHERE scope=$1 AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[scopeFor(user),!!cfg.config.showPlanning])).rows};
  });
 }
 export async function detail(user:User,id:string) {
@@ -121,6 +125,7 @@ export async function decide(user:User,id:string,input:{decision:'approve'|'reje
    await db.query("UPDATE approvals SET state='stale' WHERE id=$1",[id]); await event(db,task.id,user.id,'approval_stale','Согласование остановлено: задача изменилась',{approvalId:id});
    return {state:'stale'};
   }
+  if(input.decision!=='later')assert(input.comment.trim().length>=5,400,'Комментарий к решению обязателен, минимум 5 символов.');
   await db.query('INSERT INTO decisions(id,approval_id,actor_id,step_index,decision,comment) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),id,user.id,a.current_step,input.decision,input.comment]);
   if(input.decision==='clarify') {
    assert(input.comment.trim().length>=5,400,'Напишите вопрос для автора запроса (не менее 5 символов).');
@@ -150,7 +155,7 @@ export async function decide(user:User,id:string,input:{decision:'approve'|'reje
    await adapters.tasks.applyApprovedChange(db,next,task.version);
    if(a.type==='completion')await db.query("UPDATE task_submissions SET state='accepted',reviewer_id=$2,remark=$3,decided_at=now() WHERE task_id=$1 AND state='review'",[task.id,user.id,input.comment||'Результат принят по маршруту согласования.']);
    await db.query("UPDATE approvals SET state='approved',deferred_until=NULL WHERE id=$1",[id]);
-   await event(db,task.id,user.id,a.type==='deadline'?'deadline_changed':'task_completed',a.type==='deadline'?'Перенос согласован, крайний срок изменён':'Закрытие согласовано, задача завершена',{approvalId:id,before:task,after:next,comment:input.comment});
+   await event(db,task.id,user.id,a.type==='deadline'?'deadline_changed':'task_completed',a.type==='deadline'?'Перенос согласован, крайний срок изменён':'Закрытие согласовано, задача завершена',{approvalId:id,before:task,after:next,comment:input.comment,reason:a.reason,plan:a.plan});
    // Re-evaluate the affected task in the same transaction; no stale violations in the UI.
    const cfg=await config(db), remaining=evaluate(next,cfg.config,new Date(),await visibleTasks(user,db));
    await db.query("UPDATE findings SET status='resolved' WHERE task_id=$1 AND NOT(rule=ANY($2))",[task.id,remaining.map(f=>f.rule)]);
@@ -220,16 +225,17 @@ export async function makeReport(user:User,kind='snapshot',slot='manual',capture
 export async function listReports(user:User,input:{kind?:string;from?:string;to?:string;page:number}){
  return transaction(async db=>{
   await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-  const args=[scopeFor(user),input.kind||null,input.from||null,input.to||null];
-  const condition='scope=$1 AND ($2::text IS NULL OR kind=$2) AND ($3::date IS NULL OR day>=$3) AND ($4::date IS NULL OR day<=$4)';
+  const args=[scopeFor(user),input.kind||null,input.from||null,input.to||null,!!(await config(db)).config.showPlanning];
+  const condition='scope=$1 AND ($2::text IS NULL OR kind=$2) AND ($3::date IS NULL OR day>=$3) AND ($4::date IS NULL OR day<=$4) AND ($5::boolean OR kind<>\'nextday\')';
   const total=Number((await db.query('SELECT count(*) n FROM reports WHERE '+condition,args)).rows[0].n);
-  const items=(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version FROM reports WHERE '+condition+' ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET $5',[...args,input.page*20])).rows;
+  const items=(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version FROM reports WHERE '+condition+' ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET $6',[...args,input.page*20])).rows;
   return {items,total,page:input.page,pageSize:20};
  });
 }
 export async function getReport(user:User,id:string){const report=(await pool.query('SELECT * FROM reports WHERE id=$1 AND scope=$2',[id,scopeFor(user)])).rows[0];assert(report,404,'Отчёт не найден или недоступен.');return report;}
 export async function saveRules(user:User,rules:Rules,expectedVersion:number) {
  assert(user.role==='admin',403,'Настройки меняет администратор.');
+ for(const rule of rules.writtenRules||[])assert(parseWrittenRule(rule.text),400,'Неизвестная формулировка письменного правила: выберите поддерживаемый шаблон.');
  return transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(431003)');const current=await config(db);assert(current.version===expectedVersion,409,'Настройки уже изменены. Обновите страницу.');const result=await db.query('INSERT INTO rule_versions(config,author_id) VALUES($1,$2) RETURNING version',[JSON.stringify(rules),user.id]);await event(db,null,user.id,'rules_changed','Обновлены правила контроля',{before:current.config,after:rules,version:result.rows[0].version});return result.rows[0];});
 }
 export async function simulateExternalChange(user:User,id:string,expectedVersion:number) {

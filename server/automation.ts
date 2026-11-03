@@ -1,7 +1,7 @@
 import {pool,transaction} from './db.js';
 import {assert} from './domain.js';
 import {businessDay} from '../shared/queues.js';
-import {runChecks,remind,makeReport,event} from './service.js';
+import {runChecks,remind,makeReport,event,config as taskRules} from './service.js';
 import type {User} from '../shared/types.js';
 import {nextRuns,jobLabel} from '../shared/schedule.js';
 export async function operationsStatus(){
@@ -26,7 +26,8 @@ export async function tick(now=new Date()){
   const batch=async(kinds:string[],slot:string)=>{const ids:string[]=[];for(const kind of kinds)ids.push((await makeReport(actor,kind,slot,now)).id);return ids;};
   const jobs:{key:string;run:()=>Promise<string[]>}[]=[{key:'initial:baseline',run:()=>batch(['snapshot'],'scheduled-initial')}];
   if(workday&&hhmm>=cfg.morning)jobs.push({key:`morning:${day}`,run:async()=>{await runChecks(actor,now);return batch(['snapshot','today','overdue','review'],'scheduled-morning');}});
-  if(workday&&hhmm>=cfg.evening)jobs.push({key:`evening:${day}`,run:()=>batch(['daily','nextday'],'scheduled-evening')});
+  const showPlanning=!!(await taskRules()).config.showPlanning;
+  if(workday&&hhmm>=cfg.evening)jobs.push({key:`evening:${day}`,run:()=>batch(showPlanning?['daily','nextday']:['daily'],'scheduled-evening')});
   if(workday&&hhmm>=cfg.morning&&hhmm<cfg.evening)jobs.push({key:`reminders:${day}:${Math.floor(now.getTime()/60000)}`,run:async()=>{await remind(actor);return [];}});
   for(const job of jobs){const previous=(await pool.query('SELECT * FROM job_runs WHERE job_key=$1',[job.key])).rows[0];
    // Holding the global lock proves an old 'running' record has no live worker.

@@ -1,3 +1,5 @@
+import {taskSyncStatus} from './task-sync.js';
+import {reminderInput,listTaskReminders,saveTaskReminder,disableTaskReminder,acknowledgeAlert,userAlerts} from './reminders.js';
 import {botView,botClick,botText,clearBotDraft} from './bot.js';
 import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
 import {printReport} from './report-print.js';
@@ -10,12 +12,12 @@ import { pool } from './db.js';
 import { AppError, assert } from './domain.js';
 import * as service from './service.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
-import {createTask,editTask,reviewTask} from './workflow.js';
+import {createTask,editTask,reviewTask,taskAssignees} from './workflow.js';
 import type { User } from '../shared/types.js';
 declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
 const selector=z.enum(['branchManager','salesHead','director','creator']);
-const rules=z.object({overdue:z.boolean(),missingDeadline:z.boolean(),plannedOverdue:z.boolean(),requiredFields:z.boolean(),code:z.boolean(),planning:z.boolean().optional(),responseMinLength:z.number().int().min(5).max(200),reminderMinutes:z.number().int().min(1).max(1440),maxReminders:z.number().int().min(0).max(10),routes:z.object({deadline:z.array(selector).min(1).max(4),completion:z.array(selector).min(1).max(4)})});
+const rules=z.object({showPlanning:z.boolean().optional(),writtenRules:z.array(z.object({text:z.string().trim().min(1).max(500),severity:z.enum(['critical','warning','info'])})).max(30).optional(),overdue:z.boolean(),missingDeadline:z.boolean(),plannedOverdue:z.boolean(),requiredFields:z.boolean(),code:z.boolean(),planning:z.boolean().optional(),responseMinLength:z.number().int().min(5).max(200),reminderMinutes:z.number().int().min(1).max(1440),maxReminders:z.number().int().min(0).max(10),routes:z.object({deadline:z.array(selector).min(1).max(4),completion:z.array(selector).min(1).max(4)})});
 const taskInput=z.object({title:z.string().trim().min(3).max(500),description:z.string().trim().max(10000),assigneeId:text,deadline:date.nullable(),plannedStart:date.nullable(),plannedEnd:date.nullable(),important:z.boolean().nullable(),customerRisk:z.boolean().nullable(),parentId:z.string().trim().max(100).nullable()});
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 export function createApp() {
@@ -48,17 +50,24 @@ export function createApp() {
  app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
  app.use('/api',async(req,_res,next)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=(await pool.query('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()',[hash(token)])).rows[0];assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
  app.get('/api/bootstrap',async(req,res)=>res.json(await service.bootstrap(req.actor)));
+ app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
+ app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));
+ app.post('/api/alerts/:id/ack',async(req,res)=>res.json(await acknowledgeAlert(req.actor,String(req.params.id))));
+ app.get('/api/tasks/:id/assignees',async(req,res)=>res.json(await taskAssignees(req.actor,String(req.params.id))));
+ app.get('/api/tasks/:id/reminders',async(req,res)=>res.json(await listTaskReminders(req.actor,String(req.params.id))));
+ app.post('/api/tasks/:id/reminders',async(req,res)=>res.status(201).json(await saveTaskReminder(req.actor,String(req.params.id),reminderInput.parse(req.body))));
+ app.delete('/api/reminders/:id',async(req,res)=>res.json(await disableTaskReminder(req.actor,String(req.params.id))));
  app.get('/api/operations',async(req,res)=>{assert(req.actor.role!=='employee',403,'Расписание доступно руководителю.');res.json(await operationsStatus());});
  app.put('/api/operations',async(req,res)=>{const time=z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);await saveAutomation(req.actor,z.object({enabled:z.boolean(),morning:time,evening:time}).parse(req.body));await tick();res.json({ok:true});});
  app.post('/api/operations/retry',async(req,res)=>{await retryJob(req.actor,z.object({key:text}).parse(req.body).key);await tick();res.json({ok:true});});
- app.get('/api/telegram/status',async(req,res)=>{assert(req.actor.role==='admin',403,'Подключение доступно администратору.');res.json(await pilotStatus());});
- app.post('/api/telegram/pairing',async(req,res)=>res.json(await pairPilot(req.actor)));
+ app.get('/api/telegram/status',async(req,res)=>{res.json(await pilotStatus(req.actor));});
+ app.post('/api/telegram/pairing',async(req,res)=>res.json(await pairPilot(req.actor,z.object({userId:z.string().max(100).optional()}).parse(req.body||{}).userId)));
  app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean()}).parse(req.body));res.json({ok:true})});
  app.post('/api/bot/screen',async(req,res)=>{await clearBotDraft(req.actor,'preview');res.json(await botView(req.actor,'preview'))});
  app.post('/api/bot/click',async(req,res)=>res.json(await botClick(req.actor,'preview',z.object({token:z.string().max(64)}).parse(req.body).token)));
  app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,'preview',input.text,input.inputId))});
  app.post('/api/tasks',async(req,res)=>res.status(201).json(await createTask(req.actor,taskInput.parse(req.body))));
- app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion));});
+ app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));});
  app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});
  app.get('/api/tasks/:id',async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));
  app.post('/api/tasks/:id/comments',async(req,res)=>{await service.addComment(req.actor,String(req.params.id),z.object({body:text}).parse(req.body).body);res.json({ok:true});});
