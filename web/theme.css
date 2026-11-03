@@ -1,0 +1,101 @@
+:root { color-scheme: light; }
+:root[data-theme="dark"] {
+ color-scheme: dark;
+ --theme-surface: #1b2621;
+ --theme-surface-soft: #19231e;
+ --theme-surface-raised: #283a30;
+ --theme-text: #e5eee8;
+ --theme-text-secondary: #bfcec3;
+ --theme-text-muted: #9eb2a5;
+ --theme-on-accent: #f3faf5;
+ --theme-border: #35473c;
+ --theme-border-strong: #648571;
+ --theme-accent: #90c8a4;
+ --theme-accent-solid: #345f49;
+ --theme-danger: #f0a094;
+ --theme-danger-surface: #3c2926;
+ --theme-warning: #e3c17d;
+ --theme-warning-surface: #383223;
+ --theme-info: #a1bedf;
+ --theme-info-surface: #273442;
+ --theme-focus: #a7d6b8;
+ --theme-overlay: #050c09b8;
+ --theme-shadow: #00000045;
+ color: var(--theme-text);
+ background: #141c19;
+}
+[data-theme="dark"] body { background: #141c19; }
+[data-theme="dark"] :is(input,select,textarea,option,optgroup) {
+ background-color: #17211b;
+ color: var(--theme-text);
+ border-color: var(--theme-border);
+ accent-color: var(--theme-accent);
+}
+[data-theme="dark"] input::placeholder,
+[data-theme="dark"] textarea::placeholder { color: #93a69a; opacity: 1; }
+[data-theme="dark"] :is(input,textarea):autofill {
+ box-shadow: 0 0 0 100px #23392b inset;
+ -webkit-text-fill-color: var(--theme-text);
+}
+[data-theme="dark"] :is(.button.primary,.toast) { color: #f3faf5; }
+[data-theme="dark"] .button.primary:hover { background: #426f55; }
+[data-theme="dark"] .button.secondary:hover { background: #304638; }
+[data-theme="dark"] :is(.sidebar nav button.active,.tabs button.selected,.text-button,.number-link) { color: var(--theme-accent); }
+[data-theme="dark"] .sidebar nav button.active { background: #2a4032; }
+[data-theme="dark"] .cap-mark { color: #b9dec7; background: #285347; }
+[data-theme="dark"] .workspace-mark .cap-mark { background: transparent; }
+[data-theme="dark"] .cap-mark svg { color: inherit; }
+[data-theme="dark"] .queue-card { border-color: var(--theme-border) !important; }
+[data-theme="dark"] .queue-card:hover { border-color: #7ca98b !important; }
+[data-theme="dark"] .red-text { color: var(--theme-danger) !important; }
+[data-theme="dark"] .badge { border-color: transparent; }
+[data-theme="dark"] .badge:is(.completed,.approved,.answered,.resolved) { background: #283d2c; color: #add29f; }
+[data-theme="dark"] .badge:is(.active,.sent) { background: #263e36; color: #a4d3bb; }
+[data-theme="dark"] ::selection { background: #486e54; color: #fff; }
+[data-theme="dark"] * { scrollbar-color: #536a5b #19231e; }
+
+.theme-toggle {
+ display: inline-flex;
+ align-items: center;
+ justify-content: center;
+ flex: 0 0 auto;
+ width: 42px;
+ height: 42px;
+ padding: 0;
+ border: 1px solid #dce4dd;
+ border-radius: 11px;
+ background: #f2f5f1;
+ transition: background .15s, border-color .15s;
+}
+.theme-toggle:hover { background: #e5ede5; border-color: #a4b9aa; }
+.theme-cap { width: 38px; height: 38px; transition: transform .18s ease; }
+.theme-toggle:hover .theme-cap { transform: rotate(-10deg) translateY(-1px); }
+.theme-toggle:active .theme-cap { transform: rotate(5deg); }
+.dark-cap {
+ --cap-body-start: #53665b; --cap-body-mid: #293b31; --cap-body-end: #17261e;
+ --cap-top-start: #718477; --cap-top-end: #31483a;
+ --cap-edge: #182c20; --cap-ridge: #7e9483; --cap-highlight: #a8b9aa; --cap-shadow: #1e32222b;
+}
+.light-cap {
+ --cap-body-start: #f3f0dc; --cap-body-mid: #d9ddca; --cap-body-end: #9ba99a;
+ --cap-top-start: #fffdf0; --cap-top-end: #d7e0cc;
+ --cap-edge: #7b907d; --cap-ridge: #f7fae9; --cap-highlight: #ffffff; --cap-shadow: #00000038;
+}
+[data-theme="dark"] .theme-toggle { background: #29392e; border-color: #4b6453; }
+[data-theme="dark"] .theme-toggle:hover { background: #354c3d; border-color: #8cad95; }
+.login-brand { display: flex; justify-content: space-between; align-items: center; }
+@media (max-width:650px) {
+ .theme-toggle { width: 34px; height: 34px; border-radius: 9px; }
+ .theme-cap { width: 32px; height: 32px; }
+ .topbar-right { gap: 6px; }
+ .user-switch > div { min-width: 0; }
+ .user-switch strong { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+@media (prefers-reduced-motion:reduce) {
+ .theme-cap { transition: none; }
+ .theme-toggle:hover .theme-cap,.theme-toggle:active .theme-cap { transform: none; }
+}
+@media print {
+ :root[data-theme="dark"] { color-scheme: light; }
+ .theme-toggle { display: none; }
+}
