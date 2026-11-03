@@ -600,3 +600,14 @@ test('concurrent undo applies once and a changed parent hierarchy cannot be rest
  await request('director',`/tasks/${parent}`,{...taskInput,parentId:child,reason:'Новая родительская связь',expectedVersion:1},'PUT');
  assert.equal((await request('admin','/undo',{id:edit.id,confirmed:true})).status,409);
 });
+
+test('a malformed bridge response is uncertain delivery rather than definite Telegram rejection',async()=>{
+ const {deliver}=await import('../server/telegram-pilot.js'),saved=globalThis.fetch,previous=process.env.TELEGRAM_BOT_TOKEN;process.env.TELEGRAM_BOT_TOKEN='TEST_TOKEN';
+ const id=(await request('admin','/tasks',taskInput)).data.id,alert=crypto.randomUUID();
+ await db.pool.query('UPDATE telegram_settings SET enabled=true,delivery=true,enabled_at=now()');
+ await db.pool.query("INSERT INTO telegram_binding(chat_id,user_id) VALUES('903','anna') ON CONFLICT(user_id) DO UPDATE SET paired_at=now()");
+ await db.pool.query("INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,kind,body,due_at,expires_at) VALUES($1,$3,'anna',$2,'task','Тест недостоверного ответа',now(),now()+interval '1 hour')",[alert,id,'malformed:'+alert]);
+ globalThis.fetch=async()=>new Response(JSON.stringify({proxy_error:true}),{status:502});
+ try{await deliver(new Date());const delivery=(await db.pool.query('SELECT state FROM task_alert_deliveries WHERE alert_id=$1',[alert])).rows[0];assert.equal(delivery.state,'uncertain');}
+ finally{globalThis.fetch=saved;if(previous===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previous;await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');}
+});
