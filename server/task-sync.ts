@@ -10,7 +10,7 @@ export async function processTaskSync(adapter:TaskSyncAdapter,now=new Date(),lim
  try{
   acquired=(await lock.query('SELECT pg_try_advisory_lock(431015) ok')).rows[0].ok;if(!acquired)return {sent};
   for(let i=0;i<Math.min(10,Math.max(0,limit));i++){
-   const row=(await pool.query("SELECT q.* FROM task_sync_queue q WHERE state<>'sent' AND (retry_at IS NULL OR retry_at<=$1) AND NOT EXISTS(SELECT 1 FROM task_sync_queue older WHERE older.task_id=q.task_id AND older.task_version<q.task_version AND older.state<>'sent') ORDER BY created_at,id LIMIT 1",[now.toISOString()])).rows[0];if(!row)break;
+   const row=(await pool.query("SELECT q.* FROM task_sync_queue q WHERE state NOT IN ('sent','canceled') AND (retry_at IS NULL OR retry_at<=$1) AND NOT EXISTS(SELECT 1 FROM task_sync_queue older WHERE older.task_id=q.task_id AND older.task_version<q.task_version AND older.state NOT IN ('sent','canceled')) ORDER BY created_at,id LIMIT 1",[now.toISOString()])).rows[0];if(!row)break;
    const wait=1000-(Date.now()-lastAttempt);if(wait>0)await new Promise(resolve=>setTimeout(resolve,wait));lastAttempt=Date.now();
    try{await adapter({operationKey:row.id,taskId:row.task_id,version:row.task_version,payload:row.payload});await pool.query("UPDATE task_sync_queue SET state='sent',attempts=attempts+1,retry_at=NULL WHERE id=$1",[row.id]);sent++;}
    catch{await pool.query("UPDATE task_sync_queue SET state='failed',attempts=attempts+1,retry_at=$2 WHERE id=$1",[row.id,new Date(now.getTime()+Math.min(3600000,30000*2**Math.min(row.attempts,7))).toISOString()]);}

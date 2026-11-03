@@ -56,7 +56,8 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   const fronts=(await db.query('SELECT * FROM work_fronts WHERE user_id=ANY($1) AND day=$2 AND captured_at<=$3',[owners,day,to.toISOString()])).rows.map((f:FrontSnapshot)=>({...f,rows:f.rows.filter(t=>canSee(u,t))}));
   const selectedQueue=p.queue?p.queue:['today','overdue','review'].includes(kind)?kind:'all';
   const queueMatches=(t:Task)=>selectedQueue==='all'||selectedQueue==='today'&&!!t.deadline&&moscowDay(t.deadline)===day||selectedQueue==='overdue'&&!!t.deadline&&new Date(t.deadline)<to||selectedQueue==='review'&&t.status==='review'||selectedQueue==='completed'&&t.status==='completed'||selectedQueue==='no_deadline'&&!t.deadline||selectedQueue==='front'&&t.status!=='completed'&&frontTasks([t],day).length>0;
-  const inRange=history.filter(e=>Date.parse(e.created_at)>=from.getTime()&&Date.parse(e.created_at)<=to.getTime()).filter(e=>{
+  const retracted=new Set((await db.query('SELECT r.event_id FROM event_retractions r JOIN task_events e ON e.id=r.event_id WHERE e.task_id=ANY($1) AND r.created_at<=$2',[allowedIds,to.toISOString()])).rows.map(r=>r.event_id));
+  const inRange=history.filter(e=>!retracted.has(e.id)).filter(e=>Date.parse(e.created_at)>=from.getTime()&&Date.parse(e.created_at)<=to.getTime()).filter(e=>{
    const t=(e.data.after||e.data.before) as Task|undefined;const snapshot=t?.id? t:atTime(e.task_id!,new Date(e.created_at));const before=e.data.before as Task|undefined;return (!p.actorId||e.actor_id===p.actorId)&&!!snapshot&&matchesParameters(snapshot,{...p,queue:'all'},to)&&(queueMatches(snapshot)||!!before&&queueMatches(before));
   });
   const closedIds=new Set(inRange.filter(e=>e.kind==='task_completed').map(e=>e.task_id));

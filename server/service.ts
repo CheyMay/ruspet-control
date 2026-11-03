@@ -1,3 +1,4 @@
+import {recordTaskAction} from './undo-record.js';
 import {generateReport} from './reports-v5.js';
 import type {ReportParameters} from '../shared/report-parameters.js';
 import {parseWrittenRule} from '../shared/written-rules.js';
@@ -14,7 +15,7 @@ const adapters=providers();
 const planningFindings=new Set(['planned_overdue','missing_plan_start','missing_plan_end','negative_plan','long_plan','plan_after_deadline','plan_before_creation','child_plan','parent_unavailable','child_deadline','children_unavailable']);
 export async function event(db:Db,taskId:string|null,actor:string|null,kind:string,message:string,data:object={}) {
  const after=(data as {after?:Task}).after;
- if(taskId&&after?.version&&['created','task_edited','review_submitted','review_returned','task_completed','deadline_changed'].includes(kind))await db.query('INSERT INTO task_sync_queue(id,task_id,task_version,payload) VALUES($1,$2,$3,$4) ON CONFLICT(task_id,task_version) DO NOTHING',[randomUUID(),taskId,after.version,JSON.stringify({kind,after,context:Object.fromEntries(Object.entries(data).filter(([key])=>!['before','after'].includes(key)))})]);
+ if(taskId&&after?.version&&['created','task_edited','review_submitted','review_returned','task_completed','deadline_changed','action_undone'].includes(kind))await db.query('INSERT INTO task_sync_queue(id,task_id,task_version,payload) VALUES($1,$2,$3,$4) ON CONFLICT(task_id,task_version) DO NOTHING',[randomUUID(),taskId,after.version,JSON.stringify({kind,after,context:Object.fromEntries(Object.entries(data).filter(([key])=>!['before','after'].includes(key)))})]);
  await db.query('INSERT INTO task_events(id,task_id,actor_id,kind,message,data) VALUES ($1,$2,$3,$4,$5,$6)',[randomUUID(),taskId,actor,kind,message,JSON.stringify(data)]);
 }
 export async function notify(db:Db,taskId:string|null,recipient:string,body:string,key:string) {
@@ -26,28 +27,37 @@ async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
  const task=(await db.query(`SELECT * FROM tasks WHERE id=$1${lock?' FOR UPDATE':''}`,[id])).rows[0];
  assert(task && canSee(user,task),404,'Задача не найдена или недоступна.'); return task;
 }
-export async function bootstrap(user:User) {
+export async function bootstrap(user:User,light=false) {
  return transaction(async db=>{
  await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
  const tasks=await visibleTasks(user,db), ids=tasks.map(t=>t.id), cfg=await config(db);
  const approvals=(await db.query('SELECT * FROM approvals WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const controls=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const users=(await db.query('SELECT * FROM users ORDER BY name')).rows.filter((u:User)=>globalAccess(user)||u.branch_id===user.branch_id||u.id===user.id||tasks.some(t=>t.creator_id===u.id||t.assignee_id===u.id)||approvals.some((a:Approval)=>a.route.some(s=>s.userId===u.id)));
+ if(light)return {user,users,tasks,approvals,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
  const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
  const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
- return {selection,user,users,tasks,approvals,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
+ return {selection,user,users,tasks,approvals,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
  events:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
- notifications:(await db.query('SELECT * FROM outbox WHERE (recipient_id=$1 OR ($2 AND (task_id=ANY($3) OR (task_id IS NULL AND $4)))) AND (task_id IS NULL OR task_id=ANY($3)) ORDER BY created_at DESC LIMIT 150',[user.id,canManage(user),ids,globalAccess(user)])).rows,
+ notifications:(await db.query('SELECT * FROM outbox WHERE withdrawn_at IS NULL AND (recipient_id=$1 OR ($2 AND (task_id=ANY($3) OR (task_id IS NULL AND $4)))) AND (task_id IS NULL OR task_id=ANY($3)) ORDER BY created_at DESC LIMIT 150',[user.id,canManage(user),ids,globalAccess(user)])).rows,
  reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=$1 AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[scopeFor(user),!!cfg.config.showPlanning])).rows};
  });
 }
 export async function detail(user:User,id:string) {
  const task=await taskFor(pool,id,user);
- return {task,submissions:(await pool.query('SELECT * FROM task_submissions WHERE task_id=$1 ORDER BY round DESC',[id])).rows,comments:(await pool.query('SELECT * FROM comments WHERE task_id=$1 ORDER BY created_at',[id])).rows,events:(await pool.query('SELECT * FROM task_events WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,approvals:(await pool.query('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,decisions:(await pool.query('SELECT d.* FROM decisions d JOIN approvals a ON a.id=d.approval_id WHERE a.task_id=$1 ORDER BY d.created_at',[id])).rows,controls:(await pool.query('SELECT * FROM control_requests WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows};
+ return {task,submissions:(await pool.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,comments:(await pool.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,events:(await pool.query('SELECT * FROM task_events WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,approvals:(await pool.query('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,decisions:(await pool.query('SELECT d.*,EXISTS(SELECT 1 FROM decision_retractions r WHERE r.decision_id=d.id) retracted FROM decisions d JOIN approvals a ON a.id=d.approval_id WHERE a.task_id=$1 ORDER BY d.created_at',[id])).rows,controls:(await pool.query('SELECT * FROM control_requests WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows};
 }
-export async function addComment(user:User,id:string,body:string) {
- return transaction(async db=>{ await taskFor(db,id,user); await db.query('INSERT INTO comments(id,task_id,author_id,body) VALUES($1,$2,$3,$4)',[randomUUID(),id,user.id,body]); await event(db,id,user.id,'comment','Добавлен комментарий',{body}); });
+async function addCommentCore(user:User,id:string,body:string,approvalId?:string) {
+ return transaction(async db=>{
+  const task=await taskFor(db,id,user,true);
+  const approval=approvalId?(await db.query('SELECT * FROM approvals WHERE id=$1 AND task_id=$2',[approvalId,id])).rows[0]:null;
+  assert(!approvalId||approval,404,'Согласование не найдено для этой задачи.');
+  await db.query('INSERT INTO comments(id,task_id,author_id,body,approval_id) VALUES($1,$2,$3,$4,$5)',[randomUUID(),id,user.id,body,approvalId||null]);
+  await event(db,id,user.id,'comment',approval?'Сообщение в обсуждении согласования':'Добавлен комментарий',{body,approvalId:approvalId||null});
+  const recipients=approval?[approval.requester_id,approval.route[approval.current_step]?.userId]:[task.assignee_id,task.creator_id];
+  const key=randomUUID();for(const recipient of new Set(recipients.filter(Boolean)))if(recipient!==user.id)await notify(db,id,recipient,`${user.name} · #${id}${approval?' · обсуждение согласования':''}: ${body}`,`comment:${key}:${recipient}`);
+ });
 }
 export async function refreshTaskFindings(db:Db,task:Task,user:User){
  const findings=evaluate(task,(await config(db)).config,new Date(),await visibleTasks(user,db));
@@ -76,7 +86,7 @@ export async function runChecks(user:User,now=new Date()) {
   await adapters.telegram.dispatch(db); return {found};
  });
 }
-export async function answerControl(user:User,id:string,input:{reason:string;progress:string;plan:string}) {
+async function answerControlCore(user:User,id:string,input:{reason:string;progress:string;plan:string}) {
  return transaction(async db=>{
   const control=(await db.query('SELECT * FROM control_requests WHERE id=$1 FOR UPDATE',[id])).rows[0] as ControlRequest;
   assert(control,404,'Запрос не найден.'); const task=await taskFor(db,control.task_id,user);
@@ -97,7 +107,7 @@ async function routeFor(db:Db,task:Task,selectors:Rules['routes']['deadline']):P
   assert(u,422,`Не назначен согласующий: ${labels[selector]}`); return {userId:u.id,label:labels[selector]};
  });
 }
-export async function requestApproval(user:User,id:string,input:{type:'deadline'|'completion';reason:string;plan:string;proposedDeadline?:string;expectedVersion:number}) {
+async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'completion';reason:string;plan:string;proposedDeadline?:string;expectedVersion:number}) {
  return transaction(async db=>{
   const task=await taskFor(db,id,user,true); assert(canRequest(user,task),403,'У вас нет права запрашивать изменение.');
   assert(task.version===input.expectedVersion,409,'Задача изменилась. Обновите карточку.');
@@ -114,11 +124,12 @@ export async function requestApproval(user:User,id:string,input:{type:'deadline'
   return {id:approvalId};
  });
 }
-export async function decide(user:User,id:string,input:{decision:'approve'|'reject'|'later'|'clarify';comment:string;expectedStep?:number;remindMinutes?:number}) {
+async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'|'later'|'clarify';comment:string;expectedStep?:number;expectedRevision?:number;remindMinutes?:number}) {
  return transaction(async db=>{
   const first=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[id])).rows[0]; assert(first,404,'Согласование не найдено.');
   const task=await taskFor(db,first.task_id,user,true);
   const a=(await db.query('SELECT * FROM approvals WHERE id=$1 FOR UPDATE',[id])).rows[0] as Approval;
+  assert(input.expectedRevision===undefined?a.action_revision===1:input.expectedRevision===a.action_revision,409,'Согласование изменилось после отмены. Откройте актуальную карточку.');
   assert(input.expectedStep===undefined||input.expectedStep===a.current_step,409,'Этот этап уже завершён. Откройте актуальное решение.');
   assert(a.state==='pending',409,'Решение уже принято или запрос устарел.');
   assert(a.route[a.current_step].userId===user.id,403,'Сейчас решение принимает другой согласующий.');
@@ -132,7 +143,7 @@ export async function decide(user:User,id:string,input:{decision:'approve'|'reje
   if(input.decision==='clarify') {
    assert(input.comment.trim().length>=5,400,'Напишите вопрос для автора запроса (не менее 5 символов).');
    await db.query('UPDATE approvals SET clarification_question=$2,clarification_answer=NULL,clarification_requested_at=now(),clarification_answered_at=NULL,deferred_until=NULL WHERE id=$1',[id,input.comment]);
-   await db.query("INSERT INTO comments(id,task_id,author_id,body,kind) VALUES($1,$2,$3,$4,'clarification')",[randomUUID(),task.id,user.id,`Уточнение по согласованию: ${input.comment}`]);
+   await db.query("INSERT INTO comments(id,task_id,author_id,body,kind,approval_id) VALUES($1,$2,$3,$4,'clarification',$5)",[randomUUID(),task.id,user.id,`Уточнение по согласованию: ${input.comment}`,id]);
    await event(db,task.id,user.id,'approval_clarification_requested','Согласующий запросил уточнение',{approvalId:id,question:input.comment});
    await notify(db,task.id,a.requester_id,`По задаче #${task.id} нужен ответ: ${input.comment}`,`clarify:${id}:${Date.now()}`);
    await adapters.telegram.dispatch(db);return {state:'pending',clarification:'requested'};
@@ -155,7 +166,7 @@ export async function decide(user:User,id:string,input:{decision:'approve'|'reje
     (await db.query('UPDATE tasks SET deadline=$2,transfer_count=transfer_count+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[task.id,a.proposed_deadline])).rows[0]:
     (await db.query("UPDATE tasks SET status='completed',completed_at=now(),version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[task.id])).rows[0];
    await adapters.tasks.applyApprovedChange(db,next,task.version);
-   if(a.type==='completion')await db.query("UPDATE task_submissions SET state='accepted',reviewer_id=$2,remark=$3,decided_at=now() WHERE task_id=$1 AND state='review'",[task.id,user.id,input.comment||'Результат принят по маршруту согласования.']);
+   if(a.type==='completion')await db.query("UPDATE task_submissions SET state='accepted',reviewer_id=$2,remark=$3,decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[task.id,user.id,input.comment||'Результат принят по маршруту согласования.']);
    await db.query("UPDATE approvals SET state='approved',deferred_until=NULL WHERE id=$1",[id]);
    await event(db,task.id,user.id,a.type==='deadline'?'deadline_changed':'task_completed',a.type==='deadline'?'Перенос согласован, крайний срок изменён':'Закрытие согласовано, задача завершена',{approvalId:id,before:task,after:next,comment:input.comment,reason:a.reason,plan:a.plan});
    // Re-evaluate the affected task in the same transaction; no stale violations in the UI.
@@ -167,7 +178,7 @@ export async function decide(user:User,id:string,input:{decision:'approve'|'reje
   await adapters.telegram.dispatch(db); return {state:input.decision==='reject'?'rejected':a.current_step===a.route.length-1?'approved':'pending'};
  });
 }
-export async function answerClarification(user:User,id:string,answer:string){
+async function answerClarificationCore(user:User,id:string,answer:string){
  return transaction(async db=>{
   const found=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[id])).rows[0];assert(found,404,'Согласование не найдено.');
   await taskFor(db,found.task_id,user);
@@ -175,7 +186,7 @@ export async function answerClarification(user:User,id:string,answer:string){
   assert(a.requester_id===user.id,403,'Ответить может автор запроса.');
   assert(a.state==='pending'&&a.clarification_requested_at&&!a.clarification_answered_at,409,'Здесь не ожидается уточнение.');
   await db.query('UPDATE approvals SET clarification_answer=$2,clarification_answered_at=now() WHERE id=$1',[id,answer]);
-  await db.query("INSERT INTO comments(id,task_id,author_id,body,kind) VALUES($1,$2,$3,$4,'clarification')",[randomUUID(),a.task_id,user.id,`Ответ на уточнение: ${answer}`]);
+  await db.query("INSERT INTO comments(id,task_id,author_id,body,kind,approval_id) VALUES($1,$2,$3,$4,'clarification',$5)",[randomUUID(),a.task_id,user.id,`Ответ на уточнение: ${answer}`,id]);
   await event(db,a.task_id,user.id,'approval_clarification_answered','Автор запроса ответил на уточнение',{approvalId:id,answer});
   await notify(db,a.task_id,a.route[a.current_step].userId,`Получен ответ по задаче #${a.task_id}: ${answer}`,`clarification-answer:${id}:${Date.now()}`);
   await adapters.telegram.dispatch(db);return {state:'pending',clarification:'answered'};
@@ -185,16 +196,17 @@ export async function remind(user:User,now=new Date()) {
  assert(canManage(user),403,'Недостаточно прав.');
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(431002)'); const cfg=await config(db), ids=(await visibleTasks(user,db)).map(t=>t.id); let count=0;
-  const controls=(await db.query("SELECT * FROM control_requests WHERE task_id=ANY($1) AND state='waiting' AND due_at<=$2 FOR UPDATE",[ids,now])).rows as ControlRequest[];
-  for(const c of controls) {
-   const task=await taskFor(db,c.task_id,user); const escalated=c.reminders>=cfg.config.maxReminders;
+  const controls=(await db.query("SELECT * FROM control_requests WHERE task_id=ANY($1) AND state='waiting' AND due_at<=$2",[ids,now])).rows as ControlRequest[];
+  for(const candidate of controls) {
+   const task=await taskFor(db,candidate.task_id,user,true);
+   const c=(await db.query("SELECT * FROM control_requests WHERE id=$1 AND state='waiting' AND due_at<=$2 FOR UPDATE",[candidate.id,now])).rows[0] as ControlRequest|undefined;if(!c)continue; const escalated=c.reminders>=cfg.config.maxReminders;
    const recipient=escalated?(await routeFor(db,task,['branchManager']))[0].userId:c.assignee_id;
    await notify(db,c.task_id,recipient,`${escalated?'Эскалация руководителю':'Напоминание'}: нет объяснения по задаче #${c.task_id}`,`remind:${c.id}:${c.reminders}`);
    await db.query("UPDATE control_requests SET state=$2,reminders=reminders+1,due_at=$3 WHERE id=$1",[c.id,escalated?'escalated':'waiting',new Date(now.getTime()+cfg.config.reminderMinutes*60000)]);
    await event(db,c.task_id,user.id,escalated?'escalated':'reminder',escalated?'Отсутствие ответа передано руководителю':'Отправлено тестовое напоминание');count++;
   }
-  const postponed=(await db.query("SELECT * FROM approvals WHERE task_id=ANY($1) AND state='pending' AND deferred_until<=$2 FOR UPDATE",[ids,now])).rows as Approval[];
-  for(const a of postponed){await notify(db,a.task_id,a.route[a.current_step].userId,`Вы отложили решение по задаче #${a.task_id}. Вернитесь к согласованию.`,`defer:${a.id}:${a.deferred_until}`);await db.query('UPDATE approvals SET deferred_until=NULL WHERE id=$1',[a.id]);count++;}
+  const postponed=(await db.query("SELECT * FROM approvals WHERE task_id=ANY($1) AND state='pending' AND deferred_until<=$2",[ids,now])).rows as Approval[];
+  for(const candidate of postponed){await taskFor(db,candidate.task_id,user,true);const a=(await db.query("SELECT * FROM approvals WHERE id=$1 AND state='pending' AND deferred_until<=$2 FOR UPDATE",[candidate.id,now])).rows[0] as Approval|undefined;if(!a)continue;await notify(db,a.task_id,a.route[a.current_step].userId,`Вы отложили решение по задаче #${a.task_id}. Вернитесь к согласованию.`,`defer:${a.id}:${a.deferred_until}`);await db.query('UPDATE approvals SET deferred_until=NULL WHERE id=$1',[a.id]);count++;}
   await adapters.telegram.dispatch(db);return {count};
  });
 }
@@ -220,3 +232,13 @@ export async function simulateExternalChange(user:User,id:string,expectedVersion
  assert(user.role==='admin',403,'Только администратор может изменять тестовый источник.');
  return transaction(async db=>{const before=await taskFor(db,id,user,true);assert(before.version===expectedVersion,409,'Задача изменилась.');const after=(await db.query("UPDATE tasks SET description=description || E'\nУточнение из тестового источника.',version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[id])).rows[0];await adapters.tasks.applyApprovedChange(db,after,before.version);await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[id]);await event(db,id,user.id,'external_change','Изменение из mock-источника; активный запрос требует повторного согласования',{before,after});});
 }
+
+export async function addComment(...args:Parameters<typeof addCommentCore>){const taskId=args[1];return recordTaskAction(args[0],taskId,'Комментарий',()=>addCommentCore(...args));}
+
+export async function answerControl(...args:Parameters<typeof answerControlCore>){const taskId=(await pool.query('SELECT task_id FROM control_requests WHERE id=$1',[args[1]])).rows[0]?.task_id;if(!taskId)return answerControlCore(...args);return recordTaskAction(args[0],taskId,'Ответ на запрос контроля',()=>answerControlCore(...args));}
+
+export async function requestApproval(...args:Parameters<typeof requestApprovalCore>){const taskId=args[1];return recordTaskAction(args[0],taskId,'Запрос согласования',()=>requestApprovalCore(...args));}
+
+export async function decide(...args:Parameters<typeof decideCore>){const taskId=(await pool.query('SELECT task_id FROM approvals WHERE id=$1',[args[1]])).rows[0]?.task_id;if(!taskId)return decideCore(...args);return recordTaskAction(args[0],taskId,'Решение по согласованию',()=>decideCore(...args));}
+
+export async function answerClarification(...args:Parameters<typeof answerClarificationCore>){const taskId=(await pool.query('SELECT task_id FROM approvals WHERE id=$1',[args[1]])).rows[0]?.task_id;if(!taskId)return answerClarificationCore(...args);return recordTaskAction(args[0],taskId,'Ответ на уточнение',()=>answerClarificationCore(...args));}

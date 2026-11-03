@@ -1,4 +1,7 @@
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
+import {managementProgress,resetObservation,setNudgePreference,nudgeTeam} from './management.js';
+import {lastUndo,undoLastAction} from './undo.js';
+import {listJournal} from './journal.js';
 import {reportPdf} from './report-pdf.js';
 import {taskSyncStatus} from './task-sync.js';
 import {reminderInput,listTaskReminders,saveTaskReminder,disableTaskReminder,acknowledgeAlert,userAlerts} from './reminders.js';
@@ -53,6 +56,13 @@ export function createApp() {
  app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
  app.use('/api',async(req,_res,next)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=(await pool.query('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()',[hash(token)])).rows[0];assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
  app.get('/api/bootstrap',async(req,res)=>res.json(await service.bootstrap(req.actor)));
+ app.get('/api/undo/last',async(req,res)=>res.json(await lastUndo(req.actor)));
+ app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
+ app.post('/api/undo',async(req,res)=>{const input=z.object({id:z.uuid(),confirmed:z.literal(true)}).parse(req.body);res.json(await undoLastAction(req.actor,input.id));});
+ app.get('/api/management/progress',async(req,res)=>res.json(await managementProgress(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),owner:z.string().max(100).optional()}).parse(req.query))));
+ app.post('/api/management/observation',async(req,res)=>{const input=z.object({confirmed:z.literal(true),expected:z.iso.datetime({offset:true}).nullable()}).parse(req.body);res.json(await resetObservation(req.actor,input.expected));});
+ app.put('/api/management/preferences',async(req,res)=>res.json(await setNudgePreference(req.actor,z.object({enabled:z.boolean()}).parse(req.body).enabled)));
+ app.post('/api/management/nudge',async(req,res)=>res.json(await nudgeTeam(req.actor,z.object({confirmed:z.literal(true)}).parse(req.body).confirmed)));
  app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
  app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));
  app.post('/api/alerts/:id/ack',async(req,res)=>res.json(await acknowledgeAlert(req.actor,String(req.params.id))));
@@ -73,9 +83,9 @@ export function createApp() {
  app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));});
  app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});
  app.get('/api/tasks/:id',async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));
- app.post('/api/tasks/:id/comments',async(req,res)=>{await service.addComment(req.actor,String(req.params.id),z.object({body:text}).parse(req.body).body);res.json({ok:true});});
+ app.post('/api/tasks/:id/comments',async(req,res)=>{const input=z.object({body:text,approvalId:z.uuid().optional()}).parse(req.body);await service.addComment(req.actor,String(req.params.id),input.body,input.approvalId);res.json({ok:true});});
  app.post('/api/tasks/:id/approvals',async(req,res)=>res.status(201).json(await service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:text,proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
- app.post('/api/approvals/:id/decision',async(req,res)=>res.json(await service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
+ app.post('/api/approvals/:id/decision',async(req,res)=>res.json(await service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
  app.post('/api/approvals/:id/clarification',async(req,res)=>res.json(await service.answerClarification(req.actor,z.uuid().parse(req.params.id),z.object({answer:z.string().trim().min(5).max(4000)}).parse(req.body).answer)));
  app.post('/api/controls/:id/answer',async(req,res)=>{await service.answerControl(req.actor,z.uuid().parse(req.params.id),z.object({reason:text,progress:text,plan:text}).parse(req.body));res.json({ok:true});});
  app.post('/api/checks/run',async(req,res)=>res.json(await service.runChecks(req.actor)));

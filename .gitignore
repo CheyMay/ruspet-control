@@ -13,3 +13,6 @@ backups/
 *.key
 .DS_Store
 Thumbs.db
+
+.secrets/
+.access/

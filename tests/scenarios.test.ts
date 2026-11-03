@@ -258,12 +258,11 @@ test('clarification stays on the same approval stage until requester replies',as
  assert(detail.comments.some((c:any)=>c.kind==='clarification'));
  assert.equal(detail.approvals[0].current_step,1);
 });
-test('task review requires a comment for both acceptance and return',async()=>{
+test('task review accepts a positive result without comment but requires reason for return',async()=>{
  const id=(await request('admin','/tasks',taskInput)).data.id;
  assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Готовый результат передан',expectedVersion:1})).status,200);
  assert.equal((await request('director',`/tasks/${id}/review`,{action:'return',comment:'',expectedVersion:2})).status,400);
- assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'',expectedVersion:2})).status,400);
- assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'Результат проверен и принят',expectedVersion:2})).status,200);
+ assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'',expectedVersion:2})).status,200);
 });
 test('bot search finds a visible task by number or title and keeps access scope',async()=>{
  const {botView}=await import('../server/bot.js');const anna=users.find(u=>u.id==='anna')!;
@@ -277,11 +276,11 @@ test('director may submit and request a deadline for a visible employee task wit
  assert.equal((await request('director',`/tasks/${id}/approvals`,{type:'deadline',reason:'Изменён срок работы сотрудника',plan:'Проверить материалы и завершить задачу',proposedDeadline:proposed,expectedVersion:1})).status,201);
  const approval=(await db.pool.query("SELECT requester_id FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rows[0];assert.equal(approval.requester_id,'director');
 });
-test('bot requires a review comment and applies acceptance only after confirmation',async()=>{
+test('bot supports optional positive review comment and applies acceptance only after confirmation',async()=>{
  const {botView,botClick,botText}=await import('../server/bot.js');const director=users.find(u=>u.id==='director')!;
  const id=(await request('admin','/tasks',taskInput)).data.id;
  assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Результат работы передан',expectedVersion:1})).status,200);
- const view=await botView(director,'preview',{op:'task',id});assert(!view.buttons.flat().some(b=>b.text.includes('без комментария')));
+ const view=await botView(director,'preview',{op:'task',id});assert(view.buttons.flat().some(b=>b.text.includes('без комментария')));
  await botClick(director,'preview',botButton(view,'Принять результат'));
  await assert.rejects(()=>botText(director,'preview','да',crypto.randomUUID()),/от 5/);
  const confirm=await botText(director,'preview','Результат проверен и принят',crypto.randomUUID());
@@ -484,4 +483,120 @@ test('19:01 personal summary recommends tomorrow and Telegram sends a real PDF d
   const view=await bot.botView(anna,'telegram:300',{op:'reports',id:report.id});assert.equal(view.format,'HTML');assert(view.text.includes('<a href='));assert.equal((view.text.match(/Обработано:/g)||[]).length,1);assert(!view.text.includes('Состав отчёта'));
   await pilot.handlePilotUpdate({update_id:4000,callback_query:{id:'pdf-callback',data:botButton(view,'PDF отчёта'),message:{message_id:3000,chat:{id:300,type:'private'}}}});assert.deepEqual(documents,[{chat:'300',type:'application/pdf'}]);
  }finally{globalThis.fetch=original;if(previous===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previous;await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');}
+});
+
+test('undo restores edited task with a new version and preserves immutable history',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ assert.equal((await request('admin',`/tasks/${id}`,{...taskInput,title:'РЗМ* Новое название',price:90000,reason:'Уточнение цены задачи',expectedVersion:1},'PUT')).status,200);
+ const action=(await request('admin','/undo/last')).data;assert.equal(action.task_id,id);
+ assert.equal((await request('director','/undo',{id:action.id,confirmed:true})).status,404);
+ assert.equal((await request('admin','/undo',{id:action.id})).status,400);
+ assert.equal((await request('admin','/undo',{id:action.id,confirmed:true})).status,200);
+ const detail=(await request('admin',`/tasks/${id}`)).data;assert.equal(detail.task.title,taskInput.title);assert.equal(Number(detail.task.price),taskInput.price);assert.equal(detail.task.version,3);assert(detail.events.some((e:any)=>e.kind==='task_edited'));assert(detail.events.some((e:any)=>e.kind==='action_undone'));
+ assert.equal((await db.pool.query('SELECT revision FROM mock_provider_tasks WHERE id=$1',[id])).rows[0].revision,3);
+ assert.equal((await request('admin','/undo',{id:action.id,confirmed:true})).status,409);
+ assert.equal((await db.pool.query('SELECT state FROM task_sync_queue WHERE task_id=$1 AND task_version=2',[id])).rows[0].state,'canceled');
+});
+test('undo review retains original acceptance and restores a linked open submission',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Результат передан на проверку',expectedVersion:1});
+ await request('director',`/tasks/${id}/review`,{action:'accept',comment:'Результат принят руководителем',expectedVersion:2});
+ const action=(await request('director','/undo/last')).data;
+ assert.equal((await request('director','/undo',{id:action.id,confirmed:true})).status,200);
+ let detail=(await request('director',`/tasks/${id}`)).data;assert.equal(detail.task.status,'review');assert.equal(detail.submissions.length,1);assert.equal(detail.submissions[0].state,'review');assert(detail.submissions[0].restored_from);
+ const original=(await db.pool.query("SELECT * FROM task_submissions WHERE task_id=$1 AND state='accepted'",[id])).rows[0];assert(original.withdrawn_at);assert.equal(original.remark,'Результат принят руководителем');
+ assert.equal((await request('director',`/tasks/${id}/review`,{action:'return',comment:'Нужно уточнить расчёты',expectedVersion:4})).status,200);
+ const second=(await request('director','/undo/last')).data;assert.equal((await request('director','/undo',{id:second.id,confirmed:true})).status,200);
+ detail=(await request('director',`/tasks/${id}`)).data;assert.equal(detail.task.status,'review');assert.equal(detail.submissions.length,1);
+ const admin=users.find(u=>u.id==='admin')!;const report=await service.makeReport(admin,'period','undo-'+id,new Date(),{assigneeId:'anna'});assert(!report.summary!.activity.closedIds.includes(id));
+});
+test('undo deadline approval reopens its stage and allows a fresh decision without rewriting the old one',async()=>{
+ const admin=users.find(u=>u.id==='admin')!,cfg=await service.config();await service.saveRules(admin,{...cfg.config,routes:{deadline:['branchManager','salesHead'],completion:['creator']}},cfg.version);
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ const a=(await request('anna',`/tasks/${id}/approvals`,{type:'deadline',reason:'Необходима дополнительная проверка',plan:'Проверить расчёты и передать результат',proposedDeadline:new Date(Date.now()+14*86400000).toISOString(),expectedVersion:1})).data;
+ await request('lead-msk',`/approvals/${a.id}/decision`,{decision:'approve',comment:'Срок согласован руководителем',expectedStep:0});
+ const first=(await request('lead-msk','/undo/last')).data;assert.equal((await request('lead-msk','/undo',{id:first.id,confirmed:true})).status,200);
+ assert.equal((await request('lead-msk',`/approvals/${a.id}/decision`,{decision:'approve',comment:'Старая кнопка согласования',expectedStep:0,expectedRevision:1})).status,409);
+ assert.equal((await request('lead-msk',`/approvals/${a.id}/decision`,{decision:'approve',comment:'Срок подтверждён повторно',expectedStep:0,expectedRevision:2})).status,200);
+ assert.equal((await request('head',`/approvals/${a.id}/decision`,{decision:'approve',comment:'Окончательное согласование срока',expectedStep:1,expectedRevision:2})).status,200);
+ const final=(await request('head','/undo/last')).data;assert.equal((await request('head','/undo',{id:final.id,confirmed:true})).status,200);
+ let detail=(await request('anna',`/tasks/${id}`)).data;assert.equal(detail.task.deadline,taskInput.deadline);assert.equal(detail.task.transfer_count,0);assert.equal(detail.approvals[0].current_step,1);assert.equal(detail.approvals[0].state,'pending');assert(detail.decisions.some((d:any)=>d.retracted));
+ assert.equal((await request('head',`/approvals/${a.id}/decision`,{decision:'approve',comment:'Подтверждение после отмены',expectedStep:1,expectedRevision:3})).status,200);
+ detail=(await request('anna',`/tasks/${id}`)).data;assert.equal(detail.task.transfer_count,1);
+});
+test('undo refuses later task activity and expired actions; comment undo preserves its original audit record',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ await request('anna',`/tasks/${id}/comments`,{body:'Первый комментарий исполнителя'});const own=(await request('anna','/undo/last')).data;
+ await request('director',`/tasks/${id}/comments`,{body:'Следующее действие руководителя'});assert.equal((await request('anna','/undo',{id:own.id,confirmed:true})).status,409);
+ const last=(await request('director','/undo/last')).data;assert.equal((await request('director','/undo',{id:last.id,confirmed:true})).status,200);
+ const detail=(await request('director',`/tasks/${id}`)).data;assert.equal(detail.comments.length,1);assert(detail.events.some((e:any)=>e.data.body==='Следующее действие руководителя'));
+ await request('director',`/tasks/${id}/comments`,{body:'Действие с истёкшим временем'});const expired=(await request('director','/undo/last')).data;
+ await db.pool.query("UPDATE undo_actions SET created_at=now()-interval '6 minutes' WHERE id=$1",[expired.id]);assert.equal((await request('director','/undo',{id:expired.id,confirmed:true})).status,409);
+});
+test('management observation is personal, confirmed, role protected and does not reset deadlines',async()=>{
+ assert.equal((await request('anna','/management/progress')).status,403);
+ const initial=(await request('director','/management/progress')).data;
+ const before=(await request('director','/bootstrap')).data.metrics;
+ assert.equal((await request('director','/management/observation',{expected:initial.mark?.started_at||null})).status,400);
+ assert.equal((await request('director','/management/observation',{expected:initial.mark?.started_at||null,confirmed:true})).status,200);
+ assert.equal((await request('director','/management/observation',{expected:initial.mark?.started_at||null,confirmed:true})).status,409);
+ const now=(await request('director','/management/progress')).data;assert.equal(now.totals.completed,0);assert.equal(now.totals.returned,0);
+ assert.deepEqual((await request('director','/bootstrap')).data.metrics,before);
+ assert.equal((await request('director','/management/nudge',{confirmed:true})).status,409);
+ const lead=(await request('lead-msk','/management/progress')).data;const visible=(await request('lead-msk','/bootstrap')).data;assert(lead.rows.every((r:any)=>visible.tasks.some((t:any)=>t.assignee_id===r.id)));
+});
+
+test('bot discussion shares task comments and undo requires a separate confirmation',async()=>{
+ const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!;
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ let view=await bot.botView(anna,'preview',{op:'task',id});view=await bot.botClick(anna,'preview',botButton(view,'Написать комментарий'));
+ view=await bot.botText(anna,'preview','Комментарий из рабочего бота по задаче',crypto.randomUUID());view=await bot.botClick(anna,'preview',botButton(view,'Подтвердить и отправить'));
+ let detail=(await request('anna',`/tasks/${id}`)).data;assert.equal(detail.comments.length,1);
+ const prepare=await bot.botClick(anna,'preview',botButton(view,'Отменить последнее действие'));
+ assert.equal((await request('anna',`/tasks/${id}`)).data.comments.length,1);
+ const button=botButton(prepare,'Да, отменить действие');const first=await bot.botClick(anna,'preview',button);assert.deepEqual(await bot.botClick(anna,'preview',button),first);
+ detail=(await request('anna',`/tasks/${id}`)).data;assert.equal(detail.comments.length,0);assert(detail.events.some((e:any)=>e.kind==='action_undone'));
+});
+test('clarification action belongs to requester rather than approver until answered',async()=>{
+ const {actionItems}=await import('../shared/actions.js');const id=(await request('admin','/tasks',taskInput)).data.id;
+ const a=(await request('anna',`/tasks/${id}/approvals`,{type:'deadline',reason:'Требуется дополнительная сверка данных',plan:'Проверить строки и передать отчёт',proposedDeadline:new Date(Date.now()+16*86400000).toISOString(),expectedVersion:1})).data;
+ await request('lead-msk',`/approvals/${a.id}/decision`,{decision:'clarify',comment:'Что именно ещё осталось проверить?',expectedStep:0});
+ const anna=actionItems((await request('anna','/bootstrap')).data).find(a=>a.taskId===id&&a.kind==='clarification');assert(anna?.mine);assert.equal(anna?.ownerId,'anna');
+ const lead=actionItems((await request('lead-msk','/bootstrap')).data).find(a=>a.taskId===id&&a.kind==='clarification');assert.equal(lead?.mine,false);
+});
+test('playful nudge is opt-in, scoped to bound recipients, confirmed and rate limited',async()=>{
+ await db.pool.query("INSERT INTO telegram_binding(chat_id,user_id) VALUES('901','anna'),('902','olga') ON CONFLICT(user_id) DO NOTHING");
+ await db.pool.query('UPDATE telegram_settings SET enabled=true,delivery=true');
+ assert.equal((await request('lead-msk','/management/preferences',{enabled:true},'PUT')).status,200);
+ assert.equal((await request('lead-msk','/management/nudge',{})).status,400);
+ const sent=await request('lead-msk','/management/nudge',{confirmed:true});assert.equal(sent.status,200);assert(sent.data.recipients>=1);
+ const notifications=(await db.pool.query("SELECT recipient_id FROM outbox WHERE dedupe_key LIKE 'management-nudge:%'")).rows;assert(notifications.some(n=>n.recipient_id==='anna'));assert(!notifications.some(n=>n.recipient_id==='olga'));
+ assert.equal((await request('lead-msk','/management/nudge',{confirmed:true})).status,429);
+ await request('lead-msk','/management/preferences',{enabled:false},'PUT');assert.equal((await request('lead-msk','/management/nudge',{confirmed:true})).status,409);
+ await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');
+});
+
+test('positive bot review may omit comment but still requires confirmation',async()=>{
+ const bot=await import('../server/bot.js'),director=users.find(u=>u.id==='director')!;
+ const id=(await request('admin','/tasks',taskInput)).data.id;await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Готовая работа передана',expectedVersion:1});
+ const view=await bot.botView(director,'preview',{op:'task',id}),prompt=await bot.botClick(director,'preview',botButton(view,'Принять без комментария'));
+ assert.equal((await request('director',`/tasks/${id}`)).data.task.status,'review');await bot.botClick(director,'preview',botButton(prompt,'Да, принять результат'));
+ assert.equal((await request('director',`/tasks/${id}`)).data.submissions[0].remark,null);
+});
+test('approval discussion is linked to its request, shared with panel and journal respects scope',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ const a=(await request('anna',`/tasks/${id}/approvals`,{type:'deadline',reason:'Необходимо уточнение по расчёту',plan:'Сверить расчёт и передать результат',proposedDeadline:new Date(Date.now()+17*86400000).toISOString(),expectedVersion:1})).data;
+ assert.equal((await request('anna',`/tasks/${id}/comments`,{body:'Сообщение по конкретному переносу',approvalId:a.id})).status,200);
+ const bootstrap=(await request('anna','/bootstrap')).data;assert(bootstrap.approvalComments.some((c:any)=>c.approval_id===a.id&&c.body==='Сообщение по конкретному переносу'));
+ const journal=(await request('anna','/journal?q='+encodeURIComponent('Сообщение по конкретному переносу'))).data;assert.equal(journal.total,1);assert.equal(journal.items[0].task_id,id);
+ const foreign=(await request('olga','/journal?q='+encodeURIComponent('Сообщение по конкретному переносу'))).data;assert.equal(foreign.total,0);
+ assert.equal((await request('anna','/journal?from=2026-11-04&to=2026-11-03')).status,400);
+});
+test('concurrent undo applies once and a changed parent hierarchy cannot be restored into a cycle',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;await request('anna',`/tasks/${id}/comments`,{body:'Проверка повторной отмены'});const a=(await request('anna','/undo/last')).data;
+ const replies=await Promise.all([request('anna','/undo',{id:a.id,confirmed:true}),request('anna','/undo',{id:a.id,confirmed:true})]);assert.deepEqual(replies.map(r=>r.status).sort(),[200,409]);
+ const parent=(await request('admin','/tasks',taskInput)).data.id,child=(await request('admin','/tasks',{...taskInput,parentId:parent})).data.id;
+ await request('admin',`/tasks/${child}`,{...taskInput,parentId:null,reason:'Убрать родительскую связь',expectedVersion:1},'PUT');const edit=(await request('admin','/undo/last')).data;
+ await request('director',`/tasks/${parent}`,{...taskInput,parentId:child,reason:'Новая родительская связь',expectedVersion:1},'PUT');
+ assert.equal((await request('admin','/undo',{id:edit.id,confirmed:true})).status,409);
 });
