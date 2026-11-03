@@ -1,3 +1,5 @@
+import {generateReport} from './reports-v5.js';
+import type {ReportParameters} from '../shared/report-parameters.js';
 import {parseWrittenRule} from '../shared/written-rules.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {reportAnalysis} from '../shared/reporting.js';
@@ -18,7 +20,7 @@ export async function event(db:Db,taskId:string|null,actor:string|null,kind:stri
 export async function notify(db:Db,taskId:string|null,recipient:string,body:string,key:string) {
  await db.query('INSERT INTO outbox(id,task_id,recipient_id,body,dedupe_key) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),taskId,recipient,body,key]);
 }
-export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{showPlanning:false,writtenRules:[],...row.config}}; }
+export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{requiredPrice:true,showPlanning:false,writtenRules:[],...row.config}}; }
 export async function visibleTasks(user:User,db:Db=pool):Promise<Task[]> { return (await db.query('SELECT * FROM tasks ORDER BY deadline ASC NULLS LAST,id')).rows.filter(t=>canSee(user,t)); }
 async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
  const task=(await db.query(`SELECT * FROM tasks WHERE id=$1${lock?' FOR UPDATE':''}`,[id])).rows[0];
@@ -37,7 +39,7 @@ export async function bootstrap(user:User) {
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
  events:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
  notifications:(await db.query('SELECT * FROM outbox WHERE (recipient_id=$1 OR ($2 AND (task_id=ANY($3) OR (task_id IS NULL AND $4)))) AND (task_id IS NULL OR task_id=ANY($3)) ORDER BY created_at DESC LIMIT 150',[user.id,canManage(user),ids,globalAccess(user)])).rows,
- reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version FROM reports WHERE scope=$1 AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[scopeFor(user),!!cfg.config.showPlanning])).rows};
+ reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=$1 AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[scopeFor(user),!!cfg.config.showPlanning])).rows};
  });
 }
 export async function detail(user:User,id:string) {
@@ -197,38 +199,14 @@ export async function remind(user:User,now=new Date()) {
  });
 }
 function scopeFor(user:User) { return globalAccess(user)?'company':user.role==='branch_manager'?`branch:${user.branch_id}`:`user:${user.id}`; }
-export async function makeReport(user:User,kind='snapshot',slot='manual',capturedAt=new Date()) {
- assert(['snapshot','today','overdue','review','daily','nextday'].includes(kind),400,'Неизвестный тип отчёта.');
- assert(canManage(user),403,'Отчёты формируют руководители.');
- return transaction(async db=>{
-  // A consistent, immutable snapshot. Repeated same-day generation returns the original.
-  await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ');
-  const now=capturedAt,day=moscowDay(now),scope=scopeFor(user),old=(await db.query('SELECT * FROM reports WHERE day=$1 AND scope=$2 AND kind=$3 AND slot=$4',[day,scope,kind,slot])).rows[0]; if(old) return old;
-  let next=new Date(day+'T12:00:00+03:00');do{next=new Date(next.getTime()+86400000);}while([0,6].includes(next.getUTCDay()));
-  const allTasks=await visibleTasks(user,db),tasks=kind==='nextday'?allTasks.filter(t=>t.status==='active'&&(plannedMinutesOn(t,moscowDay(next))||0)>0):['today','overdue','review'].includes(kind)?allTasks.filter(t=>taskQueue(t,now)===kind):allTasks, ids=tasks.map(t=>t.id),cfg=await config(db);
-  const a=(await db.query('SELECT * FROM approvals WHERE task_id=ANY($1)',[ids])).rows;
-  const c=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1)',[ids])).rows;
-  const m=metrics(tasks,a,c,now);
-  const activityRows=(await db.query("SELECT kind,count(*)::int n FROM task_events WHERE task_id=ANY($1) AND (created_at AT TIME ZONE 'Europe/Moscow')::date=$2::date GROUP BY kind",[ids,day])).rows;
-  const counts=Object.fromEntries(activityRows.map(r=>[r.kind,r.n]));const activity={completed:counts.task_completed||0,transfers:counts.deadline_changed||0,rejected:counts.approval_rejected||0,answers:counts.explanation||0,returned:counts.review_returned||0};
-  const previous=(await db.query('SELECT id,created_at,rows,analysis FROM reports WHERE scope=$1 AND kind=$2 ORDER BY created_at DESC,id DESC LIMIT 1',[scope,kind])).rows[0]||null;
-  const users=(await db.query('SELECT * FROM users')).rows,source=(await db.query('SELECT * FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null;
-  const analysis=reportAnalysis(tasks,users,now,previous,source);
-  if(kind==='nextday'){
-   analysis.targetDay=moscowDay(next);analysis.excludedWithoutPlan=allTasks.filter(t=>{if(t.status!=='active')return false;const p=plannedInterval(t);return !p.start||!p.end||new Date(p.end)<=new Date(p.start)}).length;
-   analysis.notes.unshift(`План на ${analysis.targetDay}. Из всех задач в работе ${analysis.excludedWithoutPlan} не имеют полного корректного плана и не могут попасть в этот отчёт.`);
-  }
-  const report=(await db.query('INSERT INTO reports(id,day,scope,metrics,rows,rules_version,kind,activity,slot,formula_version,analysis) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) RETURNING *',[randomUUID(),day,scope,JSON.stringify(m),JSON.stringify(tasks),cfg.version,kind,JSON.stringify(activity),slot,'v4-task-selection',JSON.stringify(analysis)])).rows[0];
-  await notify(db,null,user.id,'Готов отчёт за '+day+': '+tasks.length+' задач; просрочено '+m.overdue+', срок сегодня '+m.today+', на приёмке '+m.review+'.','report:'+report.id);return report;
- });
-}
+export async function makeReport(user:User,kind='snapshot',slot='manual',capturedAt=new Date(),parameters:ReportParameters={}) {return generateReport(user,kind,slot,capturedAt,parameters);}
 export async function listReports(user:User,input:{kind?:string;from?:string;to?:string;page:number}){
  return transaction(async db=>{
   await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
   const args=[scopeFor(user),input.kind||null,input.from||null,input.to||null,!!(await config(db)).config.showPlanning];
   const condition='scope=$1 AND ($2::text IS NULL OR kind=$2) AND ($3::date IS NULL OR day>=$3) AND ($4::date IS NULL OR day<=$4) AND ($5::boolean OR kind<>\'nextday\')';
   const total=Number((await db.query('SELECT count(*) n FROM reports WHERE '+condition,args)).rows[0].n);
-  const items=(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version FROM reports WHERE '+condition+' ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET $6',[...args,input.page*20])).rows;
+  const items=(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE '+condition+' ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET $6',[...args,input.page*20])).rows;
   return {items,total,page:input.page,pageSize:20};
  });
 }

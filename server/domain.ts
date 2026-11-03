@@ -1,3 +1,4 @@
+import {taskPrice} from '../shared/pricing.js';
 import type { Task, User, Rules, Metrics, Approval, ControlRequest } from '../shared/types.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {parseWrittenRule} from '../shared/written-rules.js';
@@ -16,6 +17,7 @@ export function evaluate(task: Task, rules: Rules, now = new Date(), allTasks:Ta
  if(task.status==='completed'||exclusionReason(task)) return [];
  const result: {rule:string;severity:string;message:string}[]=[];
  const add=(rule:string,message:string,severity='warning')=>result.push({rule,message,severity});
+ if(rules.requiredPrice!==false&&taskPrice(task)===null)add('missing_price','Не заполнена обязательная цена задачи');
  if(rules.overdue && taskQueue(task,now)==='overdue') add('overdue','Срок прошёл до начала сегодняшнего дня','critical');
  if(rules.overdue && elapsedToday(task,now)) add('elapsed_today','Время выполнения истекло сегодня','warning');
  if(rules.missingDeadline && !task.deadline) add('missing_deadline','Не указан крайний срок');

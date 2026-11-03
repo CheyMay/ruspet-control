@@ -92,7 +92,7 @@ test('completion requires every route step',async()=>{
  assert.equal((await db.pool.query("SELECT status FROM tasks WHERE id='2413'")).rows[0].status,'completed');
 });
 test('report snapshot is immutable and same-day generation is idempotent',async()=>{
- const a=await service.makeReport(users[0]);const b=await service.makeReport(users[0]);assert.equal(a.id,b.id);assert.equal(a.rows.length,24);
+ const a=await service.makeReport(users[0]);const b=await service.makeReport(users[0]);assert.equal(a.id,b.id);assert(a.rows.length>0);assert(a.rows.every(t=>t.status!=='completed'||a.summary?.activity.closedIds.includes(t.id)));
  await assert.rejects(()=>db.pool.query('UPDATE reports SET metrics=$1 WHERE id=$2',['{}',a.id]),/append-only/);
  const branch=await service.makeReport(users.find(u=>u.id==='lead-msk')!);assert.ok(branch.rows.every((t:any)=>t.branch_id==='Москва'));
 });
@@ -107,7 +107,7 @@ test('source parsing preserves Moscow timestamps, null flags and original status
  const {moscowDay}=await import('../server/domain.js');assert.equal(moscowDay('2026-10-29T21:01:00Z'),'2026-10-30');
 });
 
-const taskInput={title:'РЗМ* Проверка локального процесса',description:'Результат должен пройти приёмку',assigneeId:'anna',deadline:'2026-11-10T15:00:00.000Z',plannedStart:null,plannedEnd:null,important:true,customerRisk:false,parentId:null};
+const taskInput={price:10000,title:'РЗМ* Проверка локального процесса',description:'Результат должен пройти приёмку',assigneeId:'anna',deadline:'2026-11-10T15:00:00.000Z',plannedStart:null,plannedEnd:null,important:true,customerRisk:false,parentId:null};
 test('local task edit protects deadline and version; review supports return and acceptance with complete history',async()=>{
  const created=await request('admin','/tasks',taskInput);assert.equal(created.status,201);const id=created.data.id;
  assert.equal((await request('admin',`/tasks/${id}`,{...taskInput,reason:'Изменение по результатам проверки',deadline:'2026-12-10T15:00:00.000Z',expectedVersion:1},'PUT')).status,400);
@@ -138,41 +138,35 @@ test('report archive retains distinct snapshots and retry returns same snapshot;
 test('analytical reports freeze employee names, comparison and escaped printable content',async()=>{
  const director=users.find(u=>u.id==='director')!;
  const a=await service.makeReport(director,'snapshot','analysis-first');
- const created=await request('admin','/tasks',{...taskInput,title:'РЗМ* <script>alert(1)</script> & отчёт'});assert.equal(created.status,201);
- const b=await service.makeReport(director,'snapshot','analysis-second');assert.equal(b.analysis.comparison.entered,1);assert.equal(b.analysis.comparison.id,a.id);assert.equal(b.analysis.counts.total,b.rows.length);
+ const created=await request('admin','/tasks',{...taskInput,deadline:new Date().toISOString(),title:'РЗМ* <script>alert(1)</script> & отчёт'});assert.equal(created.status,201);
+ await db.pool.query("UPDATE users SET name='<script>alert(1)</script> & сотрудник' WHERE id='anna'");
+ const b=await service.makeReport(director,'snapshot','analysis-second');assert(b.analysis?.comparison);assert.equal(b.analysis.comparison.entered,1);assert.equal(b.analysis.comparison.id,a.id);assert.equal(b.analysis.counts.total,b.rows.length);
  const print=await fetch(base+`/api/reports/${b.id}/print`,{headers:{Cookie:cookies.get('director')!}});assert.equal(print.status,200);const html=await print.text();assert.ok(html.includes('&lt;script&gt;alert(1)&lt;/script&gt;'));assert.ok(!html.includes('<script>'));
  assert.equal((await fetch(base+`/api/reports/${b.id}/print`,{headers:{Cookie:cookies.get('anna')!}})).status,404);
  await db.pool.query("UPDATE users SET name='Имя изменено после отчёта' WHERE id='anna'");const frozen=await service.getReport(director,b.id);assert.notEqual(frozen.analysis.team.find((u:any)=>u.id==='anna').name,'Имя изменено после отчёта');
 });
-test('automatic reports: baseline, morning and evening survive repeats and partial failure without duplicates',async()=>{
- const {tick,saveAutomation,operationsStatus}=await import('../server/automation.js');
- const admin=users.find(u=>u.id==='admin')!;await saveAutomation(admin,{enabled:true,morning:'09:00',evening:'18:00'});
- const monday=new Date('2026-11-02T09:01:00+03:00');await tick(monday);
- const count=async()=>Number((await db.pool.query("SELECT count(*) n FROM reports WHERE day='2026-11-02' AND slot LIKE 'scheduled-%'")).rows[0].n);
- assert.equal(await count(),5);await tick(monday);assert.equal(await count(),5);
- await db.pool.query("UPDATE job_runs SET state='failed',attempts=1,retry_at=NULL WHERE job_key='morning:2026-11-02'");await tick(monday);assert.equal(await count(),5);
- await tick(new Date('2026-11-02T18:01:00+03:00'));assert.equal(await count(),6);assert.equal((await db.pool.query("SELECT count(*)::int n FROM reports WHERE day='2026-11-02' AND slot='scheduled-evening' AND kind='nextday'")).rows[0].n,0);
- const run=(await db.pool.query("SELECT * FROM job_runs WHERE job_key='morning:2026-11-02'")).rows[0];assert.equal(run.state,'done');assert.equal(run.report_ids.length,4);assert.equal(run.attempts,2);
+test('scheduled general report at 09:00 and evening summary are idempotent and have no duplicate report types',async()=>{
+ const {tick,saveAutomation,operationsStatus}=await import('../server/automation.js'),admin=users.find(u=>u.id==='admin')!;
+ await saveAutomation(admin,{enabled:true,morning:'09:00',evening:'19:01'});const at=new Date('2026-11-02T09:01:00+03:00');await tick(at);await tick(at);
+ const count=async()=>Number((await db.pool.query("SELECT count(*) n FROM reports WHERE day='2026-11-02' AND slot LIKE 'scheduled-%'")).rows[0].n);assert.equal(await count(),1);
+ await db.pool.query("UPDATE job_runs SET state='failed',attempts=1,retry_at=NULL WHERE job_key='reports-v5:morning:2026-11-02'");await tick(at);assert.equal(await count(),1);
+ await tick(new Date('2026-11-02T19:02:00+03:00'));assert.equal(await count(),2);
+ const run=(await db.pool.query("SELECT * FROM job_runs WHERE job_key='reports-v5:morning:2026-11-02'")).rows[0];assert.equal(run.state,'done');assert.equal(run.report_ids.length,1);assert.equal(run.attempts,2);
  assert.equal((await operationsStatus()).alive,true);assert.equal((await request('anna','/operations')).status,403);
- await saveAutomation(admin,{enabled:false,morning:'09:00',evening:'18:00'});await tick(new Date('2026-11-03T20:00:00+03:00'));assert.equal(Number((await db.pool.query("SELECT count(*) n FROM reports WHERE day='2026-11-03' AND slot LIKE 'scheduled-%'")).rows[0].n),0);
+ await saveAutomation(admin,{enabled:false,morning:'09:00',evening:'19:01'});
 });
-test('partial morning report failure resumes saved package, and interrupted third attempt becomes actionable',async()=>{
- const {tick,saveAutomation}=await import('../server/automation.js');const admin=users.find(u=>u.id==='admin')!;
- await saveAutomation(admin,{enabled:true,morning:'09:00',evening:'18:00'});
- await db.pool.query("ALTER TABLE reports ADD CONSTRAINT test_report_failure CHECK (NOT(day='2026-11-04' AND slot='scheduled-morning' AND kind='review'))");
- const at=new Date('2026-11-04T09:01:00+03:00');await tick(at);
- const count=async()=>Number((await db.pool.query("SELECT count(*) n FROM reports WHERE day='2026-11-04' AND slot='scheduled-morning'")).rows[0].n);
- assert.equal(await count(),3);assert.equal((await db.pool.query("SELECT state FROM job_runs WHERE job_key='morning:2026-11-04'")).rows[0].state,'failed');
- await db.pool.query('ALTER TABLE reports DROP CONSTRAINT test_report_failure');await db.pool.query("UPDATE job_runs SET retry_at=NULL WHERE job_key='morning:2026-11-04'");await tick(at);assert.equal(await count(),4);
- await db.pool.query("INSERT INTO job_runs(job_key,state,attempts) VALUES('morning:2026-11-05','running',3)");await tick(new Date('2026-11-05T09:01:00+03:00'));
- assert.equal((await db.pool.query("SELECT state FROM job_runs WHERE job_key='morning:2026-11-05'")).rows[0].state,'failed');
- await saveAutomation(admin,{enabled:false,morning:'09:00',evening:'18:00'});
+test('failed scheduled report retries atomically; an interrupted third attempt becomes actionable',async()=>{
+ const {tick,saveAutomation}=await import('../server/automation.js'),admin=users.find(u=>u.id==='admin')!;await saveAutomation(admin,{enabled:true,morning:'09:00',evening:'19:01'});
+ await db.pool.query("ALTER TABLE reports ADD CONSTRAINT test_report_failure CHECK (NOT(day='2026-11-04' AND slot='scheduled-morning'))");const at=new Date('2026-11-04T09:01:00+03:00');await tick(at);
+ const count=async()=>Number((await db.pool.query("SELECT count(*) n FROM reports WHERE day='2026-11-04' AND slot='scheduled-morning'")).rows[0].n);assert.equal(await count(),0);assert.equal((await db.pool.query("SELECT state FROM job_runs WHERE job_key='reports-v5:morning:2026-11-04'")).rows[0].state,'failed');
+ await db.pool.query('ALTER TABLE reports DROP CONSTRAINT test_report_failure');await db.pool.query("UPDATE job_runs SET retry_at=NULL WHERE job_key='reports-v5:morning:2026-11-04'");await tick(at);assert.equal(await count(),1);
+ await db.pool.query("INSERT INTO job_runs(job_key,state,attempts) VALUES('reports-v5:morning:2026-11-05','running',3)");await tick(new Date('2026-11-05T09:01:00+03:00'));assert.equal((await db.pool.query("SELECT state FROM job_runs WHERE job_key='reports-v5:morning:2026-11-05'")).rows[0].state,'failed');await saveAutomation(admin,{enabled:false,morning:'09:00',evening:'19:01'});
 });
 test('archive searches all stored days, paginates without duplicate rows and enforces scope',async()=>{
  const available=Number((await db.pool.query("SELECT count(*) n FROM reports WHERE scope='company' AND kind<>'nextday'")).rows[0].n);for(let i=available;i<21;i++)await service.makeReport(users.find(u=>u.id==='director')!,'snapshot','pagination-'+i);
  const first=await request('director','/reports?page=0');assert.equal(first.status,200);assert.ok(first.data.total>20);assert.equal(first.data.items.length,20);assert.ok(first.data.items.every((r:any)=>!r.rows));
  const second=await request('director','/reports?page=1');const ids=new Set(first.data.items.map((r:any)=>r.id));assert.ok(second.data.items.every((r:any)=>!ids.has(r.id)));
- const filtered=await request('director','/reports?kind=review&from=2026-11-04&to=2026-11-04');assert.equal(filtered.data.total,1);
+ const filtered=await request('director','/reports?kind=snapshot&from=2026-11-04&to=2026-11-04');assert.equal(filtered.data.total,1);
  assert.equal((await request('anna','/reports')).data.total,0);assert.equal((await request('director','/reports?from=2026-11-05&to=2026-11-04')).status,400);
 });
 
@@ -223,7 +217,7 @@ test('excluded routines stay in storage but disappear from tasks, checks, report
  const admin=users.find(u=>u.id==='admin')!;
  const before=await service.bootstrap(admin),hidden:string[]=[];
  for(const title of ['ЕЗМ* Свериться с УТРЕННИМ чек-листом','ЕЗМ* Займись анализом невыполненных задач за сегодня']){
-  const t=await createTask(admin,{title,description:'Служебная задача',assigneeId:'anna',deadline:'2026-01-01T10:00:00Z',plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null});hidden.push(t.id);
+  const t=await createTask(admin,{price:10000,title,description:'Служебная задача',assigneeId:'anna',deadline:'2026-01-01T10:00:00Z',plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null});hidden.push(t.id);
   await service.notify(db.pool,t.id,admin.id,'Старое уведомление','excluded-test:'+t.id);
  }
  const current=await service.bootstrap(admin);assert.equal(current.tasks.length,before.tasks.length);assert.equal(current.selection!.checklist,before.selection!.checklist+1);assert.equal(current.selection!.unfinishedAnalysis,before.selection!.unfinishedAnalysis+1);
@@ -356,11 +350,11 @@ test('morning and noon digests use only own tasks, skip weekends and re-evaluate
  await db.pool.query('UPDATE telegram_settings SET enabled=true,delivery=true');
  try{
   await tickTaskReminders(new Date('2035-01-01T09:00:00+03:00'));await tickTaskReminders(new Date('2035-01-01T09:00:00+03:00'));
-  let rows=(await db.pool.query("SELECT * FROM task_alerts WHERE recipient_id='anna' AND kind='morning' AND dedupe_key LIKE '%2035-01-01'")).rows;assert.equal(rows.length,1);assert(rows[0].body.includes('#'+before));assert(!rows[0].body.includes('#2403'));
+  let rows=(await db.pool.query("SELECT * FROM task_alerts WHERE recipient_id='anna' AND kind='morning' AND dedupe_key LIKE '%2035-01-01'")).rows;assert.equal(rows.length,1);assert(rows[0].report_id);const morning=(await db.pool.query('SELECT * FROM reports WHERE id=$1',[rows[0].report_id])).rows[0];assert(morning.rows.some((t:any)=>t.id===before));assert(!morning.rows.some((t:any)=>t.id==='2403'));
   const t=(await service.detail(users.find(u=>u.id==='admin')!,before)).task;
   await request('anna',`/tasks/${before}/review`,{action:'submit',comment:'Результат представлен на приёмку',expectedVersion:t.version});
   await tickTaskReminders(new Date('2035-01-01T12:00:00+03:00'));
-  rows=(await db.pool.query("SELECT * FROM task_alerts WHERE recipient_id='anna' AND kind='noon' AND dedupe_key LIKE '%2035-01-01'")).rows;assert.equal(rows.length,1);assert(!rows[0].body.includes('#'+before));assert.equal((await db.pool.query("SELECT count(*)::int n FROM task_alerts WHERE kind='morning' AND due_at='2035-01-01T06:00:00Z'")).rows[0].n>=1,true);
+  rows=(await db.pool.query("SELECT * FROM task_alerts WHERE recipient_id='anna' AND kind='noon' AND dedupe_key LIKE '%2035-01-01'")).rows;assert.equal(rows.length,1);const noon=(await db.pool.query('SELECT * FROM reports WHERE id=$1',[rows[0].report_id])).rows[0];assert(!noon.rows.some((t:any)=>t.id===before));assert.equal((await db.pool.query("SELECT count(*)::int n FROM task_alerts WHERE kind='morning' AND due_at='2035-01-01T06:00:00Z'")).rows[0].n>=1,true);
   await tickTaskReminders(new Date('2035-01-06T12:00:00+03:00'));assert.equal((await db.pool.query("SELECT count(*)::int n FROM task_alerts WHERE kind IN ('morning','noon') AND dedupe_key LIKE '%2035-01-06'")).rows[0].n,0);
  }finally{await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');}
 });
@@ -442,5 +436,52 @@ test('planning is hidden by default, preserves archived reports and enables the 
  const admin=users.find(u=>u.id==='admin')!,cfg=await service.config(),automation=await import('../server/automation.js');
  const report=await service.makeReport(admin,'nextday','planning-visibility');assert.equal((await service.listReports(admin,{kind:'nextday',page:0})).total,0);assert.equal((await service.getReport(admin,report.id)).id,report.id);
  await service.saveRules(admin,{...cfg.config,showPlanning:true},cfg.version);
- try{assert((await service.listReports(admin,{kind:'nextday',page:0})).items.some((r:any)=>r.id===report.id));await automation.saveAutomation(admin,{enabled:true,morning:'09:00',evening:'18:00'});await automation.tick(new Date('2035-01-11T18:01:00+03:00'));assert.equal((await db.pool.query("SELECT count(*)::int n FROM reports WHERE day='2035-01-11' AND kind='nextday' AND slot='scheduled-evening'")).rows[0].n,1);}finally{const current=await service.config();await service.saveRules(admin,cfg.config,current.version);await automation.saveAutomation(admin,{enabled:false,morning:'09:00',evening:'18:00'});}
+ try{assert((await service.listReports(admin,{kind:'nextday',page:0})).items.some((r:any)=>r.id===report.id));await automation.saveAutomation(admin,{enabled:true,morning:'09:00',evening:'18:00'});await automation.tick(new Date('2035-01-11T18:01:00+03:00'));assert.equal((await db.pool.query("SELECT count(*)::int n FROM reports WHERE day='2035-01-11' AND kind='daily' AND slot='scheduled-evening'")).rows[0].n,1);}finally{const current=await service.config();await service.saveRules(admin,cfg.config,current.version);await automation.saveAutomation(admin,{enabled:false,morning:'09:00',evening:'18:00'});}
+});
+
+test('price is required for new tasks, can be edited with audit, and stays unchanged when omitted in an unrelated edit',async()=>{
+ const {price:_,...without}=taskInput;assert.equal((await request('admin','/tasks',without)).status,400);assert.equal((await request('admin','/tasks',{...taskInput,price:-1})).status,400);
+ const created=await request('admin','/tasks',{...taskInput,price:0});assert.equal(created.status,201);const id=created.data.id;
+ assert.equal((await request('admin',`/tasks/${id}`,{...taskInput,price:55000,expectedVersion:1,reason:'Уточнение цены по документам'},'PUT')).status,200);
+ assert.equal((await request('admin',`/tasks/${id}`,{...without,description:'Описание с сохранением цены',expectedVersion:2,reason:'Уточнение содержания работы'},'PUT')).status,200);
+ const t=(await service.detail(users.find(u=>u.id==='admin')!,id)).task;assert.equal(Number(t.price),55000);assert.equal((await db.pool.query("SELECT data FROM task_events WHERE task_id=$1 AND kind='task_edited' ORDER BY created_at",[id])).rows[0].data.after.price,'55000.00');
+});
+
+test('day reports freeze morning work, track closures by time and manager, filter prices and reconstruct historical states',async()=>{
+ const admin=users.find(u=>u.id==='admin')!,uid='report-worker-'+crypto.randomUUID().slice(0,8),employee={id:uid,name:'Менеджер отчётов',role:'employee' as const,branch_id:'Москва',position:'Менеджер'};
+ await db.pool.query('INSERT INTO users(id,name,role,branch_id,position) VALUES($1,$2,$3,$4,$5)',[employee.id,employee.name,employee.role,employee.branch_id,employee.position]);
+ const create=async(title:string,deadline:string,price:number)=>{const id='R-'+crypto.randomUUID().slice(0,8);const row=(await db.pool.query("INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,deadline,status,priority,code,important,customer_risk,price,created_at,updated_at) VALUES($1,$2,'Фикстура отчётов','Москва',$3,'admin',$4,'active','normal','РЗМ*',true,false,$5,'2034-12-29T00:00:00Z','2034-12-29T00:00:00Z') RETURNING *",[id,title,uid,deadline,price])).rows[0];await db.pool.query("INSERT INTO task_events(id,task_id,actor_id,kind,message,data,created_at) VALUES($1,$2,'admin','created','Фикстура создана',$3,'2034-12-29T00:00:00Z')",[crypto.randomUUID(),id,JSON.stringify({after:row})]);return id;};
+ const transition=async(id:string,status:string,time:string,actor:string,kind:string)=>{const before=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];const after=(await db.pool.query("UPDATE tasks SET status=$2,version=version+1,completed_at=CASE WHEN $2='completed' THEN $3::timestamptz ELSE NULL END,updated_at=$3 WHERE id=$1 RETURNING *",[id,status,time])).rows[0];await db.pool.query('INSERT INTO task_events(id,task_id,actor_id,kind,message,data,created_at) VALUES($1,$2,$3,$4,$5,$6,$7)',[crypto.randomUUID(),id,actor,kind,'Фикстура результата',JSON.stringify({before,after,comment:'Результат проверен'}),time]);};
+ const overdue=await create('РЗМ* Долг','2034-12-31T12:00:00Z',4999),today=await create('РЗМ* Сегодня','2035-01-01T12:00:00Z',500000),future=await create('РЗМ* Завтра','2035-01-02T12:00:00Z',55000),past=await create('РЗМ* Закрыто раньше','2034-12-30T12:00:00Z',10000);
+ await transition(past,'review','2034-12-31T07:00:00Z',uid,'review_submitted');await transition(past,'completed','2034-12-31T08:00:00Z','director','task_completed');
+ const p={assigneeId:uid},morningAt=new Date('2035-01-01T09:00:00+03:00');const [a,duplicate]=await Promise.all([service.makeReport(admin,'snapshot','new-workday-am',morningAt,p),service.makeReport(admin,'snapshot','new-workday-am',morningAt,p)]);assert.equal(a.id,duplicate.id);assert.deepEqual(new Set(a.rows.map(t=>t.id)),new Set([overdue,today]));assert.equal(a.summary!.front.total,2);assert.equal(a.summary!.prices.low,1);assert.equal(a.summary!.prices.premium,1);await assert.rejects(()=>db.pool.query("UPDATE work_fronts SET rows='[]' WHERE user_id=$1 AND day='2035-01-01'",[uid]),/append-only/);
+ await transition(today,'review','2035-01-01T09:45:00+03:00',uid,'review_submitted');await transition(today,'completed','2035-01-01T10:00:00+03:00','director','task_completed');
+ const b=await service.makeReport(admin,'snapshot','new-workday-mid',new Date('2035-01-01T11:00:00+03:00'),{...p,queue:'all'});assert.equal(b.summary!.previous!.id,a.id);assert.equal(b.summary!.previous!.at,a.summary!.to);assert.equal(b.summary!.activity.closed,1);assert.equal(b.summary!.front.total,2);assert.equal(b.summary!.front.closed,1);assert.equal(b.summary!.front.remaining,1);assert(!b.rows.some(t=>[past,future].includes(t.id)));assert.equal(b.summary!.team.find(t=>t.id===uid)!.closed,1);assert.equal(b.summary!.team.find(t=>t.id==='director')!.closedByActor,1);
+ const debt=await service.makeReport(admin,'overdue','new-workday-debt',new Date('2035-01-01T11:00:00+03:00'),p);assert.equal(debt.summary!.activity.closed,0);assert.equal(debt.rows.length,1);
+ const period=await service.makeReport(admin,'period','new-workday-period',new Date('2035-01-01T11:00:00+03:00'),{...p,from:'2035-01-01T09:50:00+03:00',to:'2035-01-01T10:30:00+03:00',priceBand:'premium'});assert.equal(period.rows.length,1);assert.equal(period.summary!.activity.closed,1);assert.equal(period.summary!.activity.submitted,0);
+ const byActor=await service.makeReport(admin,'period','new-workday-actor',new Date('2035-01-01T11:00:00+03:00'),{...p,actorId:'director'});assert.equal(byActor.summary!.activity.processed,1);assert.equal(byActor.summary!.team.find(t=>t.id==='director')!.processedByActor,1);
+ const historical=await service.makeReport(admin,'snapshot','new-workday-history',new Date('2035-01-01T11:00:00+03:00'),{...p,to:'2035-01-01T09:30:00+03:00'});assert.equal(historical.rows.find(t=>t.id===today)!.status,'active');assert.equal(historical.summary!.activity.closed,0);
+ const early=await service.makeReport(admin,'period','new-workday-unknown-history',new Date('2035-01-01T11:00:00+03:00'),{...p,from:'2000-01-01T00:00:00Z',to:'2000-12-31T23:59:59Z'});assert.equal(early.summary!.stateAvailable,false);assert.equal(early.rows.length,0);assert(early.summary!.notes.some(n=>n.includes('недоступно')));
+ const evening=await service.makeReport(admin,'daily','new-workday-pm',new Date('2035-01-01T19:01:00+03:00'),p);assert.equal(evening.summary!.front.closed,1);assert.equal(evening.summary!.tomorrow.day,'2035-01-02');assert.deepEqual(new Set(evening.summary!.tomorrow.ids),new Set([overdue,future]));
+ const own=await service.makeReport(employee,'snapshot','new-workday-own',new Date('2035-01-01T11:00:00+03:00'));assert(own.rows.every(t=>t.assignee_id===uid));await assert.rejects(()=>service.makeReport(employee,'snapshot','new-workday-forbidden',new Date('2035-01-01T11:00:00+03:00'),{assigneeId:'anna'}),/только по своим/);
+ const pdf=await fetch(base+'/api/reports/'+b.id+'/pdf',{headers:{Cookie:cookies.get('admin')!}});assert.equal(pdf.status,200);assert.equal(pdf.headers.get('content-type'),'application/pdf');const bytes=Buffer.from(await pdf.arrayBuffer());assert.equal(bytes.subarray(0,5).toString(),'%PDF-');assert(bytes.includes(Buffer.from('%%EOF')));assert.equal((await fetch(base+'/api/reports/'+b.id+'/pdf',{headers:{Cookie:cookies.get('anna')!}})).status,404);
+ const print=await fetch(base+'/api/reports/'+b.id+'/print',{headers:{Cookie:cookies.get('admin')!}});assert(!(await print.text()).includes('Состав отчёта'));
+ await assert.rejects(()=>service.makeReport(admin,'snapshot','new-workday-am',morningAt,{...p,priceBand:'low'}),/другими параметрами/);
+});
+
+test('19:01 personal summary recommends tomorrow and Telegram sends a real PDF document on request',async()=>{
+ const reminders=await import('../server/reminders.js'),pilot=await import('../server/telegram-pilot.js'),bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!;
+ await db.pool.query('UPDATE telegram_settings SET enabled=true,delivery=true');
+ const original=globalThis.fetch,previous=process.env.TELEGRAM_BOT_TOKEN,documents:any[]=[];process.env.TELEGRAM_BOT_TOKEN='TEST_TOKEN';
+ globalThis.fetch=(async(url:any,options:any)=>{
+  if(String(url).includes('sendDocument')){assert(options.body instanceof FormData);const file=options.body.get('document') as Blob;assert(file);const bytes=Buffer.from(await file.arrayBuffer());assert.equal(bytes.subarray(0,5).toString(),'%PDF-');documents.push({chat:options.body.get('chat_id'),type:file.type});}
+  return new Response(JSON.stringify({ok:true,result:{message_id:3100}}));
+ }) as typeof fetch;
+ try{
+  await reminders.tickTaskReminders(new Date('2035-01-08T19:00:00+03:00'));assert.equal((await db.pool.query("SELECT count(*)::int n FROM task_alerts WHERE recipient_id='anna' AND kind='evening' AND dedupe_key LIKE '%2035-01-08'")).rows[0].n,0);
+  await reminders.tickTaskReminders(new Date('2035-01-08T19:01:00+03:00'));await reminders.tickTaskReminders(new Date('2035-01-08T19:02:00+03:00'));
+  const alerts=(await db.pool.query("SELECT * FROM task_alerts WHERE recipient_id='anna' AND kind='evening' AND dedupe_key LIKE '%2035-01-08'")).rows;assert.equal(alerts.length,1);const report=await service.getReport(anna,alerts[0].report_id);assert.equal(report.summary.tomorrow.day,'2035-01-09');assert(report.rows.every((t:any)=>t.assignee_id==='anna'));assert(alerts[0].links.some((l:any)=>new URL(l.url).searchParams.get('subset')==='tomorrow'));
+  const view=await bot.botView(anna,'telegram:300',{op:'reports',id:report.id});assert.equal(view.format,'HTML');assert(view.text.includes('<a href='));assert.equal((view.text.match(/Обработано:/g)||[]).length,1);assert(!view.text.includes('Состав отчёта'));
+  await pilot.handlePilotUpdate({update_id:4000,callback_query:{id:'pdf-callback',data:botButton(view,'PDF отчёта'),message:{message_id:3000,chat:{id:300,type:'private'}}}});assert.deepEqual(documents,[{chat:'300',type:'application/pdf'}]);
+ }finally{globalThis.fetch=original;if(previous===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previous;await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');}
 });

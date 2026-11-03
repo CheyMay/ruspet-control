@@ -1,6 +1,10 @@
+import {makeReport} from './service.js';
+import {reportText} from './report-content.js';
+import {reportScope} from './reports-v5.js';
+import type {ReportLink} from '../shared/report-links.js';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
-import {pool,transaction,type Db} from './db.js';
+import {pool,transaction,reportTransaction,type Db} from './db.js';
 import {assert,canSee,canEdit} from './domain.js';
 import {event,visibleTasks} from './service.js';
 import {businessDay,taskQueue,elapsedToday} from '../shared/queues.js';
@@ -44,15 +48,14 @@ export async function acknowledgeAlert(u:User,id:string){return transaction(asyn
  if(!r.acknowledged_at){await db.query('UPDATE task_alerts SET acknowledged_at=now() WHERE id=$1',[id]);await event(db,r.task_id,u.id,'reminder_acknowledged','Подтверждено получение напоминания. Это не выполнение задачи.',{alertId:id,dueAt:r.due_at,kind:r.kind});}
  return {ok:true};
 });}
-export async function userAlerts(u:User){const allowed=(await visibleTasks(u)).map(t=>t.id);return (await pool.query('SELECT a.id,task_id,kind,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY due_at DESC LIMIT 100',[u.id,allowed])).rows;}
+export async function userAlerts(u:User){const allowed=(await visibleTasks(u)).map(t=>t.id);return (await pool.query('SELECT a.id,task_id,kind,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=$3)) ORDER BY due_at DESC LIMIT 100',[u.id,allowed,reportScope(u)])).rows;}
 const at=(day:string,time:string)=>new Date(day+'T'+time+':00+03:00');
-async function add(db:Db,recipient:string,key:string,kind:string,body:string,due:Date,expires:Date,taskId:string|null=null,reminderId:string|null=null){
- await db.query('INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,reminder_id,kind,body,due_at,expires_at) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),key,recipient,taskId,reminderId,kind,body,due.toISOString(),expires.toISOString()]);
+async function add(db:Db,recipient:string,key:string,kind:string,body:string,due:Date,expires:Date,taskId:string|null=null,reminderId:string|null=null,reportId:string|null=null,links:ReportLink[]=[]){
+ await db.query('INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,reminder_id,kind,body,due_at,expires_at,report_id,links) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),key,recipient,taskId,reminderId,kind,body,due.toISOString(),expires.toISOString(),reportId,JSON.stringify(links)]);
 }
 /** Persist current-day alerts independently of report scheduling. Multiple workers are safe. */
 export async function tickTaskReminders(now=new Date()){
- await transaction(async db=>{
-  await db.query('SELECT pg_advisory_xact_lock(431014)');
+ await reportTransaction('task-alert-tick',async db=>{
   const cfg=(await db.query('SELECT enabled,delivery FROM telegram_settings WHERE id=1')).rows[0];if(!cfg?.enabled||!cfg.delivery)return;
   const day=businessDay(now),shifted=new Date(now.getTime()+10800000),weekday=shifted.getUTCDay()||7,hhmm=shifted.toISOString().slice(11,16),expires=new Date(at(day,'00:00').getTime()+86400000);
   const schedules=(await db.query('SELECT r.*,row_to_json(t) task,row_to_json(u) recipient FROM task_reminders r JOIN tasks t ON t.id=r.task_id JOIN users u ON u.id=r.recipient_id WHERE r.enabled')).rows;
@@ -66,11 +69,14 @@ export async function tickTaskReminders(now=new Date()){
   }
   if(weekday<=5){
    const people=(await db.query('SELECT u.*,b.paired_at FROM telegram_binding b JOIN users u ON u.id=b.user_id')).rows;
-   for(const u of people){const tasks=(await visibleTasks(u,db)).filter(t=>t.assignee_id===u.id),overdue=tasks.filter(t=>taskQueue(t,now)==='overdue'),today=tasks.filter(t=>taskQueue(t,now)==='today');
-    if(hhmm>='09:00'&&hhmm<'12:00'&&Date.parse(u.paired_at)<=at(day,'09:00').getTime())await add(db,u.id,`morning:${u.id}:${day}`,'morning',`Доброе утро · состояние на ${hhmm} МСК. Просроченных задач: ${overdue.length}. На сегодня: ${today.length}.\n${[...overdue,...today].slice(0,15).map(t=>`• #${t.id} ${t.title.slice(0,100)}`).join('\n')}\nПодтвердите получение. Откройте задачу через /task НОМЕР: сдайте результат или запросите перенос с причиной.`,at(day,'09:00'),at(day,'12:00'));
-    const remaining=tasks.filter(t=>taskQueue(t,now)==='overdue'||elapsedToday(t,now));
+   for(const u of people){
+    const tasks=(await visibleTasks(u,db)).filter(t=>u.role!=='employee'||t.assignee_id===u.id),remaining=tasks.filter(t=>taskQueue(t,now)==='overdue'||elapsedToday(t,now));
+    const sendReport=async(kind:string,key:string,alertKind:string,due:Date,until:Date)=>{const r=await makeReport(u,kind,key,now);const content=reportText(r);await add(db,u.id,key,alertKind,content.text,due,until,null,null,r.id,content.links);};
+    if(hhmm>='09:00'&&hhmm<'12:00'&&Date.parse(u.paired_at)<=at(day,'09:00').getTime())await sendReport('snapshot',`morning:${u.id}:${day}`,'morning',at(day,'09:00'),at(day,'12:00'));
     if(!remaining.length)await db.query("UPDATE task_alerts SET canceled_at=$2 WHERE recipient_id=$1 AND kind='noon' AND acknowledged_at IS NULL AND canceled_at IS NULL",[u.id,now.toISOString()]);
-    if(hhmm>='12:00'&&remaining.length&&Date.parse(u.paired_at)<=at(day,'12:00').getTime())await add(db,u.id,`noon:${u.id}:${day}`,'noon',`Контроль после 12:00 МСК · состояние на ${hhmm}. Осталось просроченных задач: ${remaining.length}.\n${remaining.slice(0,20).map(t=>`• #${t.id} ${t.title.slice(0,100)}`).join('\n')}\nПодтвердите получение и обработайте задачи через /task НОМЕР.`,at(day,'12:00'),expires);
+    if(hhmm>='12:00'&&remaining.length&&Date.parse(u.paired_at)<=at(day,'12:00').getTime())await sendReport('overdue',`noon:${u.id}:${day}`,'noon',at(day,'12:00'),expires);
+    if(hhmm>='19:01'&&Date.parse(u.paired_at)<=at(day,'19:01').getTime())await sendReport('daily',`evening:${u.id}:${day}`,'evening',at(day,'19:01'),expires);
+
    }
   }
  });
@@ -78,5 +84,5 @@ export async function tickTaskReminders(now=new Date()){
 
 export async function pendingAlerts(u:User,now=new Date()){
  const allowed=(await visibleTasks(u)).filter(t=>t.status!=='completed').map(t=>t.id);
- return (await pool.query('SELECT a.* FROM task_alerts a WHERE recipient_id=$1 AND acknowledged_at IS NULL AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3)) AND NOT EXISTS(SELECT 1 FROM task_alert_deliveries d WHERE d.alert_id=a.id AND (d.state IN (\'sending\',\'uncertain\') OR d.created_at>$2::timestamptz-interval \'30 minutes\')) ORDER BY due_at LIMIT 5',[u.id,now.toISOString(),allowed])).rows;
+ return (await pool.query('SELECT a.* FROM task_alerts a WHERE recipient_id=$1 AND acknowledged_at IS NULL AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3)) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=$4)) AND NOT EXISTS(SELECT 1 FROM task_alert_deliveries d WHERE d.alert_id=a.id AND (d.state IN (\'sending\',\'uncertain\') OR d.created_at>$2::timestamptz-interval \'30 minutes\')) ORDER BY due_at LIMIT 5',[u.id,now.toISOString(),allowed,reportScope(u)])).rows;
 }

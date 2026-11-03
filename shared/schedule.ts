@@ -1,6 +1,6 @@
 import {businessDay} from './queues.js';
 export type ScheduleConfig={enabled:boolean;morning:string;evening:string};
-export const jobLabel=(key:string)=>key.startsWith('morning:')?'Утренняя сводка':key.startsWith('evening:')?'Итоги и план следующего дня':key.startsWith('initial:')?'Начальный снимок':'Напоминания';
+export const jobLabel=(key:string)=>key.includes('morning:')?'Общий отчёт':key.includes('evening:')?'Итоги и работа на завтра':key.startsWith('initial:')?'Начальный снимок':'Напоминания';
 export function nextRuns(config:ScheduleConfig,now:Date,finished:Set<string>){
  if(!config.enabled)return [];
  const day=businessDay(now),result:{key:string;label:string;at:string;late:boolean}[]=[];

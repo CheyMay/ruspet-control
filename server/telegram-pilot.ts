@@ -1,3 +1,7 @@
+import {reportPdf} from './report-pdf.js';
+import {getReport} from './service.js';
+import {publicOrigin} from './report-content.js';
+import {escapeHtml,taskLink} from '../shared/report-links.js';
 import {tickTaskReminders,pendingAlerts} from './reminders.js';
 import {visibleTasks} from './service.js';
 import {readFile} from 'node:fs/promises';
@@ -36,7 +40,7 @@ export async function pairPilot(u:User,targetUserId=u.id){
 }
 export async function configurePilot(u:User,input:{enabled:boolean;delivery:boolean}){assert(u.role==='admin',403,'Подключение настраивает администратор.');await pool.query('UPDATE telegram_settings SET enabled=$1,delivery=$2,enabled_at=CASE WHEN $1 AND NOT enabled THEN now() ELSE enabled_at END WHERE id=1',[input.enabled,input.delivery]);}
 let lastSend=0;const chatSend=new Map<string,number>();
-async function send(chat:string,s:BotScreen,message?:number){const wait=Math.max(80-(Date.now()-lastSend),1050-(Date.now()-(chatSend.get(chat)||0)));if(wait>0)await sleep(wait);lastSend=Date.now();chatSend.set(chat,lastSend);const body={chat_id:chat,text:s.text,reply_markup:{inline_keyboard:s.buttons.filter(r=>r.length).map(r=>r.map(b=>({text:b.text,callback_data:b.token})))},link_preview_options:{is_disabled:true}};if(message){try{return await call('editMessageText',{...body,message_id:message})}catch{}}return call('sendMessage',body)}
+async function send(chat:string,s:BotScreen,message?:number){const wait=Math.max(80-(Date.now()-lastSend),1050-(Date.now()-(chatSend.get(chat)||0)));if(wait>0)await sleep(wait);lastSend=Date.now();chatSend.set(chat,lastSend);if(s.document){const user=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0];assert(user,403,'Чат не привязан.');const report=await getReport(user,s.document.reportId),bytes=await reportPdf(report);const form=new FormData();form.set('chat_id',chat);form.set('caption',s.text.slice(0,1000));form.set('document',new Blob([new Uint8Array(bytes)],{type:'application/pdf'}),`ruspet-${report.day}.pdf`);let response:Response;try{response=await fetch(`https://api.telegram.org/bot${await token()}/sendDocument`,{method:'POST',body:form,signal:AbortSignal.timeout(30000)})}catch{throw new AppError(502,'Не получено подтверждение отправки PDF. Проверьте чат перед повтором.');}const data=await response.json() as any;if(!data.ok)throw new TelegramRejected(502,'Telegram отклонил PDF.');return data.result;}const body={chat_id:chat,text:s.text,...(s.format==='HTML'?{parse_mode:'HTML'}:{}),reply_markup:{inline_keyboard:s.buttons.filter(r=>r.length).map(r=>r.map(b=>({text:b.text,callback_data:b.token}))).concat((s.links||[]).map(b=>[{text:b.text,url:b.url}] as any))},link_preview_options:{is_disabled:true}};if(message){try{return await call('editMessageText',{...body,message_id:message})}catch{}}return call('sendMessage',body)}
 export async function handlePilotUpdate(update:any){
  const c=update.callback_query,m=update.message||c?.message;if(!m||m.chat?.type!=='private')return;const chat=String(m.chat.id);
  const code=typeof m.text==='string'&&!c?m.text.match(/^\/start ([a-f0-9]{40})$/)?.[1]:null;
@@ -74,7 +78,7 @@ export async function deliver(now=new Date()){
  const rows=(await pool.query("SELECT o.* FROM outbox o WHERE o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[])) AND o.created_at>=greatest($2::timestamptz,$3::timestamptz) AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text) ORDER BY o.created_at LIMIT 12",[binding.user_id,cfg.enabled_at,binding.paired_at,included])).rows;if(!rows.length)continue;
  const id=randomUUID();await pool.query("INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state) VALUES($1,$2,$3,'sending')",[id,binding.chat_id,JSON.stringify(rows.map(r=>r.id))]);
  const u={...binding,id:binding.user_id} as User;
- try{const home=await botView(u,'telegram:'+binding.chat_id);const sent=await send(binding.chat_id,{text:`РУСПЭТ · новые события (${rows.length})\n\n${rows.map(r=>r.body.slice(0,220)).join('\n\n')}\n\nАктуальные действия — в меню ниже.`,buttons:home.buttons});await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id])}
+ try{const home=await botView(u,'telegram:'+binding.chat_id);const sent=await send(binding.chat_id,{text:`РУСПЭТ · новые события (${rows.length})\n\n${rows.map(r=>escapeHtml(r.body.slice(0,220))+'\n<a href="'+escapeHtml(taskLink(publicOrigin(),r.task_id?{task:r.task_id}:{}))+'">'+(r.task_id?'Открыть задачу #'+escapeHtml(r.task_id):'Открыть панель')+'</a>').join('\n\n')}`,format:'HTML',buttons:home.buttons});await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id])}
  catch{await pool.query("UPDATE telegram_delivery SET state='uncertain',error='Нет подтверждения Telegram. Автоповтор остановлен, чтобы не дублировать возможную доставку.' WHERE id=$1",[id])}
  }
 }

@@ -1,15 +1,15 @@
 import {pool,transaction} from './db.js';
 import {assert} from './domain.js';
 import {businessDay} from '../shared/queues.js';
-import {runChecks,remind,makeReport,event,config as taskRules} from './service.js';
+import {remind,makeReport,event} from './service.js';
 import type {User} from '../shared/types.js';
 import {nextRuns,jobLabel} from '../shared/schedule.js';
 export async function operationsStatus(){
  const config=(await pool.query('SELECT * FROM automation_config WHERE id=1')).rows[0];
  const runs=(await pool.query("SELECT * FROM job_runs WHERE job_key NOT LIKE 'reminders:%' ORDER BY updated_at DESC LIMIT 20")).rows.map(r=>({...r,label:jobLabel(r.job_key)}));
  const heartbeat=(await pool.query('SELECT heartbeat_at FROM automation_runtime WHERE id=1')).rows[0]?.heartbeat_at||null;
- const done=(await pool.query("SELECT job_key FROM job_runs WHERE state='done' AND job_key=ANY($1)",[['morning:'+businessDay(new Date()),'evening:'+businessDay(new Date())]])).rows;
- return {config,runs,heartbeat,alive:!!heartbeat&&Date.now()-Date.parse(heartbeat)<90000,next:nextRuns(config,new Date(),new Set(done.map(r=>r.job_key)))};
+ const done=(await pool.query("SELECT job_key FROM job_runs WHERE state='done' AND job_key=ANY($1)",[['reports-v5:morning:'+businessDay(new Date()),'reports-v5:evening:'+businessDay(new Date())]])).rows;
+ return {config,runs,heartbeat,alive:!!heartbeat&&Date.now()-Date.parse(heartbeat)<90000,next:nextRuns(config,new Date(),new Set(done.map(r=>r.job_key.replace('reports-v5:',''))))};
 }
 export async function saveAutomation(user:User,input:{enabled:boolean;morning:string;evening:string}){
  assert(user.role==='admin',403,'Расписание меняет администратор.');
@@ -24,10 +24,9 @@ export async function tick(now=new Date()){
   const shifted=new Date(now.getTime()+10800000),weekday=shifted.getUTCDay(),workday=weekday!==0&&weekday!==6;
   const hhmm=shifted.toISOString().slice(11,16),day=businessDay(now),actor=(await pool.query("SELECT * FROM users WHERE id='admin'")).rows[0] as User;
   const batch=async(kinds:string[],slot:string)=>{const ids:string[]=[];for(const kind of kinds)ids.push((await makeReport(actor,kind,slot,now)).id);return ids;};
-  const jobs:{key:string;run:()=>Promise<string[]>}[]=[{key:'initial:baseline',run:()=>batch(['snapshot'],'scheduled-initial')}];
-  if(workday&&hhmm>=cfg.morning)jobs.push({key:`morning:${day}`,run:async()=>{await runChecks(actor,now);return batch(['snapshot','today','overdue','review'],'scheduled-morning');}});
-  const showPlanning=!!(await taskRules()).config.showPlanning;
-  if(workday&&hhmm>=cfg.evening)jobs.push({key:`evening:${day}`,run:()=>batch(showPlanning?['daily','nextday']:['daily'],'scheduled-evening')});
+  const jobs:{key:string;run:()=>Promise<string[]>}[]=[];
+  if(workday&&hhmm>=cfg.morning)jobs.push({key:`reports-v5:morning:${day}`,run:async()=>{return batch(['snapshot'],'scheduled-morning');}});
+  if(workday&&hhmm>=cfg.evening)jobs.push({key:`reports-v5:evening:${day}`,run:()=>batch(['daily'],'scheduled-evening')});
   if(workday&&hhmm>=cfg.morning&&hhmm<cfg.evening)jobs.push({key:`reminders:${day}:${Math.floor(now.getTime()/60000)}`,run:async()=>{await remind(actor);return [];}});
   for(const job of jobs){const previous=(await pool.query('SELECT * FROM job_runs WHERE job_key=$1',[job.key])).rows[0];
    // Holding the global lock proves an old 'running' record has no live worker.
@@ -41,7 +40,7 @@ export async function tick(now=new Date()){
 }
 export async function retryJob(user:User,key:string){
  assert(user.role==='admin',403,'Повтор запускает администратор.');
- assert(['initial:baseline','morning:'+businessDay(new Date()),'evening:'+businessDay(new Date())].includes(key),400,'Прошлые дни нельзя восстановить текущими данными. Создайте свежий отчёт.');
+ assert(['initial:baseline','reports-v5:morning:'+businessDay(new Date()),'reports-v5:evening:'+businessDay(new Date())].includes(key),400,'Прошлые дни нельзя восстановить текущими данными. Создайте свежий отчёт.');
  await transaction(async db=>{const r=await db.query("UPDATE job_runs SET attempts=0,retry_at=NULL WHERE job_key=$1 AND state='failed'",[key]);assert(r.rowCount,409,'Задание уже завершено или ещё выполняется.');await event(db,null,user.id,'report_retry','Запрошен повтор формирования отчётов',{key});});
 }
 export function startAutomation(){let running=false;const run=async()=>{if(running)return;running=true;try{await tick();}catch{console.error('Automation tick failed');}finally{running=false;}};const timer=setInterval(run,30000);timer.unref();void run();return ()=>clearInterval(timer);}
