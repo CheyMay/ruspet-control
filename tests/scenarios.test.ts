@@ -754,7 +754,11 @@ test('separate OKB database stores companies and triggers only active BPM rules 
   const created=await request('director',work,definition);
   assert.equal(created.status,201);await runProcesses();
   assert.equal((await request('director',work)).data.runs.length,0);
-  assert.equal((await request('director',work+'/'+created.data.id,{enabled:true},'PATCH')).status,200);
+  const draft=(await request('director',work)).data.items.find((item:any)=>item.id===created.data.id);
+  assert.equal(draft.enabled,false);
+  assert.equal((await request('director',work+'/'+created.data.id,definition,'PUT')).status,200);
+  assert.equal((await request('director',work+'/'+created.data.id,{enabled:true,expectedRevision:draft.revision},'PATCH')).status,409);
+  assert.equal((await request('director',work+'/'+created.data.id,{enabled:true,expectedRevision:draft.revision+1},'PATCH')).status,200);
   const changed=await request('director',path+'/'+company.data.id,{...input,status:'active',version:1},'PUT');
   assert.equal(changed.status,200);
   assert.equal((await request('director',work+'/'+created.data.id,definition,'PUT')).status,409);
@@ -809,4 +813,49 @@ test('separate OKB database stores companies and triggers only active BPM rules 
   const jobs=(await request('director',companyPath+'/work')).data;
   assert.ok(jobs.tasks.some((t:any)=>t.title==='Архивировать: Проверить тестовый заказ'));
  }finally{await okb.closeOkb();delete process.env.OKB_DATABASE_URL;await adminConnection.query('DROP DATABASE '+name);}
+});
+
+test('delegation creates a priced-zero child, enforces hierarchy and reuses the bot confirmation receipt',async()=>{
+ const payload={title:'Контрольное поручение руководителя',description:'Уточнить готовность заказа',price:50000,assigneeId:'lead-msk',
+  deadline:'2027-01-18T18:00:00+03:00',plannedStart:null,plannedEnd:null,important:true,customerRisk:true,parentId:null,
+  customFields:[{label:'Заказ',value:'Технический'}]};
+ const source=await request('director','/tasks',payload);
+ assert.equal(source.status,201);
+ const id=source.data.id,path='/tasks/'+id;
+ const targets=await request('lead-msk',path+'/delegation-targets');
+ assert.equal(targets.status,200);
+ assert.ok(targets.data.people.some((u:any)=>u.id==='anna'));
+ assert.ok(!targets.data.people.some((u:any)=>u.id==='olga'||u.id==='lead-msk'||u.id==='director'));
+ assert.equal((await request('director',path+'/delegate',{assigneeId:'anna',expectedVersion:1})).status,403);
+ assert.equal((await request('lead-msk',path+'/delegate',{assigneeId:'olga',expectedVersion:1})).status,403);
+ assert.equal((await request('lead-msk',path+'/delegate',{assigneeId:'anna',expectedVersion:2})).status,409);
+ const responses=await Promise.all([1,2].map(()=>request('lead-msk',path+'/delegate',{
+  assigneeId:'anna',expectedVersion:1,instruction:'Приложите подтверждение'
+ })));
+ assert.deepEqual(responses.map(r=>r.status).sort(),[201,409]);
+ const copied=responses.find(r=>r.status===201)!.data.id;
+ const copyPath='/tasks/'+copied,copy=(await request('anna',copyPath)).data.task;
+ assert.equal(copy.delegated_from_id,id);assert.equal(copy.parent_id,id);assert.equal(copy.creator_id,'lead-msk');
+ assert.equal(Number(copy.price),0);assert.match(copy.description,/Приложите подтверждение/);
+ assert.deepEqual(copy.custom_fields,payload.customFields);
+ const original=(await request('lead-msk',path)).data;
+ assert.equal(original.task.assignee_id,'lead-msk');assert.equal(Number(original.task.price),50000);
+ assert.equal(original.task.deadline,copy.deadline);assert.equal(original.task.version,1);
+ assert.equal(original.events.filter((e:any)=>e.kind==='task_delegated').length,1);
+ assert.equal((await request('lead-msk',path+'/delegation')).data.copies[0].id,copied);
+ assert.equal((await request('anna',copyPath+'/delegation')).data.source,null);
+ assert.equal((await request('anna',copyPath+'/review',{action:'submit',comment:'Выполнена проверка',expectedVersion:1})).status,200);
+ assert.equal((await request('lead-msk',copyPath+'/review',{action:'accept',comment:'',expectedVersion:2})).status,200);
+ assert.equal((await request('lead-msk',path)).data.task.status,'active');
+
+ const {botView,botClick}=await import('../server/bot.js');
+ const actor=users.find(u=>u.id==='lead-msk')!,channel='test-delegation';
+ const card=await botView(actor,channel,{op:'task',id});
+ const list=await botClick(actor,channel,botButton(card,'Делегировать задачу'));
+ const preview=await botClick(actor,channel,botButton(list,users.find(u=>u.id==='ivan')!.name));
+ const token=botButton(preview,'Создать поручение');
+ const confirmation=await botClick(actor,channel,token);
+ assert.deepEqual(await botClick(actor,channel,token),confirmation);
+ assert.match(confirmation.text,/Результат придёт вам на приёмку/);
+ assert.equal((await request('lead-msk',path+'/delegation')).data.copies.length,2);
 });

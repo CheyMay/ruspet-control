@@ -83,3 +83,7 @@ main select:disabled { opacity:.6; }
 .task-mode input { margin:0; flex:none; accent-color:var(--green); }
 .task-mode small { display:block; margin-top:3px; }
 .task-editor-actions { position:sticky; bottom:-24px; z-index:1; background:var(--theme-surface,white); margin-inline:-24px; margin-bottom:-24px; padding:12px 24px; border-top:1px solid var(--line); }
+
+.task-delegation { border:1px solid var(--line); border-radius:7px; padding:12px; margin:0 0 16px; background:var(--theme-surface-soft); }
+.task-delegation p { margin-top:5px; }
+.task-delegation .text-button { white-space:normal; text-align:left; }

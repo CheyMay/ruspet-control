@@ -123,7 +123,7 @@ export async function saveProcess(actor:User,body:unknown,existingId?:string){
   await validateTaskAssignment(db,actor,processTask(value,sample,new Date()));
   const id=existingId??randomUUID();
   if(existingId){
-   const updated=await db.query('UPDATE business_processes SET name=$2,definition=$3 WHERE id=$1 AND NOT enabled',[id,value.name,JSON.stringify(value)]);
+   const updated=await db.query('UPDATE business_processes SET name=$2,definition=$3,revision=revision+1 WHERE id=$1 AND NOT enabled',[id,value.name,JSON.stringify(value)]);
    assert(updated.rowCount,409,'Остановите процесс перед изменением.');
    return {id};
   }
@@ -133,16 +133,16 @@ export async function saveProcess(actor:User,body:unknown,existingId?:string){
 }
 export async function listProcesses(actor:User){
  requireOkbAccess(actor);
- const items=(await pool.query('SELECT id,actor_id,name,definition,enabled FROM business_processes ORDER BY created_at DESC LIMIT 100')).rows;
+ const items=(await pool.query('SELECT id,actor_id,name,definition,enabled,enabled_since,revision FROM business_processes ORDER BY created_at DESC LIMIT 100')).rows;
  const runs=(await pool.query('SELECT process_id,branch,task_id,error,created_at FROM business_runs ORDER BY created_at DESC LIMIT 30')).rows;
  return {items,runs};
 }
-export async function toggleProcess(actor:User,id:string,enabled:boolean){
+export async function toggleProcess(actor:User,id:string,enabled:boolean,expectedRevision?:number){
  requireOkbAccess(actor);
  const cursor=enabled?(await okbPool().query('SELECT coalesce(max(id),0) cursor FROM company_status_events')).rows[0].cursor:null;
- const changed=await pool.query('UPDATE business_processes SET enabled=$2,enabled_since=CASE WHEN $2 AND NOT enabled THEN clock_timestamp() ELSE enabled_since END,quiet_cursor=CASE WHEN $2 AND NOT enabled THEN NULL ELSE quiet_cursor END,event_cursor=CASE WHEN $2 AND NOT enabled THEN $3 ELSE event_cursor END WHERE id=$1',
-  [id,enabled,cursor]);
- assert(changed.rowCount,404,'Процесс не найден.');
+ const changed=await pool.query('UPDATE business_processes SET enabled=$2,revision=revision+1,enabled_since=CASE WHEN $2 AND NOT enabled THEN clock_timestamp() ELSE enabled_since END,quiet_cursor=CASE WHEN $2 AND NOT enabled THEN NULL ELSE quiet_cursor END,event_cursor=CASE WHEN $2 AND NOT enabled THEN $3 ELSE event_cursor END WHERE id=$1 AND ($4::int IS NULL OR revision=$4)',
+  [id,enabled,cursor,expectedRevision??null]);
+ assert(changed.rowCount,expectedRevision===undefined?404:409,expectedRevision===undefined?'Процесс не найден.':'Процесс изменился. Обновите список и подтвердите ещё раз.');
 }
 type RunContext={company?:{id?:string;name:string;status:string;previousStatus?:string|null};task?:{title:string;assigneeId:string}};
 async function executeProcess(db:Db,row:{id:string;actor_id:string},definition:Definition,eventId:string,context:RunContext,now:Date){

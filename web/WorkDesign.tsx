@@ -67,8 +67,10 @@ export function Okb({initialId,users,openTask,createTask}:{initialId:string|null
 type Schedule={id:string;title:string;frequency:string;every:number;next_at:string;enabled:boolean;last_task_id:string|null;last_error:string|null};
 type Trigger='company_status'|'company_quiet'|'task_accepted';
 const triggerLabels:Record<Trigger,string>={company_status:'Новая компания или смена статуса',company_quiet:'Давно не было контакта',task_accepted:'Результат задачи принят'};
+const conditionFields:Record<string,string>={'company.status':'Новый статус','company.previousStatus':'Прежний статус','company.name':'Название компании','task.title':'Название принятой задачи','task.assigneeId':'Исполнитель принятой задачи'};
+const operators:Record<string,string>={'=':'равно','!=':'не равно',contains:'содержит',exists:'заполнено'};
 type Definition={trigger?:Trigger;companyId?:string|null;quietDays?:number;description?:string;customFields?:ProcessDraft['customFields'];name:string;field:string;operator:string;value:string;branch:'yes'|'no';title:string;assigneeId:string;price:number;deadlineHours:number|null};
-type Process={id:string;name:string;definition:Definition;enabled:boolean};
+type Process={id:string;name:string;definition:Definition;enabled:boolean;enabled_since:string|null;revision:number};
 type Run={process_id:string;branch:'yes'|'no';task_id:string|null;error:string|null;created_at:string};
 type Preview={branch:'yes'|'no';title:string|null};
 export type ProcessDraft={companyId?:string|null;title:string;assigneeId:string;price:number;description:string;customFields:{label:string;value:string}[]};
@@ -78,7 +80,15 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
  const [reload,setReload]=useState(0),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [operator,setOperator]=useState('='),[field,setField]=useState('company.status'),[branch,setBranch]=useState<'yes'|'no'>('yes'),[preview,setPreview]=useState<Preview|null>(null);
  const [trigger,setTrigger]=useState<Trigger>('company_status'),[companyId,setCompanyId]=useState<string|null>(draft?.companyId??null);
- const [editing,setEditing]=useState<Process|null>(null);
+ const [editing,setEditing]=useState<Process|null>(null),[activation,setActivation]=useState<Process|null>(null);
+ const [activationCompany,setActivationCompany]=useState<Company|null>(null);
+ useEffect(()=>{
+  setActivationCompany(null);
+  if(!activation?.definition.companyId)return;
+  let active=true;
+  void api<Company>('/okb/companies/'+activation.definition.companyId).then(row=>{if(active)setActivationCompany(row);}).catch(()=>{});
+  return()=>{active=false;};
+ },[activation]);
  const template=editing?.definition??draft;
  const canProcess=canUseOkb(user);
  useEffect(()=>{
@@ -97,9 +107,9 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
   const timer=setInterval(()=>void load(),30000);
   return()=>{current=false;clearInterval(timer);};
  },[reload,canProcess]);
- async function toggle(path:string,enabled:boolean){
+ async function toggle(path:string,enabled:boolean,expectedRevision?:number){
   setBusy(true);setError('');
-  try{await api(path,'PATCH',{enabled});setReload(n=>n+1);}catch(e){setError(errorText(e));}finally{setBusy(false);}
+  try{await api(path,'PATCH',{enabled,expectedRevision});setActivation(null);setReload(n=>n+1);}catch(e){setError(errorText(e));}finally{setBusy(false);}
  }
  async function submit(event:FormEvent<HTMLFormElement>){
   event.preventDefault();
@@ -116,7 +126,7 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
  return <>
   {error&&<p className="alert error" role="alert">{error}</p>}
   {canProcess&&<section className="panel automation-settings">
-   <div className="automation-heading"><div><h2>Конструктор процессов</h2><p className="muted">Выберите событие, задайте условие и действие. Черновик можно проверить на примере.</p></div></div>
+   <div className="automation-heading"><div><h2>Конструктор процессов</h2><p className="muted">Дайте процессу имя, настройте событие, условие и действие. Сохраните черновик, проверьте его на примере и включите отдельно.</p></div></div>
    <form key={editing?.id||"new"} className="work-design-form" onSubmit={submit} onChange={()=>setPreview(null)}>
     <label>Название процесса<input name="name" required minLength={3} maxLength={120} defaultValue={editing?.name} placeholder="Например, начать работу с новым клиентом"/></label>
     <label>Событие<select value={trigger} onChange={e=>{setTrigger(e.target.value as Trigger);setField('company.status');setOperator('=');}}>
@@ -151,9 +161,21 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
    <h3>Сохранённые процессы</h3>
    {!processes&&<p>Загружаем процессы…</p>}
    {processes?.items.length===0&&<p>Процессов пока нет.</p>}
-   {processes?.items.map(p=><div className="automation-run" key={p.id}><div><strong>{p.name}</strong><p>{p.enabled?'Включён':'Отключён'} · {triggerLabels[p.definition.trigger??'company_status']} · {p.definition.title}</p></div><div className="heading-actions">{!p.enabled&&<button type="button" className="button secondary" disabled={busy} onClick={()=>{setEditing(p);setTrigger(p.definition.trigger??"company_status");setCompanyId(p.definition.companyId??null);setField(p.definition.field);setOperator(p.definition.operator);setBranch(p.definition.branch);setPreview(null);setNotice("");}}>Изменить</button>}<button className="button secondary" disabled={busy} onClick={()=>void toggle('/work-design/processes/'+p.id,!p.enabled)}>{p.enabled?'Остановить':'Включить'}</button></div></div>)}
+   {processes?.items.map(p=><div className="automation-run" key={p.id}><div><strong>{p.name}</strong><p>{p.enabled?'Работает':p.enabled_since?'На паузе':'Черновик'} · {triggerLabels[p.definition.trigger??'company_status']} · {p.definition.title}</p></div><div className="heading-actions">{!p.enabled&&<button type="button" className="button secondary" disabled={busy} onClick={()=>{setEditing(p);setTrigger(p.definition.trigger??"company_status");setCompanyId(p.definition.companyId??null);setField(p.definition.field);setOperator(p.definition.operator);setBranch(p.definition.branch);setPreview(null);setNotice("");}}>Изменить</button>}<button className="button secondary" disabled={busy} onClick={()=>{if(p.enabled)void toggle('/work-design/processes/'+p.id,false,p.revision);else{setError('');setActivation(p);}}}>{p.enabled?'Остановить':'Включить процесс'}</button></div></div>)}
    {!!processes?.runs.length&&<details className="automation-log"><summary>Журнал последних запусков</summary>{processes.runs.map((r,i)=><div className="automation-run" key={r.process_id+i}><span>{moscowTimestamp(r.created_at)} · {processes.items.find(p=>p.id===r.process_id)?.name} · {r.branch==='yes'?'Да':'Нет'}</span>{r.error?<span className="red-text">{r.error}</span>:r.task_id?<button className="text-button" onClick={()=>open(r.task_id!)}>#{r.task_id}</button>:<span>Без задачи</span>}</div>)}</details>}
   </section>}
+  {activation&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="Включить процесс">
+   <div className="panel-heading"><h2>Включить «{activation.name}»?</h2></div>
+   <p>{triggerLabels[activation.definition.trigger??'company_status']}{activation.definition.quietDays?' · '+activation.definition.quietDays+' дн.':''}</p>
+   <p>Условие · {conditionFields[activation.definition.field]} {operators[activation.definition.operator]} {activation.definition.operator!=='exists'&&
+    (activation.definition.field==='task.assigneeId'?users.find(person=>person.id===activation.definition.value)?.name||'выбранному сотруднику':
+     (['company.status','company.previousStatus'].includes(activation.definition.field)?companyStates[activation.definition.value as CompanyState]:null)||activation.definition.value)}</p>
+   <p>Ветка «{activation.definition.branch==='yes'?'Да':'Нет'}» создаст задачу «{activation.definition.title}» для {users.find(person=>person.id===activation.definition.assigneeId)?.name||'выбранного исполнителя'}.</p>
+   <p className="muted">{activation.definition.companyId?'Область · '+(activationCompany?.name||'выбранная компания')+'.':'Область · все подходящие события.'} После включения процесс начнёт реагировать на новые события.</p>
+   {error&&<p className="alert error" role="alert">{error}</p>}
+   <div className="drawer-actions"><button className="button secondary" disabled={busy} onClick={()=>setActivation(null)}>Отмена</button>
+    <button className="button primary" disabled={busy} onClick={()=>void toggle('/work-design/processes/'+activation.id,true,activation.revision)}>Подтвердить включение</button></div>
+  </section></div>}
   <section className="panel automation-settings"><h2>Периодические задачи</h2><p className="muted">Новое расписание создаётся из формы задачи. После паузы появится не более одной пропущенной задачи за запуск.</p>
    {!schedules&&<p>Загружаем расписания…</p>}
    {schedules?.length===0&&<p>Расписаний пока нет.</p>}

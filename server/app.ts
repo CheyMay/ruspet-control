@@ -22,7 +22,7 @@ import { AppError, assert } from './domain.js';
 import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
-import {createTask,editTask,reviewTask,taskAssignees} from './workflow.js';
+import {createTask,delegateTask,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
 import type { User } from '../shared/types.js';
 declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
@@ -71,6 +71,12 @@ export function createApp() {
  app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
  app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));
  app.post('/api/alerts/:id/ack',async(req,res)=>res.json(await acknowledgeAlert(req.actor,String(req.params.id))));
+ app.get('/api/tasks/:id/delegation',async(req,res)=>res.json(await delegationLinks(req.actor,String(req.params.id))));
+ app.get('/api/tasks/:id/delegation-targets',async(req,res)=>res.json(await delegationTargets(req.actor,String(req.params.id))));
+ app.post('/api/tasks/:id/delegate',async(req,res)=>res.status(201).json(await delegateTask(req.actor,String(req.params.id),z.object({
+  assigneeId:z.string().trim().min(1).max(100),expectedVersion:z.number().int().positive(),
+  instruction:z.string().trim().max(2000).optional(),deadline:date.nullable().optional()
+ }).parse(req.body))));
  app.get('/api/tasks/:id/assignees',async(req,res)=>res.json(await taskAssignees(req.actor,String(req.params.id))));
  app.get('/api/tasks/:id/reminders',async(req,res)=>res.json(await listTaskReminders(req.actor,String(req.params.id))));
  app.post('/api/tasks/:id/reminders',async(req,res)=>res.status(201).json(await saveTaskReminder(req.actor,String(req.params.id),reminderInput.parse(req.body))));
@@ -103,7 +109,10 @@ export function createApp() {
  app.post('/api/work-design/processes',async(req,res)=>res.status(201).json(await saveProcess(req.actor,req.body)));
  app.post('/api/work-design/processes/preview',async(req,res)=>res.json(previewProcess(req.actor,req.body)));
  app.put('/api/work-design/processes/:id',async(req,res)=>res.json(await saveProcess(req.actor,req.body,z.uuid().parse(req.params.id))));
- app.patch('/api/work-design/processes/:id',async(req,res)=>{await toggleProcess(req.actor,z.uuid().parse(req.params.id),z.object({enabled:z.boolean()}).parse(req.body).enabled);res.json({ok:true});});
+ app.patch('/api/work-design/processes/:id',async(req,res)=>{
+  const change=z.object({enabled:z.boolean(),expectedRevision:z.number().int().positive().optional()}).parse(req.body);
+  await toggleProcess(req.actor,z.uuid().parse(req.params.id),change.enabled,change.expectedRevision);res.json({ok:true});
+ });
  app.post('/api/tasks',async(req,res)=>res.status(201).json(await createTask(req.actor,taskInput.parse(req.body))));
  app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));});
  app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});
