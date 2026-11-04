@@ -1,3 +1,5 @@
+import {processGraph} from './process-graph-input.js';
+import {graphErrors,runGraph,type GraphAction,type Trace} from '../shared/process-graph.js';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {pool,transaction,type Db} from './db.js';
@@ -15,7 +17,7 @@ type Frequency=z.infer<typeof frequency>;
 const deadlineHours=z.number().int().min(1).max(8760).nullable();
 export const scheduleInput=z.object({template:taskInput,frequency,every:z.number().int().min(1).max(30),startsAt:date,deadlineHours});
 export const processInput=z.object({
- name:z.string().trim().min(3).max(120),
+ name:z.string().trim().min(3).max(120),graph:processGraph.optional(),
  trigger:z.enum(['company_status','task_accepted','company_quiet']).default('company_status'),
  companyId:z.uuid().nullable().optional(),quietDays:z.number().int().min(1).max(365).optional(),
  field:z.enum(['company.name','company.status','company.previousStatus','task.title','task.assigneeId']),
@@ -25,9 +27,9 @@ export const processInput=z.object({
  title:z.string().trim().min(3).max(500),assigneeId:z.string().trim().min(1).max(100),
  description:z.string().trim().max(10000).optional(),customFields:customFieldsInput.optional(),
  price:z.number().min(0).max(999999999999.99),deadlineHours
-}).refine(input=>input.operator==='exists'||input.value.length>0,'Укажите значение условия.')
+}).refine(input=>!!input.graph||input.operator==='exists'||input.value.length>0,'Укажите значение условия.')
  .refine(input=>input.trigger!=='company_quiet'||!!input.quietDays,'Укажите срок без контакта.')
- .refine(input=>input.trigger==='task_accepted'||!input.field.startsWith('task.'),'Поле задачи доступно для события приёмки.');
+ .refine(input=>!!input.graph||input.trigger==='task_accepted'||!input.field.startsWith('task.'),'Поле задачи доступно для события приёмки.');
 type Definition=z.infer<typeof processInput>;
 const companySample=z.object({name:z.string().max(250),status:z.enum(['active','former','prospect']),previousStatus:z.enum(['active','former','prospect']).nullable()});
 const msDay=86400000,moscow=10800000;
@@ -104,15 +106,27 @@ export async function runSchedules(now=new Date()){
   }
  }
 }
-function processTask(value:Definition,context:Record<string,unknown>,at:Date){
- return withDue(taskInput.parse({title:renderTemplate(value.title,context),description:value.description||'Создана бизнес-процессом «'+value.name+'».',customFields:value.customFields,
-  companyId:z.uuid().safeParse((context.company as {id?:string}|undefined)?.id).data,assigneeId:value.assigneeId,price:value.price,deadline:null,plannedStart:null,plannedEnd:null,parentId:null,important:null,customerRisk:null}),at,value.deadlineHours);
+function processTask(value:Definition,context:Record<string,unknown>,at:Date,action:GraphAction=value){
+ return withDue(taskInput.parse({title:renderTemplate(action.title,context),description:value.description||'Создана бизнес-процессом «'+value.name+'».',customFields:value.customFields,
+  companyId:z.uuid().safeParse((context.company as {id?:string}|undefined)?.id).data,assigneeId:action.assigneeId,price:action.price,deadline:null,plannedStart:null,plannedEnd:null,parentId:null,important:null,customerRisk:null}),at,action.deadlineHours);
+}
+function processPlan(value:Definition,context:Record<string,unknown>):{branch:'yes'|'no';actions:GraphAction[];trace:Trace[]}{
+ if(value.graph)return runGraph(value.graph,context);
+ const branch=chooseBranch(value,context);
+ return {branch,actions:branch===value.branch?[value]:[],trace:[{nodeId:'condition',label:value.field+' '+value.operator+' '+value.value,branch}]};
+}
+function validateGraph(value:Definition){
+ if(!value.graph)return;
+ const errors=graphErrors(value.graph,value.trigger);
+ assert(!errors.length,400,errors.join(' '));
 }
 export function previewProcess(actor:User,body:unknown){
  requireOkbAccess(actor);
  const {definition,sample,task}=z.object({definition:processInput,sample:companySample,task:z.object({title:z.string().max(500),assigneeId:z.string().max(100)}).optional()}).parse(body);
- const context={company:sample,task},branch=chooseBranch(definition,context);
- return {branch,title:branch===definition.branch?processTask(definition,context,new Date()).title:null};
+ validateGraph(definition);
+ const context={company:sample,task},plan=processPlan(definition,context);
+ const titles=plan.actions.map(action=>processTask(definition,context,new Date(),action).title);
+ return {branch:plan.branch,title:titles[0]??null,...(definition.graph?{titles,trace:plan.trace}:{})};
 }
 export async function saveProcess(actor:User,body:unknown,existingId?:string){
  requireOkbAccess(actor);
@@ -120,11 +134,13 @@ export async function saveProcess(actor:User,body:unknown,existingId?:string){
  if(value.companyId)await getCompany(actor,value.companyId);
  const sample={company:{name:'Компания',status:'active',previousStatus:'prospect'},task:{title:'Исходная задача'}};
  return transaction(async db=>{
-  await validateTaskAssignment(db,actor,processTask(value,sample,new Date()));
+  for(const action of value.graph?value.graph.nodes.flatMap(node=>node.type==='task'?[node.config]:[]):[value]){
+   await validateTaskAssignment(db,actor,processTask(value,sample,new Date(),action));
+  }
   const id=existingId??randomUUID();
   if(existingId){
-   const updated=await db.query('UPDATE business_processes SET name=$2,definition=$3,revision=revision+1 WHERE id=$1 AND NOT enabled',[id,value.name,JSON.stringify(value)]);
-   assert(updated.rowCount,409,'Остановите процесс перед изменением.');
+   const updated=await db.query('UPDATE business_processes SET name=$2,definition=$3,revision=revision+1 WHERE id=$1',[id,value.name,JSON.stringify(value)]);
+   assert(updated.rowCount,404,'Процесс не найден.');
    return {id};
   }
   await db.query('INSERT INTO business_processes(id,actor_id,name,definition) VALUES($1,$2,$3,$4)',[id,actor.id,value.name,JSON.stringify(value)]);
@@ -133,40 +149,62 @@ export async function saveProcess(actor:User,body:unknown,existingId?:string){
 }
 export async function listProcesses(actor:User){
  requireOkbAccess(actor);
- const items=(await pool.query('SELECT id,actor_id,name,definition,enabled,enabled_since,revision FROM business_processes ORDER BY created_at DESC LIMIT 100')).rows;
- const runs=(await pool.query('SELECT process_id,branch,task_id,error,created_at FROM business_runs ORDER BY created_at DESC LIMIT 30')).rows;
+ const items=(await pool.query('SELECT p.id,p.actor_id,p.name,p.definition,p.enabled,p.enabled_since,p.revision,p.published_revision,v.definition AS published_definition FROM business_processes p LEFT JOIN business_versions v ON v.process_id=p.id AND v.revision=p.published_revision ORDER BY p.created_at DESC LIMIT 100')).rows;
+ const runs=(await pool.query(`SELECT r.process_id,r.branch,r.task_id,r.error,r.created_at,r.trace,r.process_revision,
+  (SELECT json_agg(t.task_id ORDER BY t.task_id) FROM business_run_tasks t WHERE t.process_id=r.process_id AND t.event_id=r.event_id) AS task_ids
+  FROM business_runs r ORDER BY created_at DESC LIMIT 30`)).rows;
  return {items,runs};
 }
 export async function toggleProcess(actor:User,id:string,enabled:boolean,expectedRevision?:number){
  requireOkbAccess(actor);
- const cursor=enabled?(await okbPool().query('SELECT coalesce(max(id),0) cursor FROM company_status_events')).rows[0].cursor:null;
- const changed=await pool.query('UPDATE business_processes SET enabled=$2,revision=revision+1,enabled_since=CASE WHEN $2 AND NOT enabled THEN clock_timestamp() ELSE enabled_since END,quiet_cursor=CASE WHEN $2 AND NOT enabled THEN NULL ELSE quiet_cursor END,event_cursor=CASE WHEN $2 AND NOT enabled THEN $3 ELSE event_cursor END WHERE id=$1 AND ($4::int IS NULL OR revision=$4)',
-  [id,enabled,cursor,expectedRevision??null]);
- assert(changed.rowCount,expectedRevision===undefined?404:409,expectedRevision===undefined?'Процесс не найден.':'Процесс изменился. Обновите список и подтвердите ещё раз.');
+ await transaction(async db=>{
+  const row=(await db.query('SELECT * FROM business_processes WHERE id=$1 FOR UPDATE',[id])).rows[0];
+  assert(row,404,'Процесс не найден.');
+  assert(expectedRevision===undefined||row.revision===expectedRevision,409,'Процесс изменился. Обновите список и подтвердите ещё раз.');
+  if(!enabled){await db.query('UPDATE business_processes SET enabled=false,revision=revision+1 WHERE id=$1',[id]);return;}
+  const definition=processInput.parse(row.definition);
+  validateGraph(definition);
+  const owner=(await db.query<User>('SELECT * FROM users WHERE id=$1',[row.actor_id])).rows[0];
+  requireOkbAccess(owner);
+  const sample={company:{name:'Компания',status:'active',previousStatus:'prospect'},task:{title:'Исходная задача'}};
+  for(const action of definition.graph?definition.graph.nodes.flatMap(node=>node.type==='task'?[node.config]:[]):[definition]){
+   await validateTaskAssignment(db,owner,processTask(definition,sample,new Date(),action));
+  }
+  const cursor=(await okbPool().query('SELECT coalesce(max(id),0) cursor FROM company_status_events')).rows[0].cursor;
+  const revision=row.revision+1;
+  await db.query('INSERT INTO business_versions(process_id,revision,definition,published_by) VALUES($1,$2,$3,$4)',[id,revision,JSON.stringify(definition),actor.id]);
+  await db.query(`UPDATE business_processes SET enabled=true,revision=$2,published_revision=$2,enabled_since=clock_timestamp(),
+   quiet_cursor=NULL,event_cursor=$3 WHERE id=$1`,[id,revision,cursor]);
+ });
 }
 type RunContext={company?:{id?:string;name:string;status:string;previousStatus?:string|null};task?:{title:string;assigneeId:string}};
-async function executeProcess(db:Db,row:{id:string;actor_id:string},definition:Definition,eventId:string,context:RunContext,now:Date){
- const branch=chooseBranch(definition,context);
- let taskId:string|null=null,error:string|null=null;
- if(branch===definition.branch){
+async function executeProcess(db:Db,row:{id:string;actor_id:string;published_revision:number},definition:Definition,eventId:string,context:RunContext,now:Date){
+ const plan=processPlan(definition,context),taskIds:string[]=[];
+ let error:string|null=null;
+ if(plan.actions.length){
   await db.query('SAVEPOINT process_task');
   try{
    const actor=(await db.query<User>('SELECT * FROM users WHERE id=$1',[row.actor_id])).rows[0];
    requireOkbAccess(actor);
-   taskId=await makeTask(db,actor,processTask(definition,context,now),'process:'+row.id+':'+eventId);
+   for(const [index,action] of plan.actions.entries())taskIds.push(await makeTask(db,actor,processTask(definition,context,now,action),'process:'+row.id+':'+eventId+':'+index));
   }catch(e){
    await db.query('ROLLBACK TO SAVEPOINT process_task');
-   error=e instanceof AppError?e.message:'Не удалось создать задачу для события.';
+   taskIds.length=0;
+   error=e instanceof AppError?e.message:'Не удалось создать задачи для события.';
   }
   await db.query('RELEASE SAVEPOINT process_task');
  }
- await db.query('INSERT INTO business_runs(process_id,event_id,branch,task_id,error) VALUES($1,$2,$3,$4,$5)',[row.id,eventId,branch,taskId,error]);
+ await db.query('INSERT INTO business_runs(process_id,event_id,branch,task_id,error,process_revision,trace) VALUES($1,$2,$3,$4,$5,$6,$7)',
+  [row.id,eventId,plan.branch,taskIds[0]??null,error,row.published_revision,JSON.stringify(plan.trace)]);
+ for(const taskId of taskIds)await db.query('INSERT INTO business_run_tasks(process_id,event_id,task_id) VALUES($1,$2,$3)',[row.id,eventId,taskId]);
 }
 async function runProcess(id:string,now:Date){
  await transaction(async db=>{
   const row=(await db.query('SELECT * FROM business_processes WHERE id=$1 AND enabled FOR UPDATE SKIP LOCKED',[id])).rows[0];
   if(!row)return;
-  const definition=processInput.parse(row.definition);
+  const published=(await db.query('SELECT definition FROM business_versions WHERE process_id=$1 AND revision=$2',[row.id,row.published_revision])).rows[0];
+  if(!published)return;
+  const definition=processInput.parse(published.definition);
   if(definition.trigger==='company_status'){
    const events=(await okbPool().query('SELECT id,event_id,snapshot FROM company_status_events WHERE id>$1 AND ($2::timestamptz IS NULL OR occurred_at>=$2) ORDER BY id LIMIT 5',[row.event_cursor,row.enabled_since])).rows;
    for(const item of events){

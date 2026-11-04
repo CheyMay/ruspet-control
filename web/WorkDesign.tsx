@@ -1,3 +1,5 @@
+import {ProcessGraphEditor,seedGraph} from './ProcessGraph.js';
+import {graphErrors,type ProcessGraph,type Trace} from '../shared/process-graph.js';
 import {CompanyWork} from './CompanyWork.js';
 import {CompanyPicker} from './TaskComposeTools.js';
 import {useEffect,useState,type FormEvent} from 'react';
@@ -69,10 +71,10 @@ type Trigger='company_status'|'company_quiet'|'task_accepted';
 const triggerLabels:Record<Trigger,string>={company_status:'Новая компания или смена статуса',company_quiet:'Давно не было контакта',task_accepted:'Результат задачи принят'};
 const conditionFields:Record<string,string>={'company.status':'Новый статус','company.previousStatus':'Прежний статус','company.name':'Название компании','task.title':'Название принятой задачи','task.assigneeId':'Исполнитель принятой задачи'};
 const operators:Record<string,string>={'=':'равно','!=':'не равно',contains:'содержит',exists:'заполнено'};
-type Definition={trigger?:Trigger;companyId?:string|null;quietDays?:number;description?:string;customFields?:ProcessDraft['customFields'];name:string;field:string;operator:string;value:string;branch:'yes'|'no';title:string;assigneeId:string;price:number;deadlineHours:number|null};
-type Process={id:string;name:string;definition:Definition;enabled:boolean;enabled_since:string|null;revision:number};
-type Run={process_id:string;branch:'yes'|'no';task_id:string|null;error:string|null;created_at:string};
-type Preview={branch:'yes'|'no';title:string|null};
+type Definition={graph?:ProcessGraph;trigger?:Trigger;companyId?:string|null;quietDays?:number;description?:string;customFields?:ProcessDraft['customFields'];name:string;field:string;operator:string;value:string;branch:'yes'|'no';title:string;assigneeId:string;price:number;deadlineHours:number|null};
+type Process={id:string;name:string;definition:Definition;enabled:boolean;enabled_since:string|null;revision:number;published_revision:number|null;published_definition:Definition|null};
+type Run={process_id:string;branch:'yes'|'no';task_id:string|null;error:string|null;created_at:string;process_revision:number|null;task_ids:string[]|null;trace:Trace[]|null};
+type Preview={branch:'yes'|'no';title:string|null;titles?:string[];trace?:Trace[]};
 export type ProcessDraft={companyId?:string|null;title:string;assigneeId:string;price:number;description:string;customFields:{label:string;value:string}[]};
 
 export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft:ProcessDraft|null;open:(id:string)=>void}){
@@ -81,6 +83,8 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
  const [operator,setOperator]=useState('='),[field,setField]=useState('company.status'),[branch,setBranch]=useState<'yes'|'no'>('yes'),[preview,setPreview]=useState<Preview|null>(null);
  const [trigger,setTrigger]=useState<Trigger>('company_status'),[companyId,setCompanyId]=useState<string|null>(draft?.companyId??null);
  const [editing,setEditing]=useState<Process|null>(null),[activation,setActivation]=useState<Process|null>(null);
+ const newGraph=()=>seedGraph({title:draft?.title||'Связаться с {{company.name}}',assigneeId:draft?.assigneeId||user.id,price:draft?.price??0,deadlineHours:null});
+ const [graph,setGraph]=useState<ProcessGraph|null>(newGraph);
  const [activationCompany,setActivationCompany]=useState<Company|null>(null);
  useEffect(()=>{
   setActivationCompany(null);
@@ -114,8 +118,8 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
  async function submit(event:FormEvent<HTMLFormElement>){
   event.preventDefault();
   const f=new FormData(event.currentTarget);
-  const definition:Definition={trigger,companyId,quietDays:trigger==='company_quiet'?Number(f.get('quietDays')):undefined,description:String(f.get('description')),customFields:template?.customFields,name:String(f.get('name')),field,operator,value:String(f.get('value')||''),branch,
-   title:String(f.get('title')),assigneeId:String(f.get('assigneeId')),price:Number(f.get('price')),deadlineHours:f.get('deadlineHours')?Number(f.get('deadlineHours')):null};
+  const definition:Definition={graph:graph??undefined,trigger,companyId,quietDays:trigger==='company_quiet'?Number(f.get('quietDays')):undefined,description:String(f.get('description')),customFields:template?.customFields,name:String(f.get('name')),field,operator,value:String(f.get('value')||''),branch,
+   title:String(f.get('title')||template?.title||'Новая задача процесса'),assigneeId:String(f.get('assigneeId')||template?.assigneeId||user.id),price:Number(f.get('price')??template?.price??0),deadlineHours:f.get('deadlineHours')?Number(f.get('deadlineHours')):null};
   const test=(event.nativeEvent as SubmitEvent).submitter?.getAttribute('value')==='preview';
   setBusy(true);setError('');setNotice('');
   try{
@@ -135,6 +139,13 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
     {trigger==='company_quiet'&&<label>Дней без контакта<input name="quietDays" type="number" min="1" max="365" required defaultValue={editing?.definition.quietDays??14}/></label>}
     <CompanyPicker value={companyId} onChange={setCompanyId}/>
     <p className="muted">{companyId?'Процесс будет работать только для выбранной компании.':'Без привязки процесс проверяет все подходящие события.'}</p>
+    {graph?<ProcessGraphEditor key={editing?.id||'new-graph'} graph={graph} onChange={value=>{setGraph(value);setPreview(null);}} users={users} userId={user.id} trigger={trigger}/>:<>
+    <button type="button" className="button secondary" onClick={e=>{
+     const form=e.currentTarget.form;if(!form)return;
+     const f=new FormData(form);
+     setGraph(seedGraph({title:String(f.get('title')||'Новая задача'),assigneeId:String(f.get('assigneeId')||user.id),price:Number(f.get('price')),deadlineHours:f.get('deadlineHours')?Number(f.get('deadlineHours')):null},
+      {field:field as Extract<ProcessGraph['nodes'][number],{type:'condition'}>['config']['field'],operator:operator as '='|'!='|'contains'|'exists',value:String(f.get('value')||'')},branch));setPreview(null);
+    }}>Перенести этот процесс на схему</button>
     <div className="process-flow"><div><small>СОБЫТИЕ</small><strong>{triggerLabels[trigger]}</strong></div><div><small>УСЛОВИЕ</small><strong>Проверить значение поля</strong></div><div><small>ДА</small><strong>{branch==='yes'?'Создать задачу':'Завершить'}</strong></div><div><small>НЕТ</small><strong>{branch==='no'?'Создать задачу':'Завершить'}</strong></div></div>
     <div className="editor-grid">
      <label>Поле<select value={field} onChange={e=>{setField(e.target.value);if(operator==='contains')setOperator('=');}}><option value="company.status">Новый статус</option>{trigger==='company_status'&&<option value="company.previousStatus">Прежний статус</option>}<option value="company.name">Название компании</option>{trigger==='task_accepted'&&<><option value="task.title">Название принятой задачи</option><option value="task.assigneeId">Исполнитель принятой задачи</option></>}</select></label>
@@ -143,35 +154,55 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
      <label>Создать задачу в ветке<select value={branch} onChange={e=>setBranch(e.target.value as 'yes'|'no')}><option value="yes">Да</option><option value="no">Нет</option></select></label>
     </div>
     <label>Название задачи<input name="title" required minLength={3} maxLength={500} defaultValue={template?.title||'Связаться с {{company.name}}'}/></label>
-    <label>Описание задачи<textarea name="description" maxLength={10000} defaultValue={template?.description}/></label>
-    {!!template?.customFields?.length&&<p className="muted">Дополнительные поля из шаблона · {template.customFields.map(f=>f.label).join(", ")}</p>}
-    <p className="muted">Подставить название компании можно через <code>{'{{company.name}}'}</code>.</p>
     <div className="editor-grid"><label>Исполнитель<select name="assigneeId" defaultValue={template?.assigneeId||user.id}>{users.map(u=><option value={u.id} key={u.id}>{u.name}</option>)}</select></label>
      <label>Цена задачи · ₽<input name="price" type="number" min="0" max="999999999999.99" step="0.01" required defaultValue={template?.price??0}/></label>
      <label>Срок после запуска · часов<input name="deadlineHours" type="number" min="1" max="8760" defaultValue={editing?.definition.deadlineHours??undefined} placeholder="Без срока"/></label></div>
+    </>}
+    <label>Описание задачи<textarea name="description" maxLength={10000} defaultValue={template?.description}/></label>
+    {!!template?.customFields?.length&&<p className="muted">Дополнительные поля из шаблона · {template.customFields.map(f=>f.label).join(", ")}</p>}
+    <p className="muted">Подставить название компании можно через <code>{'{{company.name}}'}</code>.</p>
     <details><summary>Пробный запуск</summary><div className="editor-grid"><label>Название<input name="sampleName" defaultValue="Тестовая компания" maxLength={250}/></label>
      <label>Новый статус<select name="sampleStatus" defaultValue="active">{Object.entries(companyStates).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
      <label>Прежний статус<select name="samplePrevious"><option value="">Отсутствует</option>{Object.entries(companyStates).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label></div>
      {trigger==='task_accepted'&&<div className="editor-grid"><label>Название принятой задачи<input name="sampleTask" defaultValue="Проверить заказ" maxLength={500}/></label><label>Исполнитель принятой задачи<select name="sampleOwner" defaultValue={user.id}>{users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label></div>}
      <button className="button secondary" value="preview" disabled={busy}>Проверить условие</button>
-     {preview&&<p role="status">Ветка «{preview.branch==='yes'?'Да':'Нет'}». {preview.title?'Будет создана задача «'+preview.title+'».':'Действие отсутствует.'}</p>}
+     {preview&&<div role="status"><p>{preview.titles?'Задач в пробном запуске: '+preview.titles.length:preview.title?'Будет создана задача «'+preview.title+'».':'Ветка завершилась без задачи.'}</p>
+      {!!preview.titles?.length&&<ul>{preview.titles.map((title,i)=><li key={i}>{title}</li>)}</ul>}
+      {!!preview.trace?.length&&<ol>{preview.trace.map(step=><li key={step.nodeId}>{step.label}{step.branch?' → '+(step.branch==='yes'?'Да':'Нет'):''}</li>)}</ol>}</div>}
     </details>
-    <div className="heading-actions"><button className="button primary" disabled={busy}>Сохранить черновик</button>{editing&&<button type="button" className="button secondary" onClick={()=>{setEditing(null);setTrigger("company_status");setCompanyId(draft?.companyId??null);setField("company.status");setOperator("=");setBranch("yes");setPreview(null);}}>Новый процесс</button>}</div>{notice&&<p role="status">{notice}</p>}
+    <div className="heading-actions"><button className="button primary" disabled={busy}>Сохранить черновик</button>{editing&&<button type="button" className="button secondary" onClick={()=>{setEditing(null);setGraph(newGraph());setTrigger("company_status");setCompanyId(draft?.companyId??null);setField("company.status");setOperator("=");setBranch("yes");setPreview(null);}}>Новый процесс</button>}</div>{notice&&<p role="status">{notice}</p>}
    </form>
    <h3>Сохранённые процессы</h3>
    {!processes&&<p>Загружаем процессы…</p>}
    {processes?.items.length===0&&<p>Процессов пока нет.</p>}
-   {processes?.items.map(p=><div className="automation-run" key={p.id}><div><strong>{p.name}</strong><p>{p.enabled?'Работает':p.enabled_since?'На паузе':'Черновик'} · {triggerLabels[p.definition.trigger??'company_status']} · {p.definition.title}</p></div><div className="heading-actions">{!p.enabled&&<button type="button" className="button secondary" disabled={busy} onClick={()=>{setEditing(p);setTrigger(p.definition.trigger??"company_status");setCompanyId(p.definition.companyId??null);setField(p.definition.field);setOperator(p.definition.operator);setBranch(p.definition.branch);setPreview(null);setNotice("");}}>Изменить</button>}<button className="button secondary" disabled={busy} onClick={()=>{if(p.enabled)void toggle('/work-design/processes/'+p.id,false,p.revision);else{setError('');setActivation(p);}}}>{p.enabled?'Остановить':'Включить процесс'}</button></div></div>)}
-   {!!processes?.runs.length&&<details className="automation-log"><summary>Журнал последних запусков</summary>{processes.runs.map((r,i)=><div className="automation-run" key={r.process_id+i}><span>{moscowTimestamp(r.created_at)} · {processes.items.find(p=>p.id===r.process_id)?.name} · {r.branch==='yes'?'Да':'Нет'}</span>{r.error?<span className="red-text">{r.error}</span>:r.task_id?<button className="text-button" onClick={()=>open(r.task_id!)}>#{r.task_id}</button>:<span>Без задачи</span>}</div>)}</details>}
+   {processes?.items.map(p=><div className="automation-run" key={p.id}><div><strong>{p.name}</strong>
+    <p>{p.enabled?'Работает · версия '+p.published_revision:p.enabled_since?'На паузе':'Черновик'}{p.enabled&&p.revision!==p.published_revision?' · есть изменения в черновике':''}</p></div>
+    {p.published_definition&&<details><summary>Опубликованная схема</summary><p>{triggerLabels[p.published_definition.trigger??'company_status']}</p>
+     {p.published_definition.graph?<ul>{p.published_definition.graph.nodes.filter(n=>n.type==='condition'||n.type==='task').map(n=><li key={n.id}>{n.type==='condition'?'Условие · '+conditionFields[n.config.field]+' '+operators[n.config.operator]+' '+n.config.value:n.type==='task'?'Задача · '+n.config.title:''}</li>)}</ul>:<p>{p.published_definition.title}</p>}</details>}
+    <div className="heading-actions"><button type="button" className="button secondary" disabled={busy} onClick={()=>{
+     setEditing(p);setGraph(p.definition.graph??null);setTrigger(p.definition.trigger??'company_status');setCompanyId(p.definition.companyId??null);
+     setField(p.definition.field);setOperator(p.definition.operator);setBranch(p.definition.branch);setPreview(null);setNotice('');
+    }}>Открыть черновик</button>
+    {p.enabled&&<button className="button secondary" disabled={busy} onClick={()=>void toggle('/work-design/processes/'+p.id,false,p.revision)}>Остановить</button>}
+    {(!p.enabled||p.revision!==p.published_revision)&&<button className="button primary" disabled={busy} onClick={()=>{setError('');setActivation(p);}}>
+     {p.enabled?'Опубликовать версию':'Включить процесс'}</button>}</div></div>)}
+   {!!processes?.runs.length&&<details className="automation-log"><summary>Журнал последних запусков</summary>{processes.runs.map((r,i)=><details className="automation-log" key={r.process_id+i}>
+    <summary>{moscowTimestamp(r.created_at)} · {processes.items.find(p=>p.id===r.process_id)?.name} {r.process_revision?'· версия '+r.process_revision:''}</summary>
+    {r.error?<p className="red-text">{r.error}</p>:!r.task_id&&<p>Маршрут завершился без задачи.</p>}
+    {(r.task_ids??(r.task_id?[r.task_id]:[])).map(id=><button className="text-button" key={id} onClick={()=>open(id)}>#{id}</button>)}
+    {r.trace&&<ol>{r.trace.map(step=><li key={step.nodeId}>{step.label}{step.branch?' → '+(step.branch==='yes'?'Да':'Нет'):''}</li>)}</ol>}
+   </details>)}</details>}
   </section>}
   {activation&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="Включить процесс">
    <div className="panel-heading"><h2>Включить «{activation.name}»?</h2></div>
    <p>{triggerLabels[activation.definition.trigger??'company_status']}{activation.definition.quietDays?' · '+activation.definition.quietDays+' дн.':''}</p>
+   {activation.definition.graph?<><p>Блоков · {activation.definition.graph.nodes.length}</p><ul>{activation.definition.graph.nodes.flatMap(n=>n.type==='task'?[<li key={n.id}>{n.config.title} · {users.find(person=>person.id===n.config.assigneeId)?.name||'Исполнитель'}</li>]:[])}</ul>
+    {graphErrors(activation.definition.graph,activation.definition.trigger??'company_status').map(error=><p className="red-text" key={error}>{error}</p>)}</>:<>
    <p>Условие · {conditionFields[activation.definition.field]} {operators[activation.definition.operator]} {activation.definition.operator!=='exists'&&
     (activation.definition.field==='task.assigneeId'?users.find(person=>person.id===activation.definition.value)?.name||'выбранному сотруднику':
      (['company.status','company.previousStatus'].includes(activation.definition.field)?companyStates[activation.definition.value as CompanyState]:null)||activation.definition.value)}</p>
-   <p>Ветка «{activation.definition.branch==='yes'?'Да':'Нет'}» создаст задачу «{activation.definition.title}» для {users.find(person=>person.id===activation.definition.assigneeId)?.name||'выбранного исполнителя'}.</p>
-   <p className="muted">{activation.definition.companyId?'Область · '+(activationCompany?.name||'выбранная компания')+'.':'Область · все подходящие события.'} После включения процесс начнёт реагировать на новые события.</p>
+   <p>Ветка «{activation.definition.branch==='yes'?'Да':'Нет'}» создаст задачу «{activation.definition.title}» для {users.find(person=>person.id===activation.definition.assigneeId)?.name||'выбранного исполнителя'}.</p></>}
+   <p className="muted">{activation.definition.companyId?'Область · '+(activationCompany?.name||'выбранная компания')+'.':'Область · все подходящие события.'} Опубликованная версия будет обрабатывать события с момента включения.</p>
    {error&&<p className="alert error" role="alert">{error}</p>}
    <div className="drawer-actions"><button className="button secondary" disabled={busy} onClick={()=>setActivation(null)}>Отмена</button>
     <button className="button primary" disabled={busy} onClick={()=>void toggle('/work-design/processes/'+activation.id,true,activation.revision)}>Подтвердить включение</button></div>

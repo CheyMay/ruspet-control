@@ -4,14 +4,15 @@ import {moscowTimestamp} from './SystemHealth.js';
 import type {Task,User} from '../shared/types.js';
 
 type LinkedTask={id:string;title:string;status:Task['status'];assignee_id:string};
-type Links={source:LinkedTask|null;copies:LinkedTask[]};
+type Links={canDelegate:boolean;source:LinkedTask|null;copies:LinkedTask[]};
 type Targets={version:number;people:User[]};
 const status:Record<Task['status'],string>={active:'В работе',review:'На приёмке',completed:'Завершено'};
 const moscowInput=(value:string|null)=>value?new Date(Date.parse(value)+10800000).toISOString().slice(0,16):'';
 
 export function TaskDelegation({task,user,users,open,onCreated}:{task:Task;user:User;users:User[];open:(id:string)=>void;onCreated:()=>void}){
- const available=user.role!=='employee'&&task.assignee_id===user.id&&task.status==='active';
+
  const [links,setLinks]=useState<Links|null>(null),[show,setShow]=useState(false),[targets,setTargets]=useState<Targets|null>(null);
+ const available=links?.canDelegate??(user.role!=='employee'&&task.assignee_id===user.id&&task.status==='active');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[linkError,setLinkError]=useState(''),[newId,setNewId]=useState<string|null>(null);
  useEffect(()=>{
   let active=true;
@@ -54,7 +55,7 @@ export function TaskDelegation({task,user,users,open,onCreated}:{task:Task;user:
   </div></div>)}
   {show&&<div className="modal-backdrop"><form className="modal task-editor" role="dialog" aria-modal="true" aria-label="Делегировать задачу" onSubmit={submit}>
    <div className="panel-heading"><div><h2>Делегировать задачу</h2><p>#{task.id} · {task.title}</p></div><button type="button" className="text-button" disabled={busy} onClick={()=>setShow(false)}>Закрыть</button></div>
-   <p className="muted">Исходная задача остаётся у вас. Исполнитель получит поручение, а вы примете его результат. Цена поручения 0 ₽, бюджет остаётся в исходной задаче.</p>
+   <p className="muted">Исходная задача остаётся у своего руководителя. Исполнитель получит поручение и сдаст результат на приёмку. Цена поручения 0 ₽, бюджет остаётся в исходной задаче.</p>
    {error&&<p className="alert error" role="alert">{error}</p>}
    {!targets&&!error&&<p role="status">Загружаем подчинённых…</p>}
    {targets?.people.length===0&&<p>В вашей области нет доступных подчинённых.</p>}

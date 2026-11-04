@@ -761,7 +761,10 @@ test('separate OKB database stores companies and triggers only active BPM rules 
   assert.equal((await request('director',work+'/'+created.data.id,{enabled:true,expectedRevision:draft.revision+1},'PATCH')).status,200);
   const changed=await request('director',path+'/'+company.data.id,{...input,status:'active',version:1},'PUT');
   assert.equal(changed.status,200);
-  assert.equal((await request('director',work+'/'+created.data.id,definition,'PUT')).status,409);
+  assert.equal((await request('director',work+'/'+created.data.id,{...definition,title:'Черновик без публикации'},'PUT')).status,200);
+  const changedDraft=(await request('director',work)).data.items.find((item:any)=>item.id===created.data.id);
+  assert.equal(changedDraft.definition.title,'Черновик без публикации');
+  assert.equal(changedDraft.published_definition.title,definition.title);
   assert.equal((await request('director',path+'/'+company.data.id,{...input,status:'former',version:1},'PUT')).status,409);
   await Promise.all([runProcesses(),runProcesses()]);
   const runs=(await request('director',work)).data.runs;
@@ -812,6 +815,29 @@ test('separate OKB database stores companies and triggers only active BPM rules 
   assert.equal(history.filter((r:any)=>r.process_id===quietRule.data.id&&r.task_id).length,1);
   const jobs=(await request('director',companyPath+'/work')).data;
   assert.ok(jobs.tasks.some((t:any)=>t.title==='Архивировать: Проверить тестовый заказ'));
+  const graphTask={title:'Создать первую по {{company.name}}',assigneeId:'anna',price:0,deadlineHours:24};
+  const point={x:10,y:10};
+  const graph={nodes:[
+   {id:'start',type:'start',...point},{id:'check',type:'condition',config:{field:'company.status',operator:'=',value:'active'},...point},
+   {id:'one',type:'task',config:graphTask,...point},{id:'two',type:'task',config:{...graphTask,title:'Создать вторую по {{company.name}}'},...point},
+   {id:'end',type:'end',...point}
+  ],edges:[{from:'start',to:'check',sourcePort:'next'},{from:'check',to:'one',sourcePort:'yes'},{from:'check',to:'end',sourcePort:'no'},
+   {from:'one',to:'two',sourcePort:'next'},{from:'two',to:'end',sourcePort:'next'}]};
+  const graphDefinition={...definition,name:'Граф проверки',graph};
+  const invalid={...graph,edges:graph.edges.map(edge=>edge.from==='two'?{...edge,to:'one'}:edge)};
+  const incomplete=await request('director',work,{...graphDefinition,name:'Цикл',graph:invalid});
+  assert.equal(incomplete.status,201);
+  assert.equal((await request('director',work+'/'+incomplete.data.id,{enabled:true},'PATCH')).status,400);
+  const check=await request('director',work+'/preview',{definition:graphDefinition,sample:{name:'Проба',status:'active',previousStatus:'prospect'}});
+  assert.equal(check.status,200);assert.equal(check.data.titles.length,2);assert.equal(check.data.trace[1].branch,'yes');
+  const negative=await request('director',work+'/preview',{definition:graphDefinition,sample:{name:'Проба',status:'prospect',previousStatus:null}});
+  assert.equal(negative.data.titles.length,0);assert.equal(negative.data.trace[1].branch,'no');
+  const graphProcess=await request('director',work,graphDefinition);assert.equal(graphProcess.status,201);
+  assert.equal((await request('director',work+'/'+graphProcess.data.id,{enabled:true},'PATCH')).status,200);
+  assert.equal((await request('director',path,{...input,name:'Компания для графа',taxId:'0000000002',status:'active'})).status,201);
+  await runProcesses();
+  const graphRun=(await request('director',work)).data.runs.find((row:any)=>row.process_id===graphProcess.data.id);
+  assert.equal(graphRun.task_ids.length,2);assert.equal(graphRun.trace.length,5);
  }finally{await okb.closeOkb();delete process.env.OKB_DATABASE_URL;await adminConnection.query('DROP DATABASE '+name);}
 });
 
@@ -856,6 +882,34 @@ test('delegation creates a priced-zero child, enforces hierarchy and reuses the 
  const token=botButton(preview,'Создать поручение');
  const confirmation=await botClick(actor,channel,token);
  assert.deepEqual(await botClick(actor,channel,token),confirmation);
- assert.match(confirmation.text,/Результат придёт вам на приёмку/);
+ assert.match(confirmation.text,/Результат вернётся руководителю на приёмку/);
  assert.equal((await request('lead-msk',path+'/delegation')).data.copies.length,2);
+});
+
+
+test('org hierarchy and temporary substitution narrow delegation without exposing other queues',async()=>{
+ assert.equal((await request('anna','/org')).status,403);
+ assert.equal((await request('anna','/delegations')).status,403);
+ assert.equal((await request('admin','/org/reporting/anna',{managerId:'lead-msk'},'PUT')).status,200);
+ assert.equal((await request('admin','/org/reporting/lead-msk',{managerId:'head'},'PUT')).status,200);
+ assert.equal((await request('admin','/org/reporting/head',{managerId:'lead-msk'},'PUT')).status,409);
+ const created=await request('director','/tasks',{title:'Задача на время замещения',description:'Проверить заказ',price:0,assigneeId:'lead-msk',deadline:null,
+  plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null});
+ const path='/tasks/'+created.data.id;
+ const targets=(await request('lead-msk',path+'/delegation-targets')).data.people;
+ assert.deepEqual(targets.map((u:any)=>u.id),['anna']);
+ assert.equal((await request('director',path+'/delegation-targets')).status,403);
+ const dates={startsAt:new Date(Date.now()-60000).toISOString(),endsAt:new Date(Date.now()+3600000).toISOString()};
+ const substitution=await request('admin','/org/substitutions',{managerId:'lead-msk',deputyId:'director',...dates});
+ assert.equal(substitution.status,201);
+ assert.equal((await request('admin','/org/substitutions',{managerId:'lead-msk',deputyId:'head',...dates})).status,409);
+ assert.deepEqual((await request('director',path+'/delegation-targets')).data.people.map((u:any)=>u.id),['anna']);
+ const child=await request('director',path+'/delegate',{assigneeId:'anna',expectedVersion:1});
+ assert.equal(child.status,201);
+ assert.equal((await request('director','/tasks/'+child.data.id)).data.task.creator_id,'lead-msk');
+ const delegated=(await request('director','/delegations')).data.find((row:any)=>row.id===child.data.id);
+ assert.equal(delegated.substitution,true);
+ assert.equal((await request('admin','/org/substitutions/'+substitution.data.id,undefined,'DELETE')).status,200);
+ assert.equal((await request('director',path+'/delegation-targets')).status,403);
+ assert.ok(!(await request('director','/delegations')).data.some((row:any)=>row.id===child.data.id));
 });

@@ -19,7 +19,8 @@ export async function event(db:Db,taskId:string|null,actor:string|null,kind:stri
  const id=randomUUID();
  await db.query('INSERT INTO task_events(id,task_id,actor_id,kind,message,data) VALUES ($1,$2,$3,$4,$5,$6)',[id,taskId,actor,kind,message,JSON.stringify(data)]);
  if(taskId&&kind==='task_completed')await db.query(`INSERT INTO task_acceptance_events(event_id,task_id,occurred_at,available_at)
-  SELECT $1,$2,clock_timestamp(),clock_timestamp()+interval '5 minutes' WHERE NOT EXISTS(SELECT 1 FROM business_runs WHERE task_id=$2)`,[id,taskId]);
+  SELECT $1,$2,clock_timestamp(),clock_timestamp()+interval '5 minutes' WHERE NOT EXISTS(SELECT 1 FROM business_runs WHERE task_id=$2)
+  AND NOT EXISTS(SELECT 1 FROM business_run_tasks WHERE task_id=$2)`,[id,taskId]);
 }
 export async function notify(db:Db,taskId:string|null,recipient:string,body:string,key:string) {
  await db.query('INSERT INTO outbox(id,task_id,recipient_id,body,dedupe_key) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),taskId,recipient,body,key]);

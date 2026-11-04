@@ -87,3 +87,20 @@ main select:disabled { opacity:.6; }
 .task-delegation { border:1px solid var(--line); border-radius:7px; padding:12px; margin:0 0 16px; background:var(--theme-surface-soft); }
 .task-delegation p { margin-top:5px; }
 .task-delegation .text-button { white-space:normal; text-align:left; }
+
+.bpm-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(175px,245px); gap:10px; }
+.bpm-board { overflow:auto; min-width:0; border:1px solid var(--line); border-radius:8px; background-color:var(--theme-surface-soft); background-image:radial-gradient(var(--line) 1px,transparent 1px); background-size:15px 15px; }
+.bpm-canvas { position:relative; }
+.bpm-canvas svg { position:absolute; inset:0; pointer-events:none; color:var(--theme-accent); font-size:10px; }
+.bpm-node { position:absolute; width:152px; min-height:67px; text-align:left; background:var(--theme-surface,white); color:var(--theme-text); border:1px solid var(--line); border-radius:7px; padding:9px; cursor:grab; overflow-wrap:anywhere; }
+.bpm-node[aria-pressed="true"] { border-color:var(--theme-accent); box-shadow:0 0 0 1px var(--theme-accent); }
+.bpm-node small { display:block; max-height:28px; overflow:hidden; margin-top:4px; }
+.bpm-inspector { display:grid; align-content:start; gap:8px; border:1px solid var(--line); border-radius:8px; padding:10px; }
+.bpm-inspector label { display:grid; gap:4px; }
+@media(max-width:850px){.bpm-layout{grid-template-columns:minmax(0,1fr)}}
+.bpm-node { padding:0; }
+.bpm-node[data-selected="true"] { border-color:var(--theme-accent); box-shadow:0 0 0 1px var(--theme-accent); }
+.bpm-node-main { width:100%; min-height:65px; background:none; color:inherit; border:0; text-align:left; padding:9px; cursor:grab; overflow-wrap:anywhere; }
+.bpm-ports { position:absolute; top:20px; right:-7px; display:grid; gap:10px; }
+.bpm-ports button { width:14px; height:14px; padding:0; border:1px solid var(--theme-accent); border-radius:50%; background:var(--theme-surface,white); cursor:crosshair; }
+.bpm-ports button[data-active="true"] { background:var(--theme-accent); }

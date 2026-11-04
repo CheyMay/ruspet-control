@@ -1,3 +1,4 @@
+import {myDelegations,orgDirectory,setManager,saveSubstitution,revokeSubstitution} from './org.js';
 import {companyWork,listTaskTemplates,saveTaskTemplate,removeTaskTemplate} from './task-workspace.js';
 import {listCompanies,saveCompany,getCompany,companyContacts,recordCompanyContact} from './okb.js';
 import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,previewProcess,toggleProcess} from './work-design.js';
@@ -71,6 +72,11 @@ export function createApp() {
  app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
  app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));
  app.post('/api/alerts/:id/ack',async(req,res)=>res.json(await acknowledgeAlert(req.actor,String(req.params.id))));
+ app.get('/api/org',async(req,res)=>res.json(await orgDirectory(req.actor)));
+ app.put('/api/org/reporting/:id',async(req,res)=>{await setManager(req.actor,String(req.params.id),req.body);res.json({ok:true});});
+ app.post('/api/org/substitutions',async(req,res)=>res.status(201).json(await saveSubstitution(req.actor,req.body)));
+ app.delete('/api/org/substitutions/:id',async(req,res)=>{await revokeSubstitution(req.actor,z.uuid().parse(req.params.id));res.json({ok:true});});
+ app.get('/api/delegations',async(req,res)=>res.json(await myDelegations(req.actor)));
  app.get('/api/tasks/:id/delegation',async(req,res)=>res.json(await delegationLinks(req.actor,String(req.params.id))));
  app.get('/api/tasks/:id/delegation-targets',async(req,res)=>res.json(await delegationTargets(req.actor,String(req.params.id))));
  app.post('/api/tasks/:id/delegate',async(req,res)=>res.status(201).json(await delegateTask(req.actor,String(req.params.id),z.object({

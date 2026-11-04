@@ -1,3 +1,4 @@
+import {actingManager,delegatesFor} from './org.js';
 import {recordTaskAction,recordTaskBarrier} from './undo-record.js';
 import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
@@ -18,23 +19,17 @@ export async function validateTaskAssignment(db:Db,u:User,input:TaskInput,id?:st
  return owner!;
 }
 export async function createTask(u:User,input:TaskInput){return transaction(db=>insertTask(db,u,input));}
-async function insertTask(db:Db,u:User,input:TaskInput,source?:Task){
+async function insertTask(db:Db,u:User,input:TaskInput,source?:Task,performer=u){
  if(!source&&input.companyId)await getCompany(u,input.companyId);
- const owner=await validateTaskAssignment(db,u,input),id='L-'+randomUUID().slice(0,8);
+ const owner=source?(await db.query<User>('SELECT * FROM users WHERE id=$1',[input.assigneeId])).rows[0]:await validateTaskAssignment(db,u,input),id='L-'+randomUUID().slice(0,8);
  assert(input.price!==undefined&&Number.isFinite(input.price)&&input.price>=0,400,'Цена новой задачи обязательна.');
  const task=(await db.query("INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,price,deadline,original_deadline,planned_start,planned_end,status,priority,code,important,customer_risk,parent_id,custom_fields,company_id,delegated_from_id) VALUES($1,$2,$3,$4,$5,$6,$14,$7,$7,$8,$9,'active','normal',$10,$11,$12,$13,$15,$16,$17) RETURNING *",[id,input.title,input.description,owner.branch_id,owner.id,u.id,input.deadline,input.plannedStart,input.plannedEnd,input.title.split(/\s/)[0],input.important,input.customerRisk,input.parentId,input.price,JSON.stringify(input.customFields??[]),input.companyId??null,source?.id??null])).rows[0];
- await db.query('INSERT INTO mock_provider_tasks(id,snapshot,revision) VALUES($1,$2,1)',[id,JSON.stringify(task)]);await refreshTaskFindings(db,task,u);await event(db,id,u.id,'created',source?'Создано поручение из задачи #'+source.id:'Создана локальная задача',{after:task,delegatedFrom:source?.id});
- await recordTaskBarrier(db,u,id,source?'Делегирование задачи':'Создание задачи');return {id};
+ await db.query('INSERT INTO mock_provider_tasks(id,snapshot,revision) VALUES($1,$2,1)',[id,JSON.stringify(task)]);await refreshTaskFindings(db,task,u);await event(db,id,performer.id,'created',source?'Создано поручение из задачи #'+source.id:'Создана локальная задача',{after:task,delegatedFrom:source?.id});
+ await recordTaskBarrier(db,performer,id,source?'Делегирование задачи':'Создание задачи');return {id};
 }
 
-export function canDelegateTask(actor:User,task:Task){
- return canManage(actor)&&task.assignee_id===actor.id&&task.status==='active'&&canSee(actor,task);
-}
-function canDelegateTo(actor:User,person:User){
- if(actor.id===person.id||person.role==='admin'||person.role==='director')return false;
- if(actor.role==='admin'||actor.role==='director')return true;
- if(actor.role==='sales_head')return person.role==='employee'||person.role==='branch_manager';
- return actor.role==='branch_manager'&&person.role==='employee'&&actor.branch_id===person.branch_id&&!!actor.branch_id&&actor.branch_id!=='Не указан';
+export async function canDelegateTask(actor:User,task:Task){
+ return !!await actingManager(actor,task);
 }
 export async function delegationLinks(actor:User,id:string){
  const task=(await pool.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
@@ -42,33 +37,39 @@ export async function delegationLinks(actor:User,id:string){
  const links=(await pool.query<Task>(`SELECT * FROM tasks WHERE id=$1 OR delegated_from_id=$2
   ORDER BY (status='completed'),updated_at DESC,id LIMIT 50`,[task.delegated_from_id??null,id])).rows
   .filter(item=>canSee(actor,item)).map(item=>({id:item.id,title:item.title,status:item.status,assignee_id:item.assignee_id}));
- return {source:links.find(item=>item.id===task.delegated_from_id)??null,copies:links.filter(item=>item.id!==task.delegated_from_id)};
+ return {canDelegate:await canDelegateTask(actor,task),source:links.find(item=>item.id===task.delegated_from_id)??null,copies:links.filter(item=>item.id!==task.delegated_from_id)};
+}
+function availableDelegate(actor:User,manager:User,person:User){
+ return person.id!==actor.id&&(actor.id===manager.id||globalAccess(actor)||actor.branch_id===person.branch_id);
 }
 export async function delegationTargets(actor:User,id:string){
  const task=(await pool.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
  assert(task&&canSee(actor,task),404,'Задача недоступна.');
- assert(canDelegateTask(actor,task),403,'Делегировать можно свою задачу в работе.');
- const people=(await pool.query<User>('SELECT id,name,role,branch_id,position FROM users ORDER BY name,id')).rows;
- return {version:task.version,people:people.filter(person=>canDelegateTo(actor,person))};
+ const manager=await actingManager(actor,task);
+ assert(manager,403,'Делегировать можно свою задачу в работе или задачу руководителя, которого вы замещаете.');
+ return {version:task.version,people:(await delegatesFor(manager)).filter(person=>availableDelegate(actor,manager,person))};
+
 }
 export async function delegateTask(actor:User,id:string,input:{assigneeId:string;expectedVersion:number;instruction?:string;deadline?:string|null}){
  return transaction(async db=>{
+  await db.query('SELECT pg_advisory_xact_lock_shared(431036)');
   const source=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
   assert(source&&canSee(actor,source),404,'Задача недоступна.');
-  assert(canDelegateTask(actor,source),403,'Делегировать можно свою задачу в работе.');
+  const manager=await actingManager(actor,source,db);
+  assert(manager,403,'Делегировать можно свою задачу в работе или задачу руководителя, которого вы замещаете.');
   assert(source.version===input.expectedVersion,409,'Задача изменилась. Откройте её заново.');
-  const target=(await db.query<User>('SELECT * FROM users WHERE id=$1',[input.assigneeId])).rows[0];
-  assert(target&&canDelegateTo(actor,target),403,'Выберите подчинённого из доступного списка.');
+  const target=(await delegatesFor(manager,db)).find(p=>p.id===input.assigneeId&&availableDelegate(actor,manager,p));
+  assert(target,403,'Выберите подчинённого из доступного списка.');
   const existing=(await db.query("SELECT id FROM tasks WHERE delegated_from_id=$1 AND assignee_id=$2 AND status<>'completed' LIMIT 1",[id,target.id])).rows[0];
   if(existing)assert(false,409,'У сотрудника уже есть открытое поручение #'+existing.id+'.');
   const instruction=input.instruction?.trim()??'';
   const deadline=input.deadline===undefined?source.deadline:input.deadline;
-  const copy=await insertTask(db,actor,{title:source.title,description:instruction?[source.description,'Уточнение руководителя: '+instruction].filter(Boolean).join('\n\n'):source.description,
+  const copy=await insertTask(db,manager,{title:source.title,description:instruction?[source.description,'Уточнение руководителя: '+instruction].filter(Boolean).join('\n\n'):source.description,
    assigneeId:target.id,price:0,deadline,plannedStart:null,plannedEnd:null,important:source.important,
    customerRisk:null,parentId:source.id,companyId:source.company_id,customFields:source.custom_fields},
-   source);
+   source,actor);
   await event(db,source.id,actor.id,'task_delegated','Создано поручение #'+copy.id+' для '+target.name,
-   {delegatedTaskId:copy.id,assigneeId:target.id,instruction});
+   {delegatedTaskId:copy.id,assigneeId:target.id,instruction,onBehalfOf:manager.id});
   await notify(db,copy.id,target.id,actor.name+' делегировал задачу #'+copy.id+' · '+source.title,'delegation:'+copy.id);
   return copy;
  });
