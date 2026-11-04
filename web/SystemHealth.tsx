@@ -28,6 +28,7 @@ type RecordStatus={at:string;ok:boolean|null;copies:number|null;tasks:number|nul
 type Status={
  telegram:{enabled:boolean;deliveryEnabled:boolean;bindings:number;lastPoll:string|null;error:string|null;pending:number;delivery:{state:string;count:number}[];timings:{kind:string;samples:number;errors:number;median:number|null;p95:number|null}[]};
  reports:{enabled:boolean;alive:boolean;heartbeat:string|null;runs:{state:string;finished_at:string|null}[]};
+ bitrix:{staged:number;linked:number;conflicts:number;lastSuccess:string|null};
  backups:{backup:RecordStatus;restore:RecordStatus;backupAttempt:RecordStatus;restoreAttempt:RecordStatus};
 };
 function isLate(record:RecordStatus,hours:number){
@@ -50,6 +51,7 @@ export function SystemHealth(){
     <div><span>Автоматические отчёты</span><strong>{!reports.enabled?'Выключены':reports.alive?'Работают':'Нет сигнала'}</strong><small>Последний готовый · {moscowTimestamp(reports.runs.find(r=>r.state==='done')?.finished_at)}</small><small>Последняя ошибка · {moscowTimestamp(reports.runs.find(r=>r.state==='failed')?.finished_at)}</small></div>
     <div><span>Копия базы данных</span><strong>{backups.backup?.copies!=null?backups.backup.copies+' на сервере':'Нет данных'}</strong><small>Последняя копия · {moscowTimestamp(backups.backup?.at)}</small><small>Ежедневно в 03:30 МСК</small>{isLate(backups.backup,26)&&<small className="red-text">Копия старше 26 часов</small>}{backups.backupAttempt?.ok===false&&<small className="red-text">Ошибка последней попытки · {moscowTimestamp(backups.backupAttempt.at)}</small>}</div>
     <div><span>Пробное восстановление</span><strong>{backups.restore?.tasks!=null?backups.restore.tasks+' задач в проверенной копии':'Нет данных'}</strong><small>Проверено · {moscowTimestamp(backups.restore?.at)}</small><small>По воскресеньям в 04:15 МСК</small>{isLate(backups.restore,170)&&<small className="red-text">Проверка просрочена</small>}{backups.restoreAttempt?.ok===false&&<small className="red-text">Ошибка последней попытки · {moscowTimestamp(backups.restoreAttempt.at)}</small>}</div>
+    <div><span>Битрикс24 · пилот</span><strong>{value.bitrix.lastSuccess?'Связано задач: '+value.bitrix.linked:'Ожидает подключения'}</strong><small>Снимки в буфере · {value.bitrix.staged}</small><small>Требуют проверки · {value.bitrix.conflicts}</small><small>Последний ответ REST · {moscowTimestamp(value.bitrix.lastSuccess)}</small></div>
    </div>
    <p className="muted">При неподтверждённой доставке Telegram мог принять сообщение. Для таких отправок автоповтор отключён.</p>
    <h3>Скорость ответов Telegram · последние 7 дней</h3>

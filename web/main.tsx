@@ -7,4 +7,5 @@ import './theme.css';
 import './reminders.css';
 import './reports-v5.css';
 import './management.css';
+import './usability.css';
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

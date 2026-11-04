@@ -19,4 +19,10 @@ export async function processTaskSync(adapter:TaskSyncAdapter,now=new Date(),lim
   return {sent};
  }finally{if(acquired)await lock.query('SELECT pg_advisory_unlock(431015)');lock.release();}
 }
-export async function taskSyncStatus(){return {provider:'mock',connected:false,queue:(await pool.query('SELECT state,count(*)::int count FROM task_sync_queue GROUP BY state')).rows};}
+export async function taskSyncStatus(){
+ const counts=(await pool.query(`SELECT (SELECT count(*)::int FROM bitrix_task_snapshots) AS staged,
+  count(*)::int AS linked,count(*) FILTER(WHERE conflict IS NOT NULL)::int AS conflicts,
+  max(checked_at) AS "lastCheck", (SELECT last_success_at FROM bitrix_rest_gate WHERE id=1) AS "lastSuccess" FROM bitrix_task_links`)).rows[0];
+ return {provider:counts.linked?'bitrix-pilot':'mock',connected:!!counts.lastSuccess&&Date.now()-Date.parse(counts.lastSuccess)<600000,bitrix:counts,
+  queue:(await pool.query('SELECT state,count(*)::int count FROM task_sync_queue GROUP BY state')).rows};
+}

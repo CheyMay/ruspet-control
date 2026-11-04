@@ -68,6 +68,15 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   rows.push([button('Обсуждение','discussion',{id:t.id}),form('Написать комментарий','comment',pending?.id)]);const lastAction=await lastUndo(u,t.id);if(lastAction)rows.push([button('Отменить последнее действие','undo_prepare',{id:t.id,target:lastAction.id})]);
   rows.push([button('История','history',{id:t.id}),button('Меню','home')]);return screen(u,ch,text,rows);
  }
+ if(p.op==='report_pdf'){const report=await getReport(u,p.id!);return {text:'PDF · '+new Date(report.created_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}),buttons:[],document:{reportId:report.id}};}
+ if(p.op==='reports'){
+  const page=p.page||0,report=p.id?await getReport(u,p.id):null;
+  const rows:ReturnType<typeof button>[][]=[];
+  if(report){const content=reportText(report);rows.push([button('PDF отчёта','report_pdf',{id:report.id})],[button('К архиву','reports',{page})],[button('Меню','home')]);const result=await screen(u,ch,content.text.slice(0,3900),rows);return {...result,text:linkedText(content.text.length>3500?content.text.slice(0,3400)+'\nПолная сводка — в PDF и на сайте.':content.text,content.links),format:'HTML',links:[{text:'Отчёт на сайте',url:reportLink(publicOrigin(),report.id)}]};}
+  const archive=await listReports(u,{page:Math.floor(page/2)});
+  for(const r of archive.items.slice((page%2)*10,(page%2)*10+10))rows.push([button(date(r.summary?.to||r.created_at)+' · '+({snapshot:'Общий',daily:'Итоги и завтра',period:'За период',today:'Сегодня',overdue:'Просрочки',review:'Приёмка',nextday:'План'} as Record<string,string>)[r.kind||'snapshot'],'reports',{id:r.id,page})]);
+  rows.push([...(page?[button('← Назад','reports',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1})]:[])],[button('Общий отчёт сейчас','report_now')],[button('Итоги дня и завтра','report_evening')],[button('Меню','home')]);return screen(u,ch,'Отчёты · '+archive.total+'\nВыберите снимок или сформируйте новый. Каждый отчёт сохраняет время и параметры.',rows);
+ }
  const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(x=>x.id===id)?.name||id;
  if(p.op==='search'){
   const query=(p.query||'').trim().toLocaleLowerCase('ru-RU');assert(query.length>=2&&query.length<=100,400,'Для поиска введите не менее 2 символов после /search.');
@@ -92,14 +101,6 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   const s=summarize(data.tasks,now),pending=data.approvals.filter(a=>a.state==='pending').length;
   const urgent=data.tasks.filter(t=>taskQueue(t,now)==='overdue').sort((a,b)=>Number(!!b.customer_risk)-Number(!!a.customer_risk)||(a.deadline||'').localeCompare(b.deadline||'')).slice(0,3);
   return screen(u,ch,`📊 РУСПЭТ · сводка руководителя\n${date(data.serverTime)} МСК · ваша область доступа\n\nВсего задач: ${s.total}\nПросрочены ранее: ${s.overdue}\nПоследний день сегодня: ${s.today}\nСрок впереди: ${s.upcoming}\nБез срока: ${s.no_deadline}\nНа приёмке: ${s.review}\nЗавершены: ${s.completed}\n\nОтдельно: ${pending} согласований — входят в задачи выше.\n\nВ первую очередь\n${urgent.map(t=>`• #${t.id} ${t.title.slice(0,110)}\n  ${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n')||'Просрочек с прошлых дней нет.'}\n\nЧек-листы и анализ невыполненных задач исключены. Это текущая сводка; сохранённые снимки — в архиве.`,[[button('Обновить сводку','brief')],[button('Архив отчётов','reports')],...urgent.map(t=>[button('Открыть #'+t.id,'task',{id:t.id})]),[button('В меню','home')]]);
- }
- if(p.op==='report_pdf'){const report=await getReport(u,p.id!);return {text:'PDF · '+new Date(report.created_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}),buttons:[],document:{reportId:report.id}};}
- if(p.op==='reports'){
-  const page=p.page||0,archive=await listReports(u,{page:Math.floor(page/2)}),report=p.id?await getReport(u,p.id):null;
-  const rows:ReturnType<typeof button>[][]=[];
-  if(report){const content=reportText(report);rows.push([button('PDF отчёта','report_pdf',{id:report.id})],[button('К архиву','reports',{page})],[button('Меню','home')]);const result=await screen(u,ch,content.text.slice(0,3900),rows);return {...result,text:linkedText(content.text.length>3500?content.text.slice(0,3400)+'\nПолная сводка — в PDF и на сайте.':content.text,content.links),format:'HTML',links:[{text:'Отчёт на сайте',url:reportLink(publicOrigin(),report.id)}]};}
-  for(const r of archive.items.slice((page%2)*10,(page%2)*10+10))rows.push([button(date(r.summary?.to||r.created_at)+' · '+({snapshot:'Общий',daily:'Итоги и завтра',period:'За период',today:'Сегодня',overdue:'Просрочки',review:'Приёмка',nextday:'План'} as Record<string,string>)[r.kind||'snapshot'],'reports',{id:r.id,page})]);
-  rows.push([...(page?[button('← Назад','reports',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1})]:[])],[button('Общий отчёт сейчас','report_now')],[button('Итоги дня и завтра','report_evening')],[button('Меню','home')]);return screen(u,ch,'Отчёты · '+archive.total+'\nВыберите снимок или сформируйте новый. Каждый отчёт сохраняет время и параметры.',rows);
  }
  if(p.op==='report_now'||p.op==='report_evening'){const report=await (await import('./service.js')).makeReport(u,p.op==='report_now'?'snapshot':'daily','bot:'+randomBytes(12).toString('hex'));return botView(u,ch,{op:'reports',id:report.id});}
  if(['inbox','tasks','day'].includes(p.op)){

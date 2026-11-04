@@ -631,3 +631,74 @@ test('system health and access directory enforce administrator scope and omit cr
  assert.equal(anna.visibleTasks,(await service.visibleTasks(users.find(u=>u.id==='anna')!)).length);
  for(const secret of ['password_hash','token_hash','chat_id'])assert.ok(!JSON.stringify(directory.data).includes(secret));
 });
+
+test('Bitrix staging does not touch live tasks, and linked fields reconcile without overwriting conflicts',async()=>{
+ const {linkTask,scanProject,syncLinkedTask,syncActivity}=await import('../server/bitrix-sync.js');
+ const {webhookBase}=await import('../server/bitrix-rest.js');
+ assert.throws(()=>webhookBase('https://another.example/rest/1/test/','portal.example'),/вебхука/);
+ const local=(await db.pool.query("SELECT * FROM tasks WHERE id='2401'")).rows[0];
+ const external={id:'987654',title:local.title,description:local.description,deadline:local.deadline,chatId:99};
+ let writes=0;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.list')return {tasks:params.filter['>ID']==='0'?[external]:[]} as T;
+  if(method==='tasks.task.get')return {task:{...external}} as T;
+  if(method==='im.dialog.messages.get')return {messages:[{id:91,date:'2026-11-04T10:00:00+03:00',author_id:5,text:'Сообщение'}],users:[{id:5,name:'Автор'}]} as T;
+  if(method==='tasks.task.history.list')return {list:[]} as T;
+  assert.equal(method,'tasks.task.update');assert.deepEqual(params.fields,{DESCRIPTION:'Проверенная локальная правка'});
+  writes++;external.description=params.fields.DESCRIPTION;return true as T;
+ };
+ assert.deepEqual(await scanProject(transport,'12','0',2),{total:1,cursor:external.id,complete:true});
+ assert.equal((await db.pool.query('SELECT count(*)::int n FROM bitrix_task_links')).rows[0].n,0);
+ assert.equal((await linkTask(transport,local.id,external.id)).linked,true);
+ external.title+=' Из Битрикс24';
+ assert.deepEqual((await syncLinkedTask(transport,local.id,false)).inbound,['title']);
+ const task=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[local.id])).rows[0];
+ assert.equal(task.title,external.title);
+ await db.pool.query('UPDATE tasks SET description=$2 WHERE id=$1',[local.id,'Проверенная локальная правка']);
+ assert.deepEqual((await syncLinkedTask(transport,local.id,false)).outbound,['description']);
+ assert.equal(writes,0);
+ const baselineDescription=external.description;
+ external.description='Другая правка с той стороны';
+ assert.deepEqual((await syncLinkedTask(transport,local.id,true)).conflict,['description']);
+ assert.equal(writes,0);
+ external.description=baselineDescription;
+ await syncLinkedTask(transport,local.id,true);
+ assert.equal(writes,1);
+ await syncLinkedTask(transport,local.id,true);
+ assert.equal(writes,1);
+ await syncActivity(transport,local.id);await syncActivity(transport,local.id);
+ assert.equal((await request('anna','/tasks/'+local.id+'/bitrix-activity')).status,403);
+ const activity=await request('admin','/tasks/'+local.id+'/bitrix-activity');
+ assert.equal(activity.status,200);assert.equal(activity.data.length,1);assert.equal(activity.data[0].body,'Сообщение');
+});
+
+test('Bitrix REST calls share a persisted interval and enter cooldown after throttling',async()=>{
+ const {mkdtemp,writeFile,rm}=await import('node:fs/promises');
+ const {tmpdir}=await import('node:os');
+ const {join}=await import('node:path');
+ const {bitrixClient}=await import('../server/bitrix-rest.js');
+ const folder=await mkdtemp(join(tmpdir(),'ruspet-bitrix-'));
+ const file=join(folder,'webhook');
+ const saved={portal:process.env.BITRIX_PORTAL,file:process.env.BITRIX_WEBHOOK_FILE,fetch:globalThis.fetch};
+ try{
+  await writeFile(file,'https://portal.example/rest/10/test-fixture/');
+  process.env.BITRIX_PORTAL='portal.example';process.env.BITRIX_WEBHOOK_FILE=file;
+  const calls:number[]=[];
+  globalThis.fetch=async()=>{
+   calls.push(performance.now());
+   return calls.length===1?Response.json({result:{task:{}}}):Response.json({error:'QUERY_LIMIT_EXCEEDED'},{status:503});
+  };
+  const first=await bitrixClient(),second=await bitrixClient();
+  const outcomes=await Promise.allSettled([first('tasks.task.get',{taskId:1}),second('tasks.task.get',{taskId:2})]);
+  assert.equal(outcomes.filter(o=>o.status==='fulfilled').length,1);
+  assert.equal(calls.length,2);
+  assert.ok(calls[1]-calls[0]>=1000);
+  await assert.rejects(()=>second('tasks.task.get',{taskId:3}),/на паузе/);
+  assert.equal(calls.length,2);
+ }finally{
+  globalThis.fetch=saved.fetch;
+  if(saved.portal===undefined)delete process.env.BITRIX_PORTAL;else process.env.BITRIX_PORTAL=saved.portal;
+  if(saved.file===undefined)delete process.env.BITRIX_WEBHOOK_FILE;else process.env.BITRIX_WEBHOOK_FILE=saved.file;
+  await rm(file,{force:true});await rm(folder,{recursive:false}).catch(async()=>{await (await import('node:fs/promises')).rmdir(folder);});
+ }
+});

@@ -3,6 +3,8 @@ try {
  const saved=localStorage.getItem('ruspet-theme');
  const theme=saved==='dark'||saved==='light'?saved:'light';
  document.documentElement.dataset.theme=theme;
+ const accent=localStorage.getItem('ruspet-accent');
+ if(['green','blue','plum','graphite'].includes(accent))document.documentElement.dataset.accent=accent;
  document.querySelector('meta[name="theme-color"]')?.setAttribute('content',theme==='dark'?'#141c19':'#f5f6f5');
 } catch {
  document.documentElement.dataset.theme='light';
