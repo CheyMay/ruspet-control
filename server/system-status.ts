@@ -7,9 +7,9 @@ import {taskSyncStatus} from './task-sync.js';
 import {operationsStatus} from './automation.js';
 import type {Task,User} from '../shared/types.js';
 
-async function backupRecord(name:string){
+async function backupRecord(name:string,profile:'maintenance'|'okb-maintenance'='maintenance'){
  try{
-  const value=JSON.parse(await readFile('/var/lib/ruspet/maintenance/'+name+'.json','utf8'));
+  const value=JSON.parse(await readFile('/var/lib/ruspet/'+profile+'/'+name+'.json','utf8'));
   if(typeof value.at!=='string'||!Number.isFinite(Date.parse(value.at)))return null;
   return {at:value.at,ok:typeof value.ok==='boolean'?value.ok:null,copies:Number.isInteger(value.copies)?value.copies:null,tasks:Number.isInteger(value.rows?.tasks)?value.rows.tasks:null};
  }catch{return null;}
@@ -17,7 +17,7 @@ async function backupRecord(name:string){
 
 export async function systemStatus(actor:User){
  assert(actor.role==='admin',403,'Диагностика доступна администратору.');
- const [pilot,automation,bindings,timings,reports,backup,restore,backupAttempt,restoreAttempt,sync]=await Promise.all([
+ const [pilot,automation,bindings,timings,reports,backup,restore,backupAttempt,restoreAttempt,sync,okbBackup,okbRestore,okbBackupAttempt,okbRestoreAttempt]=await Promise.all([
   pilotStatus(actor),operationsStatus(),
   pool.query('SELECT u.*,b.paired_at FROM telegram_binding b JOIN users u ON u.id=b.user_id'),
   pool.query(`SELECT kind,count(*)::int samples,count(*) FILTER (WHERE NOT ok)::int errors,
@@ -25,7 +25,9 @@ export async function systemStatus(actor:User){
    round((percentile_cont(0.95) WITHIN GROUP (ORDER BY duration_ms) FILTER (WHERE ok))::numeric)::int p95
    FROM telegram_response_times WHERE created_at>now()-interval '7 days' GROUP BY kind`),
   pool.query("SELECT DISTINCT ON (state) job_key,state,finished_at FROM job_runs WHERE job_key LIKE 'reports-v5:%' AND state IN ('done','failed') ORDER BY state,finished_at DESC NULLS LAST"),
-  backupRecord('backup'),backupRecord('restore'),backupRecord('backup.attempt'),backupRecord('restore.attempt'),taskSyncStatus()
+  backupRecord('backup'),backupRecord('restore'),backupRecord('backup.attempt'),backupRecord('restore.attempt'),taskSyncStatus(),
+  backupRecord('backup','okb-maintenance'),backupRecord('restore','okb-maintenance'),
+  backupRecord('backup.attempt','okb-maintenance'),backupRecord('restore.attempt','okb-maintenance')
  ]);
  let pending=0;
  if(pilot.settings.enabled&&pilot.settings.delivery){
@@ -41,7 +43,8 @@ export async function systemStatus(actor:User){
    pending,delivery:pilot.delivery,timings:timings.rows},
   reports:{enabled:automation.config.enabled,alive:automation.alive,heartbeat:automation.heartbeat,runs:reports.rows},
   bitrix:sync.bitrix,
-  backups:{backup,restore,backupAttempt,restoreAttempt}
+  backups:{backup,restore,backupAttempt,restoreAttempt},
+  okbBackups:{backup:okbBackup,restore:okbRestore,backupAttempt:okbBackupAttempt,restoreAttempt:okbRestoreAttempt}
  };
 }
 

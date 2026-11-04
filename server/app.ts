@@ -1,3 +1,6 @@
+import {listCompanies,saveCompany} from './okb.js';
+import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,previewProcess,toggleProcess} from './work-design.js';
+import {taskInput} from './task-input.js';
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
 import {managementProgress,resetObservation,setNudgePreference,nudgeTeam} from './management.js';
 import {lastUndo,undoLastAction} from './undo.js';
@@ -24,7 +27,6 @@ declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
 const selector=z.enum(['branchManager','salesHead','director','creator']);
 const rules=z.object({requiredPrice:z.boolean().optional(),showPlanning:z.boolean().optional(),writtenRules:z.array(z.object({text:z.string().trim().min(1).max(500),severity:z.enum(['critical','warning','info'])})).max(30).optional(),overdue:z.boolean(),missingDeadline:z.boolean(),plannedOverdue:z.boolean(),requiredFields:z.boolean(),code:z.boolean(),planning:z.boolean().optional(),responseMinLength:z.number().int().min(5).max(200),reminderMinutes:z.number().int().min(1).max(1440),maxReminders:z.number().int().min(0).max(10),routes:z.object({deadline:z.array(selector).min(1).max(4),completion:z.array(selector).min(1).max(4)})});
-const taskInput=z.object({price:z.number().finite().min(0).max(999999999999.99).refine(n=>Math.abs(n*100-Math.round(n*100))<0.001).optional(),title:z.string().trim().min(3).max(500),description:z.string().trim().max(10000),assigneeId:text,deadline:date.nullable(),plannedStart:date.nullable(),plannedEnd:date.nullable(),important:z.boolean().nullable(),customerRisk:z.boolean().nullable(),parentId:z.string().trim().max(100).nullable()});
 const reportParameters=z.object({actorId:z.string().max(100).optional(),from:date.optional(),to:date.optional(),assigneeId:z.string().max(100).optional(),creatorId:z.string().max(100).optional(),priceBand:z.enum(['low','medium','high','premium','unknown']).optional(),queue:z.enum(['all','front','overdue','today','review','completed','no_deadline']).optional()});
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 export function createApp() {
@@ -83,6 +85,17 @@ export function createApp() {
  app.post('/api/bot/screen',async(req,res)=>{await clearBotDraft(req.actor,'preview');res.json(await botView(req.actor,'preview'))});
  app.post('/api/bot/click',async(req,res)=>res.json(await botClick(req.actor,'preview',z.object({token:z.string().max(64)}).parse(req.body).token)));
  app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,'preview',input.text,input.inputId))});
+ app.get('/api/okb/companies',async(req,res)=>res.json(await listCompanies(req.actor,typeof req.query.q==='string'?req.query.q:'')));
+ app.post('/api/okb/companies',async(req,res)=>res.status(201).json(await saveCompany(req.actor,req.body)));
+ app.put('/api/okb/companies/:id',async(req,res)=>res.json(await saveCompany(req.actor,req.body,z.uuid().parse(req.params.id))));
+ app.get('/api/work-design/schedules',async(req,res)=>res.json(await listSchedules(req.actor)));
+ app.post('/api/work-design/schedules',async(req,res)=>res.status(201).json(await saveSchedule(req.actor,req.body)));
+ app.patch('/api/work-design/schedules/:id',async(req,res)=>{await toggleSchedule(req.actor,z.uuid().parse(req.params.id),z.object({enabled:z.boolean()}).parse(req.body).enabled);res.json({ok:true});});
+ app.get('/api/work-design/processes',async(req,res)=>res.json(await listProcesses(req.actor)));
+ app.post('/api/work-design/processes',async(req,res)=>res.status(201).json(await saveProcess(req.actor,req.body)));
+ app.post('/api/work-design/processes/preview',async(req,res)=>res.json(previewProcess(req.actor,req.body)));
+ app.put('/api/work-design/processes/:id',async(req,res)=>res.json(await saveProcess(req.actor,req.body,z.uuid().parse(req.params.id))));
+ app.patch('/api/work-design/processes/:id',async(req,res)=>{await toggleProcess(req.actor,z.uuid().parse(req.params.id),z.object({enabled:z.boolean()}).parse(req.body).enabled);res.json({ok:true});});
  app.post('/api/tasks',async(req,res)=>res.status(201).json(await createTask(req.actor,taskInput.parse(req.body))));
  app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));});
  app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});

@@ -47,3 +47,18 @@ main select:disabled { opacity:.6; }
  .drawer-body { padding-inline:16px; }
  .dashboard-toolbar { align-items:stretch; flex-direction:column; gap:8px; }
 }
+
+.work-design-form { display:grid; gap:13px; margin:20px 0; }
+.work-design-form>label,.work-design-form .editor-grid label { display:grid; gap:5px; }
+.work-design-form>button { justify-self:start; }
+.process-flow { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px; }
+.process-flow>div { border:1px solid var(--line); background:var(--theme-surface-soft); padding:12px; border-radius:6px; }
+.process-flow small,.process-flow strong { display:block; }
+.task-custom-fields { border:1px solid var(--line); border-radius:6px; padding:12px; margin:0 0 14px; min-width:0; }
+.field-row { display:grid; grid-template-columns:minmax(0,1fr) minmax(0,1fr) auto; gap:8px; margin-bottom:8px; }
+.task-extra { display:grid; gap:8px; margin-bottom:20px; }
+.task-extra>div { display:grid; grid-template-columns:1fr 2fr; gap:8px; }
+.task-extra dt { font-weight:550; }
+.task-extra dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
+.sidebar nav { min-height:0; overflow-y:auto; }
+@media(max-width:620px) { .process-flow { grid-template-columns:repeat(2,minmax(0,1fr)); } }

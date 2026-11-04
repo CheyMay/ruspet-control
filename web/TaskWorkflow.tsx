@@ -12,9 +12,68 @@ export function ReviewActions({task,user,busy,pending,act}: {task:Task;user:User
  return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.'}</p><label>{task.status==='review'?'Комментарий (при возврате обязателен)':'Результат работы'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||pending||(action!=='accept'&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div>{pending&&<p className="muted">Сначала завершите активный маршрут согласования.</p>}</section>;
 }
 const localDate=(value:string|null|undefined)=>value?new Date(new Date(value).getTime()+10800000).toISOString().slice(0,16):'';
-export function TaskEditor({task,users,user,busy,save,close,showPlanning}: {task:Task|null;showPlanning:boolean;users:User[];user:User;busy:boolean;save:Act;close:()=>void}){
+export function TaskEditor({task,users,user,busy,save,close,showPlanning,onConditional}:{
+ task:Task|null;showPlanning:boolean;users:User[];user:User;busy:boolean;save:Act;close:()=>void;
+ onConditional?:(draft:import('./WorkDesign.js').ProcessDraft)=>void;
+}){
  const [error,setError]=useState(''),[assignees,setAssignees]=useState(users);
- useEffect(()=>{if(!task)return;let live=true;api<User[]>(`/tasks/${task.id}/assignees`).then(a=>{if(live)setAssignees(a)}).catch(e=>{if(live)setError(e.message)});return()=>{live=false}},[task?.id,user.id]);
+ const [mode,setMode]=useState('once'),[fields,setFields]=useState(task?.custom_fields??[]);
+ useEffect(()=>{
+  if(!task)return;
+  let live=true;
+  api<User[]>(`/tasks/${task.id}/assignees`).then(a=>{if(live)setAssignees(a);}).catch(e=>{if(live)setError(e.message);});
+  return()=>{live=false;};
+ },[task?.id,user.id]);
  const plan=task?plannedInterval(task):{start:null,end:null};
- return <div className="modal-backdrop"><form className="modal task-editor" role="dialog" aria-modal="true" aria-label={task?'Редактировать задачу':'Создать задачу'} onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);const date=(key:string)=>f.get(key)?new Date(String(f.get(key))+':00+03:00').toISOString():null;const bool=(key:string)=>f.get(key)==='unknown'?null:f.get(key)==='yes';const body={price:Number(f.get('price')),title:f.get('title'),description:f.get('description'),assigneeId:f.get('assigneeId'),deadline:task?task.deadline:date('deadline'),plannedStart:showPlanning?date('plannedStart'):task?.planned_start||null,plannedEnd:showPlanning?date('plannedEnd'):task?.planned_end||null,important:bool('important'),customerRisk:bool('customerRisk'),parentId:String(f.get('parentId')||'').trim()||null,...(task?{expectedVersion:task.version,reason:f.get('reason')}:{})};if(await save(task?`/tasks/${task.id}`:'/tasks',body,task?'PUT':'POST'))close();else setError('Не удалось сохранить. Проверьте поля или обновите карточку; подробная причина показана на странице.');}}><div className="panel-heading"><h2>{task?'Параметры задачи':'Новая локальная задача'}</h2><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>{error&&<p className="alert error">{error}</p>}<label>Название<input autoFocus name="title" required minLength={3} maxLength={500} defaultValue={task?.title}/></label><label>Цена задачи · ₽ (обязательно)<input name="price" type="number" required min="0" max="999999999999.99" step="0.01" defaultValue={task?taskPrice(task)??'':''}/></label><label>Описание<textarea name="description" maxLength={10000} defaultValue={task?.description}/></label><label>Исполнитель<select name="assigneeId" defaultValue={task?.assignee_id||user.id}>{assignees.filter(u=>u.id===task?.assignee_id||user.id===task?.creator_id||['admin','director','sales_head'].includes(user.role)||u.id===user.id||user.role==='branch_manager'&&u.branch_id===user.branch_id).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label>{!task&&<label>Крайний срок · МСК<input type="datetime-local" name="deadline"/></label>}{task&&<p className="muted">Крайний срок меняется через запрос переноса. Изменение параметров отменит актуальность открытого согласования.</p>}<div className="editor-grid">{showPlanning&&<><label>Плановое начало · МСК<input name="plannedStart" type="datetime-local" defaultValue={localDate(plan.start)}/></label><label>Плановое окончание · МСК<input name="plannedEnd" type="datetime-local" defaultValue={localDate(plan.end)}/></label></>}{[{name:'important',label:'Важная задача',value:task?.important},{name:'customerRisk',label:'Риск потери клиента',value:task?.customer_risk}].map(v=><label key={v.name}>{v.label}<select name={v.name} defaultValue={v.value===true?'yes':v.value===false?'no':'unknown'}><option value="unknown">Не указано</option><option value="yes">Да</option><option value="no">Нет</option></select></label>)}</div><label>ID родительской задачи<input name="parentId" defaultValue={task?.parent_id||''} placeholder="Необязательно"/></label>{task&&<label>Причина изменения<textarea name="reason" required minLength={5} maxLength={4000} placeholder="Что меняется и почему" /></label>}<div className="drawer-actions"><button type="button" className="button secondary" onClick={close}>Отмена</button><button disabled={busy} className="button primary">Сохранить</button></div></form></div>;
+ return <div className="modal-backdrop"><form className="modal task-editor" role="dialog" aria-modal="true" aria-label={task?'Редактировать задачу':'Создать задачу'} onSubmit={async e=>{
+  e.preventDefault();
+  const f=new FormData(e.currentTarget);
+  const date=(key:string)=>f.get(key)?new Date(String(f.get(key))+':00+03:00').toISOString():null;
+  const bool=(key:string)=>!f.has(key)||f.get(key)==='unknown'?null:f.get(key)==='yes';
+  const common={price:Number(f.get('price')),title:String(f.get('title')),description:String(f.get('description')),
+   assigneeId:String(f.get('assigneeId')),customFields:fields};
+  const body={...common,deadline:task?task.deadline:date('deadline'),plannedStart:showPlanning?date('plannedStart'):task?.planned_start||null,
+   plannedEnd:showPlanning?date('plannedEnd'):task?.planned_end||null,important:bool('important'),customerRisk:bool('customerRisk'),
+   parentId:String(f.get('parentId')||'').trim()||null,...(task?{expectedVersion:task.version,reason:f.get('reason')}:{})};
+  if(mode==='conditional'&&onConditional){onConditional(common);return;}
+  const success=mode==='repeat'?await save('/work-design/schedules',{
+   template:body,frequency:f.get('frequency'),every:Number(f.get('every')),startsAt:date('startsAt'),
+   deadlineHours:f.get('deadlineHours')?Number(f.get('deadlineHours')):null
+  },'POST','Расписание сохранено'):await save(task?`/tasks/${task.id}`:'/tasks',body,task?'PUT':'POST');
+  if(success)close();else setError('Не удалось сохранить. Проверьте поля и сообщение на странице.');
+ }}>
+  <div className="panel-heading"><h2>{task?'Параметры задачи':'Новая локальная задача'}</h2><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
+  {error&&<p className="alert error" role="alert">{error}</p>}
+  {!task&&<label>Когда создавать<select value={mode} onChange={e=>setMode(e.target.value)}>
+   <option value="once">Один раз</option><option value="repeat">По расписанию</option>{onConditional&&<option value="conditional">По условию из ОКБ</option>}
+  </select></label>}
+  <label>Название<input autoFocus name="title" required minLength={3} maxLength={500} defaultValue={task?.title}/></label>
+  <label>Цена задачи · ₽ (обязательно)<input name="price" type="number" required min="0" max="999999999999.99" step="0.01" defaultValue={task?taskPrice(task)??'':''}/></label>
+  <label>Описание<textarea name="description" maxLength={10000} defaultValue={task?.description}/></label>
+  <label>Исполнитель<select name="assigneeId" defaultValue={task?.assignee_id||user.id}>{assignees.filter(u=>u.id===task?.assignee_id||user.id===task?.creator_id||['admin','director','sales_head'].includes(user.role)||u.id===user.id||user.role==='branch_manager'&&u.branch_id===user.branch_id).map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
+  {!task&&mode==='once'&&<label>Крайний срок · МСК<input type="datetime-local" name="deadline"/></label>}
+  {mode==='repeat'&&<div className="editor-grid">
+   <label>Первый запуск · МСК<input type="datetime-local" name="startsAt" required/></label>
+   <label>Повторять<select name="frequency"><option value="daily">По дням</option><option value="weekly">По неделям</option><option value="monthly">По месяцам</option></select></label>
+   <label>Интервал<input name="every" type="number" required min="1" max="30" defaultValue="1"/></label>
+   <label>Срок после запуска · часов<input name="deadlineHours" type="number" min="1" max="8760" placeholder="Без срока"/></label>
+  </div>}
+  {task&&<p className="muted">Крайний срок меняется через запрос переноса. Изменение параметров отменит актуальность открытого согласования.</p>}
+  {mode!=='conditional'&&<>
+   <div className="editor-grid">{showPlanning&&mode==='once'&&<><label>Плановое начало · МСК<input name="plannedStart" type="datetime-local" defaultValue={localDate(plan.start)}/></label><label>Плановое окончание · МСК<input name="plannedEnd" type="datetime-local" defaultValue={localDate(plan.end)}/></label></>}
+    {[{name:'important',label:'Важная задача',value:task?.important},{name:'customerRisk',label:'Риск потери клиента',value:task?.customer_risk}].map(v=><label key={v.name}>{v.label}<select name={v.name} defaultValue={v.value===true?'yes':v.value===false?'no':'unknown'}><option value="unknown">Не указано</option><option value="yes">Да</option><option value="no">Нет</option></select></label>)}
+   </div>
+   <label>ID родительской задачи<input name="parentId" defaultValue={task?.parent_id||''} placeholder="Необязательно"/></label>
+  </>}
+  <fieldset className="task-custom-fields"><legend>Дополнительные поля</legend>
+   {fields.map((field,index)=><div className="field-row" key={index}>
+    <input aria-label={'Название поля '+(index+1)} placeholder="Поле, например номер заказа" required maxLength={80} value={field.label} onChange={e=>setFields(fields.map((item,i)=>i===index?{...item,label:e.target.value}:item))}/>
+    <input aria-label={'Значение поля '+(index+1)} placeholder="Значение" maxLength={500} value={field.value} onChange={e=>setFields(fields.map((item,i)=>i===index?{...item,value:e.target.value}:item))}/>
+    <button className="icon-button" aria-label={'Удалить поле '+(index+1)} type="button" onClick={()=>setFields(fields.filter((_,i)=>i!==index))}>✕</button>
+   </div>)}
+   <button className="text-button" type="button" disabled={fields.length>=12} onClick={()=>setFields([...fields,{label:'',value:''}])}>+ Добавить поле</button>
+  </fieldset>
+  {task&&<label>Причина изменения<textarea name="reason" required minLength={5} maxLength={4000} placeholder="Что меняется и почему"/></label>}
+  <div className="drawer-actions"><button type="button" className="button secondary" onClick={close}>Отмена</button><button disabled={busy} className="button primary">{mode==='conditional'?'Настроить условие':mode==='repeat'?'Сохранить расписание':'Сохранить'}</button></div>
+ </form></div>;
 }

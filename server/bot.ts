@@ -52,6 +52,7 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
    const page=Math.max(0,Math.min(p.page||0,texts.length-1));return screen(u,ch,`История #${t.id} · ${page+1}/${Math.max(1,texts.length)}\n\n${texts[page]||'Записей пока нет.'}`,[[...(page? [button('← Ранее в списке','history',{id:t.id,page:page-1})]:[]),...(page+1<texts.length?[button('Дальше →','history',{id:t.id,page:page+1})]:[])],[button('К задаче','task',{id:t.id}),button('Меню','home')]]);
   }
   let text=`#${t.id} · ${t.title}\n${queueLabels[taskQueue(t,now)]}\nИсполнитель: ${name(t.assignee_id)}\nПостановщик: ${name(t.creator_id)}\nСрок: ${date(t.deadline)} МСК\nЦена: ${formatPrice(t)} · ${priceLabels[priceBand(t)]}\n\n${t.description.slice(0,600)||'Описание не заполнено.'}`;
+  if(t.custom_fields?.length)text+='\n\nДополнительные поля\n'+t.custom_fields.map(f=>f.label+': '+(f.value||'—')).join('\n').slice(0,420);
   const last=d.submissions[0];if(last)text+=`\n\n${last.restored_from?'Приёмка восстановлена после отмены':'Сдача №'+last.round}: ${last.result.slice(0,500)}${last.remark?'\nЗамечание: '+last.remark.slice(0,500):''}`;
   const rows:ReturnType<typeof button>[][]=[];const pending=d.approvals.find(a=>a.state==='pending');
   const form=(label:string,kind:string,target?:string,step?:number)=>button(label,'form',{kind,id:t.id,version:t.version,target,step,revision:target===pending?.id?pending?.action_revision:undefined});
@@ -66,7 +67,7 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   else if(t.status==='review'&&canReview(u,t))rows.push([button('Принять без комментария','accept_prepare',{id:t.id,version:t.version}),form('Принять результат','accept')],[form('Вернуть с замечаниями','return')]);
   const control=d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));if(control)rows.push([form('Ответить на запрос','answer',control.id)]);
   rows.push([button('Обсуждение','discussion',{id:t.id}),form('Написать комментарий','comment',pending?.id)]);const lastAction=await lastUndo(u,t.id);if(lastAction)rows.push([button('Отменить последнее действие','undo_prepare',{id:t.id,target:lastAction.id})]);
-  rows.push([button('История','history',{id:t.id}),button('Меню','home')]);return screen(u,ch,text,rows);
+  rows.push([button('История','history',{id:t.id}),button('Меню','home')]);return screen(u,ch,text.slice(0,4000),rows);
  }
  if(p.op==='report_pdf'){const report=await getReport(u,p.id!);return {text:'PDF · '+new Date(report.created_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}),buttons:[],document:{reportId:report.id}};}
  if(p.op==='reports'){

@@ -13,7 +13,7 @@ export async function actionState(db:Db,id:string):Promise<ActionState>{
 export function sameState(a:ActionState,b:ActionState){
  // Notification delivery status is independent of task state. New task events,
  // changed controls, routes or submissions still prevent an unsafe undo.
- const stable=({outbox,...rest}:ActionState)=>rest;return isDeepStrictEqual(stable(a),stable(b));
+ const stable=({outbox,task,...rest}:ActionState)=>({...rest,task:{...task,custom_fields:task.custom_fields??[]}});return isDeepStrictEqual(stable(a),stable(b));
 }
 export async function recordTaskAction<T>(u:User,id:string,label:string,run:()=>Promise<T>):Promise<T>{
  return transaction(async db=>{

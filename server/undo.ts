@@ -47,8 +47,8 @@ export async function undoLastAction(u:User,id:string){return transaction(async 
  const oldEvents=new Set(before.events.map(e=>e.id));for(const e of after.events)if(!oldEvents.has(e.id))await db.query('INSERT INTO event_retractions(event_id,undo_id) VALUES($1,$2)',[e.id,id]);
  const oldOutbox=new Set(before.outbox.map(n=>n.id)),withdrawn=after.outbox.filter(n=>!oldOutbox.has(n.id)).map(n=>n.id);
  const recipients=(await db.query('UPDATE outbox SET withdrawn_at=now() WHERE id=ANY($1::uuid[]) RETURNING recipient_id',[withdrawn])).rows;
- const fields=['title','description','assignee_id','branch_id','deadline','planned_start','planned_end','status','priority','code','important','customer_risk','transfer_count','completed_at','parent_id','price'];
- const restored=(await db.query(`UPDATE tasks SET ${fields.map((k,i)=>`${k}=$${i+2}`).join(',')},version=version+1,updated_at=now() WHERE id=$1 RETURNING *`,[current.id,...fields.map(k=>before.task[k as keyof Task]??null)])).rows[0];
+ const fields=['title','description','assignee_id','branch_id','deadline','planned_start','planned_end','status','priority','code','important','customer_risk','transfer_count','completed_at','parent_id','price','custom_fields'];
+ const restored=(await db.query(`UPDATE tasks SET ${fields.map((k,i)=>`${k}=$${i+2}`).join(',')},version=version+1,updated_at=now() WHERE id=$1 RETURNING *`,[current.id,...fields.map(k=>k==='custom_fields'?JSON.stringify(before.task.custom_fields??[]):before.task[k as keyof Task]??null)])).rows[0];
  await new MockTaskProvider().applyApprovedChange(db,restored,current.version);
  await db.query("UPDATE task_sync_queue SET state='canceled' WHERE task_id=$1 AND task_version>$2 AND state IN ('pending','failed')",[current.id,before.task.version]);
  await refreshTaskFindings(db,restored,u);

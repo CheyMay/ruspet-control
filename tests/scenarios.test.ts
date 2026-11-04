@@ -702,3 +702,67 @@ test('Bitrix REST calls share a persisted interval and enter cooldown after thro
   await rm(file,{force:true});await rm(folder,{recursive:false}).catch(async()=>{await (await import('node:fs/promises')).rmdir(folder);});
  }
 });
+
+test('custom task fields survive edit and undo, and recurring runs create one scoped task',async()=>{
+ const {nextOccurrence,runSchedules}=await import('../server/work-design.js');
+ assert.equal(nextOccurrence('2026-01-31T09:00:00+03:00','monthly',1,new Date('2026-02-01')).toISOString(),'2026-02-28T06:00:00.000Z');
+ assert.equal(nextOccurrence('2026-01-31T09:00:00+03:00','monthly',1,new Date('2026-03-01')).toISOString(),'2026-03-31T06:00:00.000Z');
+ const template={title:'Техническая тестовая задача',description:'Описание',price:0,assigneeId:'anna',
+  deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null,customFields:[{label:'Номер заказа',value:'14'}]};
+ assert.equal((await request('admin','/tasks',{...template,customFields:[{label:'Код',value:'1'},{label:'код',value:'2'}]})).status,400);
+ const created=await request('admin','/tasks',template);
+ assert.equal(created.status,201);
+ const path='/tasks/'+created.data.id;
+ assert.deepEqual((await request('admin',path)).data.task.custom_fields,template.customFields);
+ const edited=await request('admin',path,{...template,customFields:[{label:'Номер заказа',value:'15'}],expectedVersion:1,reason:'Проверка номера'},'PUT');
+ assert.equal(edited.status,200);
+ const {lastUndo,undoLastAction}=await import('../server/undo.js');
+ const admin=users.find(u=>u.id==='admin')!,last=await lastUndo(admin,created.data.id);
+ assert.ok(last);await undoLastAction(admin,last.id);
+ assert.deepEqual((await request('admin',path)).data.task.custom_fields,template.customFields);
+ const at=new Date(Date.now()+1000);
+ const scheduled=await request('admin','/work-design/schedules',{template,frequency:'daily',every:1,startsAt:at.toISOString(),deadlineHours:3});
+ assert.equal(scheduled.status,201);
+ const runAt=new Date(at.getTime()+3*86400000);
+ await Promise.all([runSchedules(runAt),runSchedules(runAt)]);
+ const row=(await db.pool.query('SELECT * FROM task_schedules WHERE id=$1',[scheduled.data.id])).rows[0];
+ assert.equal(row.next_at,new Date(at.getTime()+4*86400000).toISOString());
+ const generated=(await request('anna','/tasks/'+row.last_task_id)).data.task;
+ assert.deepEqual(generated.custom_fields,template.customFields);
+ assert.equal(generated.deadline,new Date(runAt.getTime()+3*3600000).toISOString());
+ assert.equal((await db.pool.query('SELECT count(*)::int n FROM tasks WHERE title=$1',[template.title])).rows[0].n,2);
+});
+
+test('separate OKB database stores companies and triggers only active BPM rules once',async()=>{
+ const name=database+'_okb';
+ await adminConnection.query('CREATE DATABASE '+name);
+ const url=new URL(process.env.DATABASE_URL!);url.pathname='/'+name;
+ process.env.OKB_DATABASE_URL=url.toString();
+ const okb=await import('../server/okb.js');
+ const {runProcesses}=await import('../server/work-design.js');
+ try{
+  await okb.migrateOkb();
+  const path='/okb/companies',work='/work-design/processes';
+  assert.equal((await request('anna',path)).status,403);
+  const input={name:'Тестовая компания',taxId:'0000000001',status:'prospect',contact:'',notes:''};
+  const company=await request('director',path,input);
+  assert.equal(company.status,201);
+  assert.equal((await request('director',path,input)).status,409);
+  const definition={name:'Начало работы',field:'company.status',operator:'=',value:'active',branch:'yes',title:'Связаться с {{company.name}}',assigneeId:'anna',price:0,deadlineHours:24};
+  const preview=await request('director',work+'/preview',{definition,sample:{name:'Проба',status:'active',previousStatus:'prospect'}});
+  assert.deepEqual(preview.data,{branch:'yes',title:'Связаться с Проба'});
+  const created=await request('director',work,definition);
+  assert.equal(created.status,201);await runProcesses();
+  assert.equal((await request('director',work)).data.runs.length,0);
+  assert.equal((await request('director',work+'/'+created.data.id,{enabled:true},'PATCH')).status,200);
+  const changed=await request('director',path+'/'+company.data.id,{...input,status:'active',version:1},'PUT');
+  assert.equal(changed.status,200);
+  assert.equal((await request('director',work+'/'+created.data.id,definition,'PUT')).status,409);
+  assert.equal((await request('director',path+'/'+company.data.id,{...input,status:'former',version:1},'PUT')).status,409);
+  await Promise.all([runProcesses(),runProcesses()]);
+  const runs=(await request('director',work)).data.runs;
+  assert.equal(runs.length,1);assert.equal(runs[0].branch,'yes');
+  assert.equal((await request('anna','/tasks/'+runs[0].task_id)).data.task.title,'Связаться с Тестовая компания');
+  assert.equal((await db.pool.query("SELECT to_regclass('companies') IS NULL AS isolated")).rows[0].isolated,true);
+ }finally{await okb.closeOkb();delete process.env.OKB_DATABASE_URL;await adminConnection.query('DROP DATABASE '+name);}
+});

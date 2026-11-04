@@ -1,14 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 umask 077
-archive=/var/backups/ruspet
-status=/var/lib/ruspet/maintenance
+profile=${2:-main}
+db=${RUSPET_BACKUP_DB:-ruspet_demo}
+case "$profile" in
+  main) archive=/var/backups/ruspet; status=/var/lib/ruspet/maintenance ;;
+  okb) archive=/var/backups/ruspet-okb; status=/var/lib/ruspet/okb-maintenance; db=ruspet_okb ;;
+  *) exit 2 ;;
+esac
 install -d -m 0700 "$archive"
 install -d -m 0755 "$status"
 exec 9>"$archive/.lock"
 flock 9
 mode=${1:?backup or restore}
-db=${RUSPET_BACKUP_DB:-ruspet_demo}
 [[ $mode == backup || $mode == restore ]]
 [[ $db =~ ^[a-z][a-z0-9_]*$ ]]
 stamp=$(date -u +%Y%m%dT%H%M%S%N)
@@ -58,7 +62,11 @@ else
   runuser -u postgres -- createdb --template=template0 "$candidate"
   tmpdb=$candidate
   runuser -u postgres -- pg_restore --exit-on-error --no-owner --no-privileges --dbname="$tmpdb" < "$archive/$file"
-  counts=$(runuser -u postgres -- psql -XAtq --set=ON_ERROR_STOP=1 --dbname="$tmpdb" -c "SELECT json_build_object('tasks',(SELECT count(*) FROM tasks),'users',(SELECT count(*) FROM users),'events',(SELECT count(*) FROM task_events),'approvals',(SELECT count(*) FROM approvals),'migrations',(SELECT count(*) FROM schema_migrations));")
+  if [[ $profile == okb ]]; then
+    counts=$(runuser -u postgres -- psql -XAtq --set=ON_ERROR_STOP=1 --dbname="$tmpdb" -c "SELECT json_build_object('companies',(SELECT count(*) FROM companies),'events',(SELECT count(*) FROM company_status_events));")
+  else
+    counts=$(runuser -u postgres -- psql -XAtq --set=ON_ERROR_STOP=1 --dbname="$tmpdb" -c "SELECT json_build_object('tasks',(SELECT count(*) FROM tasks),'users',(SELECT count(*) FROM users),'events',(SELECT count(*) FROM task_events),'approvals',(SELECT count(*) FROM approvals),'migrations',(SELECT count(*) FROM schema_migrations));")
+  fi
   runuser -u postgres -- dropdb "$tmpdb"
   tmpdb=
   printf '%s\n' "$file" > "$archive/.verified"
