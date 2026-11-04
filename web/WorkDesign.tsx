@@ -1,4 +1,5 @@
-import {ProcessGraphEditor,seedGraph} from './ProcessGraph.js';
+import {metricPreset,premiumPreset} from '../shared/process-metrics.js';
+import {ProcessGraphEditor,seedGraph,seedMonitor} from './ProcessGraph.js';
 import {graphErrors,type ProcessGraph,type Trace} from '../shared/process-graph.js';
 import {CompanyWork} from './CompanyWork.js';
 import {CompanyPicker} from './TaskComposeTools.js';
@@ -67,14 +68,14 @@ export function Okb({initialId,users,openTask,createTask}:{initialId:string|null
 }
 
 type Schedule={id:string;title:string;frequency:string;every:number;next_at:string;enabled:boolean;last_task_id:string|null;last_error:string|null};
-type Trigger='company_status'|'company_quiet'|'task_accepted';
-const triggerLabels:Record<Trigger,string>={company_status:'Новая компания или смена статуса',company_quiet:'Давно не было контакта',task_accepted:'Результат задачи принят'};
+type Trigger='monitor'|'company_status'|'company_quiet'|'task_accepted';
+const triggerLabels:Record<Trigger,string>={monitor:'Проверка показателей по расписанию',company_status:'Новая компания или смена статуса',company_quiet:'Давно не было контакта',task_accepted:'Результат задачи принят'};
 const conditionFields:Record<string,string>={'company.status':'Новый статус','company.previousStatus':'Прежний статус','company.name':'Название компании','task.title':'Название принятой задачи','task.assigneeId':'Исполнитель принятой задачи'};
 const operators:Record<string,string>={'=':'равно','!=':'не равно',contains:'содержит',exists:'заполнено'};
-type Definition={graph?:ProcessGraph;trigger?:Trigger;companyId?:string|null;quietDays?:number;description?:string;customFields?:ProcessDraft['customFields'];name:string;field:string;operator:string;value:string;branch:'yes'|'no';title:string;assigneeId:string;price:number;deadlineHours:number|null};
+type Definition={monitor?:{subjectId:string;everyMinutes:number};graph?:ProcessGraph;trigger?:Trigger;companyId?:string|null;quietDays?:number;description?:string;customFields?:ProcessDraft['customFields'];name:string;field:string;operator:string;value:string;branch:'yes'|'no';title:string;assigneeId:string;price:number;deadlineHours:number|null};
 type Process={id:string;name:string;definition:Definition;enabled:boolean;enabled_since:string|null;revision:number;published_revision:number|null;published_definition:Definition|null};
 type Run={process_id:string;branch:'yes'|'no';task_id:string|null;error:string|null;created_at:string;process_revision:number|null;task_ids:string[]|null;trace:Trace[]|null};
-type Preview={branch:'yes'|'no';title:string|null;titles?:string[];trace?:Trace[]};
+type Preview={branch:'yes'|'no';title:string|null;titles?:string[];trace?:Trace[];notices?:string[];subject?:string};
 export type ProcessDraft={companyId?:string|null;title:string;assigneeId:string;price:number;description:string;customFields:{label:string;value:string}[]};
 
 export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft:ProcessDraft|null;open:(id:string)=>void}){
@@ -84,6 +85,7 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
  const [trigger,setTrigger]=useState<Trigger>('company_status'),[companyId,setCompanyId]=useState<string|null>(draft?.companyId??null);
  const [editing,setEditing]=useState<Process|null>(null),[activation,setActivation]=useState<Process|null>(null);
  const newGraph=()=>seedGraph({title:draft?.title||'Связаться с {{company.name}}',assigneeId:draft?.assigneeId||user.id,price:draft?.price??0,deadlineHours:null});
+ const [subjectId,setSubjectId]=useState(user.id);
  const [graph,setGraph]=useState<ProcessGraph|null>(newGraph);
  const [activationCompany,setActivationCompany]=useState<Company|null>(null);
  useEffect(()=>{
@@ -118,12 +120,12 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
  async function submit(event:FormEvent<HTMLFormElement>){
   event.preventDefault();
   const f=new FormData(event.currentTarget);
-  const definition:Definition={graph:graph??undefined,trigger,companyId,quietDays:trigger==='company_quiet'?Number(f.get('quietDays')):undefined,description:String(f.get('description')),customFields:template?.customFields,name:String(f.get('name')),field,operator,value:String(f.get('value')||''),branch,
+  const definition:Definition={monitor:trigger==='monitor'?{subjectId,everyMinutes:Number(f.get('everyMinutes'))}:undefined,graph:graph??undefined,trigger,companyId,quietDays:trigger==='company_quiet'?Number(f.get('quietDays')):undefined,description:String(f.get('description')),customFields:template?.customFields,name:String(f.get('name')),field,operator,value:String(f.get('value')||''),branch,
    title:String(f.get('title')||template?.title||'Новая задача процесса'),assigneeId:String(f.get('assigneeId')||template?.assigneeId||user.id),price:Number(f.get('price')??template?.price??0),deadlineHours:f.get('deadlineHours')?Number(f.get('deadlineHours')):null};
   const test=(event.nativeEvent as SubmitEvent).submitter?.getAttribute('value')==='preview';
   setBusy(true);setError('');setNotice('');
   try{
-   if(test)setPreview(await api<Preview>('/work-design/processes/preview','POST',{definition,sample:{name:f.get('sampleName'),status:f.get('sampleStatus'),previousStatus:f.get('samplePrevious')||null},task:trigger==='task_accepted'?{title:f.get('sampleTask'),assigneeId:f.get('sampleOwner')}:undefined}));
+   if(test)setPreview(await api<Preview>('/work-design/processes/preview','POST',{definition,previewSubject:f.get('previewSubject')||undefined,sample:{name:f.get('sampleName'),status:f.get('sampleStatus'),previousStatus:f.get('samplePrevious')||null},task:trigger==='task_accepted'?{title:f.get('sampleTask'),assigneeId:f.get('sampleOwner')}:undefined}));
    else{await api('/work-design/processes'+(editing?'/'+editing.id:''),editing?'PUT':'POST',definition);setNotice('Черновик сохранён. Включите его в списке, когда будете готовы.');setReload(n=>n+1);}
   }catch(e){setError(errorText(e));}finally{setBusy(false);}
  }
@@ -133,9 +135,19 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
    <div className="automation-heading"><div><h2>Конструктор процессов</h2><p className="muted">Дайте процессу имя, настройте событие, условие и действие. Сохраните черновик, проверьте его на примере и включите отдельно.</p></div></div>
    <form key={editing?.id||"new"} className="work-design-form" onSubmit={submit} onChange={()=>setPreview(null)}>
     <label>Название процесса<input name="name" required minLength={3} maxLength={120} defaultValue={editing?.name} placeholder="Например, начать работу с новым клиентом"/></label>
-    <label>Событие<select value={trigger} onChange={e=>{setTrigger(e.target.value as Trigger);setField('company.status');setOperator('=');}}>
+    <label>Событие<select value={trigger} onChange={e=>{const next=e.target.value as Trigger;setTrigger(next);if(next==='monitor'&&!graph?.nodes.some(node=>node.type==='metric'))setGraph(seedMonitor(metricPreset));setField('company.status');setOperator('=');}}>
      {Object.entries(triggerLabels).map(([key,label])=><option key={key} value={key}>{label}</option>)}
     </select></label>
+    {trigger==='monitor'&&<>
+     <div className="editor-grid"><label>Кого проверять<select value={subjectId} onChange={e=>setSubjectId(e.target.value)}>
+      <option value="*">Всех менеджеров по отдельности</option>{users.map(person=><option key={person.id} value={person.id}>{person.name}</option>)}
+     </select></label><label>Проверять каждые · минут<input name="everyMinutes" type="number" min="5" max="1440" required defaultValue={editing?.definition.monitor?.everyMinutes??30}/></label></div>
+     <p className="muted">После публикации первая проверка пройдёт автоматически. Повторное уведомление придёт после выхода из условия и нового входа.</p>
+     <details><summary>Готовые схемы</summary><p className="muted">Заготовка заменит блоки открытого черновика.</p>
+      <div className="task-quick-actions"><button className="button secondary" type="button" onClick={()=>{setGraph(seedMonitor(metricPreset));setPreview(null);}}>Больше 5 задач с просрочкой свыше 2 дней</button>
+       <button className="button secondary" type="button" onClick={()=>{setGraph(seedMonitor(premiumPreset));setPreview(null);}}>Больше 5 премиум-задач на 7 дней</button></div>
+     </details>
+    </>}
     {trigger==='company_quiet'&&<label>Дней без контакта<input name="quietDays" type="number" min="1" max="365" required defaultValue={editing?.definition.quietDays??14}/></label>}
     <CompanyPicker value={companyId} onChange={setCompanyId}/>
     <p className="muted">{companyId?'Процесс будет работать только для выбранной компании.':'Без привязки процесс проверяет все подходящие события.'}</p>
@@ -165,12 +177,16 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
      <label>Новый статус<select name="sampleStatus" defaultValue="active">{Object.entries(companyStates).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
      <label>Прежний статус<select name="samplePrevious"><option value="">Отсутствует</option>{Object.entries(companyStates).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label></div>
      {trigger==='task_accepted'&&<div className="editor-grid"><label>Название принятой задачи<input name="sampleTask" defaultValue="Проверить заказ" maxLength={500}/></label><label>Исполнитель принятой задачи<select name="sampleOwner" defaultValue={user.id}>{users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label></div>}
-     <button className="button secondary" value="preview" disabled={busy}>Проверить условие</button>
-     {preview&&<div role="status"><p>{preview.titles?'Задач в пробном запуске: '+preview.titles.length:preview.title?'Будет создана задача «'+preview.title+'».':'Ветка завершилась без задачи.'}</p>
+     {trigger==='monitor'&&subjectId==='*'&&<label>Менеджер для пробной проверки<select name="previewSubject">
+      {users.filter(person=>person.role==='employee').map(person=><option key={person.id} value={person.id}>{person.name}</option>)}
+     </select></label>}
+     <button className="button secondary" value="preview"  disabled={busy}>Проверить условие</button>
+     {preview&&<div role="status"><p>{preview.titles?'Задач в пробном запуске: '+preview.titles.length+' · уведомлений: '+(preview.notices?.length??0):preview.title?'Будет создана задача «'+preview.title+'».':'Ветка завершилась без задачи.'}</p>
+      {preview.subject&&<p>Сотрудник · {preview.subject}</p>}{preview.notices?.map((message,i)=><p key={i}>Уведомление · {message}</p>)}
       {!!preview.titles?.length&&<ul>{preview.titles.map((title,i)=><li key={i}>{title}</li>)}</ul>}
       {!!preview.trace?.length&&<ol>{preview.trace.map(step=><li key={step.nodeId}>{step.label}{step.branch?' → '+(step.branch==='yes'?'Да':'Нет'):''}</li>)}</ol>}</div>}
     </details>
-    <div className="heading-actions"><button className="button primary" disabled={busy}>Сохранить черновик</button>{editing&&<button type="button" className="button secondary" onClick={()=>{setEditing(null);setGraph(newGraph());setTrigger("company_status");setCompanyId(draft?.companyId??null);setField("company.status");setOperator("=");setBranch("yes");setPreview(null);}}>Новый процесс</button>}</div>{notice&&<p role="status">{notice}</p>}
+    <div className="heading-actions"><button className="button primary" disabled={busy}>Сохранить черновик</button>{editing&&<button type="button" className="button secondary" onClick={()=>{setEditing(null);setGraph(newGraph());setSubjectId(user.id);setTrigger("company_status");setCompanyId(draft?.companyId??null);setField("company.status");setOperator("=");setBranch("yes");setPreview(null);}}>Новый процесс</button>}</div>{notice&&<p role="status">{notice}</p>}
    </form>
    <h3>Сохранённые процессы</h3>
    {!processes&&<p>Загружаем процессы…</p>}
@@ -180,7 +196,7 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
     {p.published_definition&&<details><summary>Опубликованная схема</summary><p>{triggerLabels[p.published_definition.trigger??'company_status']}</p>
      {p.published_definition.graph?<ul>{p.published_definition.graph.nodes.filter(n=>n.type==='condition'||n.type==='task').map(n=><li key={n.id}>{n.type==='condition'?'Условие · '+conditionFields[n.config.field]+' '+operators[n.config.operator]+' '+n.config.value:n.type==='task'?'Задача · '+n.config.title:''}</li>)}</ul>:<p>{p.published_definition.title}</p>}</details>}
     <div className="heading-actions"><button type="button" className="button secondary" disabled={busy} onClick={()=>{
-     setEditing(p);setGraph(p.definition.graph??null);setTrigger(p.definition.trigger??'company_status');setCompanyId(p.definition.companyId??null);
+     setEditing(p);setGraph(p.definition.graph??null);setSubjectId(p.definition.monitor?.subjectId??user.id);setTrigger(p.definition.trigger??'company_status');setCompanyId(p.definition.companyId??null);
      setField(p.definition.field);setOperator(p.definition.operator);setBranch(p.definition.branch);setPreview(null);setNotice('');
     }}>Открыть черновик</button>
     {p.enabled&&<button className="button secondary" disabled={busy} onClick={()=>void toggle('/work-design/processes/'+p.id,false,p.revision)}>Остановить</button>}
@@ -196,7 +212,7 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
   {activation&&<div className="modal-backdrop"><section className="modal" role="dialog" aria-modal="true" aria-label="Включить процесс">
    <div className="panel-heading"><h2>Включить «{activation.name}»?</h2></div>
    <p>{triggerLabels[activation.definition.trigger??'company_status']}{activation.definition.quietDays?' · '+activation.definition.quietDays+' дн.':''}</p>
-   {activation.definition.graph?<><p>Блоков · {activation.definition.graph.nodes.length}</p><ul>{activation.definition.graph.nodes.flatMap(n=>n.type==='task'?[<li key={n.id}>{n.config.title} · {users.find(person=>person.id===n.config.assigneeId)?.name||'Исполнитель'}</li>]:[])}</ul>
+   {activation.definition.graph?<><p>Блоков · {activation.definition.graph.nodes.length}</p><ul>{activation.definition.graph.nodes.flatMap(n=>n.type==='task'?[<li key={n.id}>{n.config.title} · {users.find(person=>person.id===n.config.assigneeId)?.name||(n.config.assigneeId==='@manager'?'Прямой руководитель':'Исполнитель')}</li>]:n.type==='notify'?[<li key={n.id}>Уведомление · {n.config.message}</li>]:[])}</ul>
     {graphErrors(activation.definition.graph,activation.definition.trigger??'company_status').map(error=><p className="red-text" key={error}>{error}</p>)}</>:<>
    <p>Условие · {conditionFields[activation.definition.field]} {operators[activation.definition.operator]} {activation.definition.operator!=='exists'&&
     (activation.definition.field==='task.assigneeId'?users.find(person=>person.id===activation.definition.value)?.name||'выбранному сотруднику':

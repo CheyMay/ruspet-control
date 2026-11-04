@@ -913,3 +913,53 @@ test('org hierarchy and temporary substitution narrow delegation without exposin
  assert.equal((await request('director',path+'/delegation-targets')).status,403);
  assert.ok(!(await request('director','/delegations')).data.some((row:any)=>row.id===child.data.id));
 });
+
+test('scheduled metric rules count both presets, notify the actual manager and re-arm only after recovery',async()=>{
+ const {runProcesses}=await import('../server/work-design.js');
+ const {metricPreset,premiumPreset,measureTasks}=await import('../shared/process-metrics.js');
+ const marker='Тест показателя клиента';
+ const now=new Date();
+ const point={x:10,y:10},work='/work-design/processes';
+ const manager='lead-msk',subject='anna';
+ assert.equal((await request('admin','/org/reporting/'+subject,{managerId:manager},'PUT')).status,200);
+ const create=async(price:number,days:number)=>{
+  const result=await request('director','/tasks',{title:marker,description:'Проверка показателя',price,assigneeId:subject,
+   deadline:new Date(now.getTime()+days*86400000).toISOString(),plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null});
+  assert.equal(result.status,201);return result.data.id as string;
+ };
+ const overdue:string[]=[];
+ for(let i=0;i<6;i++){overdue.push(await create(1000,-3));await create(500000,4);}
+ await create(499999,4);await create(500000,8);
+ const source=(await db.pool.query("SELECT * FROM tasks WHERE id=$1",[overdue[0]])).rows[0];
+ assert.equal(measureTasks([{...source,deadline:new Date(now.getTime()-2*86400000).toISOString()}],metricPreset,now).value,0);
+ const withMarker=(config:typeof metricPreset)=>({...config,filters:[...config.filters,{field:'title',operator:'=',value:marker}]});
+ function definition(config:typeof metricPreset,action:{id:string;type:string;config:object},name:string){
+  return {name,trigger:'monitor',monitor:{subjectId:subject,everyMinutes:5},
+   title:'Базовый шаблон',assigneeId:manager,price:0,deadlineHours:24,field:'company.status',operator:'=',value:'active',branch:'yes',
+   graph:{nodes:[{id:'start',type:'start',...point},{id:'metric',type:'metric',config:withMarker(config),...point},{...action,...point},{id:'end',type:'end',...point}],
+    edges:[{from:'start',to:'metric',sourcePort:'next'},{from:'metric',to:action.id,sourcePort:'yes'},{from:'metric',to:'end',sourcePort:'no'},{from:action.id,to:'end',sourcePort:'next'}]}};
+ }
+ const overdueRule=definition(metricPreset,{id:'notify',type:'notify',config:{recipientId:'@manager',message:'Проверка просрочек: {{metric.value}}'}},'Правило просрочек');
+ const premiumRule=definition(premiumPreset,{id:'task',type:'task',config:{assigneeId:'@manager',title:'Проверить премиум: {{metric.value}}',price:0,deadlineHours:24}},'Правило премиум');
+ const preview=async(definition:unknown)=>request('director',work+'/preview',{definition,sample:{name:'',status:'active',previousStatus:null}});
+ assert.deepEqual((await preview(overdueRule)).data.notices,['Проверка просрочек: 6']);
+ assert.deepEqual((await preview(premiumRule)).data.titles,['Проверить премиум: 6']);
+ assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE body LIKE 'Проверка просрочек:%'")).rows[0].n,0);
+ for(const rule of [overdueRule,premiumRule]){
+  const saved=await request('director',work,rule);assert.equal(saved.status,201);
+  assert.equal((await request('director',work+'/'+saved.data.id,{enabled:true},'PATCH')).status,200);
+ }
+ const messages=async()=>(await db.pool.query("SELECT recipient_id,body FROM outbox WHERE body LIKE 'Проверка просрочек:%'")).rows;
+ const generated=async()=>(await db.pool.query("SELECT assignee_id,title FROM tasks WHERE title LIKE 'Проверить премиум:%'")).rows;
+ await Promise.all([runProcesses(now),runProcesses(now)]);
+ await runProcesses(new Date(now.getTime()+600000));
+ assert.deepEqual(await messages(),[{recipient_id:manager,body:'Проверка просрочек: 6'}]);
+ assert.deepEqual(await generated(),[{assignee_id:manager,title:'Проверить премиум: 6'}]);
+ await db.pool.query("UPDATE tasks SET status='completed' WHERE id=$1",[overdue[0]]);
+ await runProcesses(new Date(now.getTime()+1200000));
+ assert.equal((await messages()).length,1);
+ await db.pool.query("UPDATE tasks SET status='active' WHERE id=$1",[overdue[0]]);
+ await runProcesses(new Date(now.getTime()+1800000));
+ assert.equal((await messages()).length,2);
+ assert.equal((await generated()).length,1);
+});

@@ -113,7 +113,7 @@ export function createApp() {
  app.patch('/api/work-design/schedules/:id',async(req,res)=>{await toggleSchedule(req.actor,z.uuid().parse(req.params.id),z.object({enabled:z.boolean()}).parse(req.body).enabled);res.json({ok:true});});
  app.get('/api/work-design/processes',async(req,res)=>res.json(await listProcesses(req.actor)));
  app.post('/api/work-design/processes',async(req,res)=>res.status(201).json(await saveProcess(req.actor,req.body)));
- app.post('/api/work-design/processes/preview',async(req,res)=>res.json(previewProcess(req.actor,req.body)));
+ app.post('/api/work-design/processes/preview',async(req,res)=>res.json(await previewProcess(req.actor,req.body)));
  app.put('/api/work-design/processes/:id',async(req,res)=>res.json(await saveProcess(req.actor,req.body,z.uuid().parse(req.params.id))));
  app.patch('/api/work-design/processes/:id',async(req,res)=>{
   const change=z.object({enabled:z.boolean(),expectedRevision:z.number().int().positive().optional()}).parse(req.body);

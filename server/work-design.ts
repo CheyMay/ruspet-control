@@ -1,11 +1,12 @@
+import {measureTasks} from '../shared/process-metrics.js';
 import {processGraph} from './process-graph-input.js';
-import {graphErrors,runGraph,type GraphAction,type Trace} from '../shared/process-graph.js';
+import {graphErrors,runGraph,type GraphAction,type PlannedAction,type Trace} from '../shared/process-graph.js';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {pool,transaction,type Db} from './db.js';
 import {assert,AppError,canSee,globalAccess} from './domain.js';
 import {createTask,validateTaskAssignment} from './workflow.js';
-import {notify} from './service.js';
+import {notify,visibleTasks} from './service.js';
 import {customFieldsInput,taskInput,type TaskInput} from './task-input.js';
 import {getCompany,okbConfigured,okbPool,requireOkbAccess} from './okb.js';
 import {chooseBranch,renderTemplate} from '../shared/draw-run-rules.js';
@@ -18,7 +19,8 @@ const deadlineHours=z.number().int().min(1).max(8760).nullable();
 export const scheduleInput=z.object({template:taskInput,frequency,every:z.number().int().min(1).max(30),startsAt:date,deadlineHours});
 export const processInput=z.object({
  name:z.string().trim().min(3).max(120),graph:processGraph.optional(),
- trigger:z.enum(['company_status','task_accepted','company_quiet']).default('company_status'),
+ trigger:z.enum(['company_status','task_accepted','company_quiet','monitor']).default('company_status'),
+ monitor:z.object({subjectId:z.string().trim().min(1).max(100),everyMinutes:z.number().int().min(5).max(1440)}).optional(),
  companyId:z.uuid().nullable().optional(),quietDays:z.number().int().min(1).max(365).optional(),
  field:z.enum(['company.name','company.status','company.previousStatus','task.title','task.assigneeId']),
  operator:z.enum(['=','!=','contains','exists']),
@@ -28,6 +30,7 @@ export const processInput=z.object({
  description:z.string().trim().max(10000).optional(),customFields:customFieldsInput.optional(),
  price:z.number().min(0).max(999999999999.99),deadlineHours
 }).refine(input=>!!input.graph||input.operator==='exists'||input.value.length>0,'Укажите значение условия.')
+ .refine(input=>input.trigger!=='monitor'||!!input.graph&&!!input.monitor,'Настройте проверку по расписанию и добавьте схему.')
  .refine(input=>input.trigger!=='company_quiet'||!!input.quietDays,'Укажите срок без контакта.')
  .refine(input=>!!input.graph||input.trigger==='task_accepted'||!input.field.startsWith('task.'),'Поле задачи доступно для события приёмки.');
 type Definition=z.infer<typeof processInput>;
@@ -108,35 +111,68 @@ export async function runSchedules(now=new Date()){
 }
 function processTask(value:Definition,context:Record<string,unknown>,at:Date,action:GraphAction=value){
  return withDue(taskInput.parse({title:renderTemplate(action.title,context),description:value.description||'Создана бизнес-процессом «'+value.name+'».',customFields:value.customFields,
-  companyId:z.uuid().safeParse((context.company as {id?:string}|undefined)?.id).data,assigneeId:action.assigneeId,price:action.price,deadline:null,plannedStart:null,plannedEnd:null,parentId:null,important:null,customerRisk:null}),at,action.deadlineHours);
+  monitor:z.object({subjectId:z.string().trim().min(1).max(100),everyMinutes:z.number().int().min(5).max(1440)}).optional(),
+ companyId:z.uuid().safeParse((context.company as {id?:string}|undefined)?.id).data,assigneeId:action.assigneeId,price:action.price,deadline:null,plannedStart:null,plannedEnd:null,parentId:null,important:null,customerRisk:null}),at,action.deadlineHours);
 }
-function processPlan(value:Definition,context:Record<string,unknown>):{branch:'yes'|'no';actions:GraphAction[];trace:Trace[]}{
- if(value.graph)return runGraph(value.graph,context);
+function processPlan(value:Definition,context:Record<string,unknown>,measurements:Record<string,number>={}):{branch:'yes'|'no';actions:PlannedAction[];trace:Trace[]}{
+ if(value.graph)return runGraph(value.graph,context,measurements);
  const branch=chooseBranch(value,context);
- return {branch,actions:branch===value.branch?[value]:[],trace:[{nodeId:'condition',label:value.field+' '+value.operator+' '+value.value,branch}]};
+ return {branch,actions:branch===value.branch?[{type:'task',id:'task',config:value,context}]:[],trace:[{nodeId:'condition',label:value.field+' '+value.operator+' '+value.value,branch}]};
 }
 function validateGraph(value:Definition){
  if(!value.graph)return;
  const errors=graphErrors(value.graph,value.trigger);
+ if(value.trigger==='monitor'&&!value.graph.nodes.some(node=>node.type==='metric'))errors.push('Добавьте условие по показателю.');
+ if(value.trigger!=='monitor'&&value.graph.nodes.some(node=>node.type==='notify'||node.type==='task'&&node.config.assigneeId.startsWith('@')))errors.push('Динамические получатели и уведомления доступны в проверках по расписанию.');
  assert(!errors.length,400,errors.join(' '));
 }
-export function previewProcess(actor:User,body:unknown){
+type Person=Pick<User,'id'|'name'>;
+function measurement(value:Definition,tasks:Task[],at:Date){
+ const values:Record<string,number>={},matched=new Map<string,Task>();
+ for(const node of value.graph?.nodes??[]){
+  if(node.type!=='metric')continue;
+  const result=measureTasks(tasks,node.config,at);
+  values[node.id]=result.value;
+  for(const task of result.matched)matched.set(task.id,task);
+ }
+ return {values,matched:[...matched.values()]};
+}
+async function processSubjects(value:Definition,db:Db=pool,previewId?:string):Promise<Person[]>{
+ if(!value.monitor)return [];
+ const subjectId=value.monitor.subjectId;
+ if(subjectId==='*'){
+  return (await db.query<Person>(`SELECT id,name FROM users WHERE role='employee' AND ($1::text IS NULL OR id=$1) ORDER BY id`,[previewId??null])).rows;
+ }
+ return (await db.query<Person>('SELECT id,name FROM users WHERE id=$1',[subjectId])).rows;
+}
+async function validateTargets(db:Db,actor:User,value:Definition){
+ const sample={company:{name:'Компания',status:'active',previousStatus:'prospect'},task:{title:'Исходная задача'},subject:{name:'Сотрудник'},metric:{value:6}};
+ for(const action of value.graph?value.graph.nodes.flatMap(node=>node.type==='task'?[node.config]:[]):[value]){
+  const dynamic=value.trigger==='monitor'&&['@manager','@subject'].includes(action.assigneeId);
+  await validateTaskAssignment(db,actor,processTask(value,sample,new Date(),dynamic?{...action,assigneeId:actor.id}:action));
+ }
+ if(value.monitor?.subjectId&&value.monitor.subjectId!=='*')assert((await processSubjects(value,db)).length,400,'Выберите сотрудника для проверки.');
+}
+export async function previewProcess(actor:User,body:unknown){
  requireOkbAccess(actor);
- const {definition,sample,task}=z.object({definition:processInput,sample:companySample,task:z.object({title:z.string().max(500),assigneeId:z.string().max(100)}).optional()}).parse(body);
+ const {definition,sample,task,previewSubject}=z.object({definition:processInput,sample:companySample,task:z.object({title:z.string().max(500),assigneeId:z.string().max(100)}).optional(),previewSubject:z.string().max(100).optional()}).parse(body);
  validateGraph(definition);
- const context={company:sample,task},plan=processPlan(definition,context);
- const titles=plan.actions.map(action=>processTask(definition,context,new Date(),action).title);
- return {branch:plan.branch,title:titles[0]??null,...(definition.graph?{titles,trace:plan.trace}:{})};
+ const now=new Date(),subject=definition.monitor?(await processSubjects(definition,pool,previewSubject)).at(0):undefined;
+ if(definition.monitor)assert(subject,400,'Выберите сотрудника для пробного запуска.');
+ const tasks=definition.graph?.nodes.some(node=>node.type==='metric')?await visibleTasks(actor):[];
+ const scope=tasks.filter(row=>(!subject||row.assignee_id===subject.id)&&(!definition.companyId||row.company_id===definition.companyId));
+ const context=definition.trigger==='monitor'?{subject}:{company:sample,task},measured=measurement(definition,scope,now);
+ const plan=processPlan(definition,context,measured.values);
+ const titles=plan.actions.flatMap(action=>action.type==='task'?[processTask(definition,action.context,now,action.config).title]:[]);
+ const notices=plan.actions.flatMap(action=>action.type==='notify'?[renderTemplate(action.config.message,action.context)]:[]);
+ return {branch:plan.branch,title:titles[0]??null,...(definition.graph?{titles,trace:plan.trace,...(notices.length?{notices}:{})}:{}),...(subject?{subject:subject.name}:{})};
 }
 export async function saveProcess(actor:User,body:unknown,existingId?:string){
  requireOkbAccess(actor);
  const value=processInput.parse(body);
  if(value.companyId)await getCompany(actor,value.companyId);
- const sample={company:{name:'Компания',status:'active',previousStatus:'prospect'},task:{title:'Исходная задача'}};
  return transaction(async db=>{
-  for(const action of value.graph?value.graph.nodes.flatMap(node=>node.type==='task'?[node.config]:[]):[value]){
-   await validateTaskAssignment(db,actor,processTask(value,sample,new Date(),action));
-  }
+  await validateTargets(db,actor,value);
   const id=existingId??randomUUID();
   if(existingId){
    const updated=await db.query('UPDATE business_processes SET name=$2,definition=$3,revision=revision+1 WHERE id=$1',[id,value.name,JSON.stringify(value)]);
@@ -166,37 +202,90 @@ export async function toggleProcess(actor:User,id:string,enabled:boolean,expecte
   validateGraph(definition);
   const owner=(await db.query<User>('SELECT * FROM users WHERE id=$1',[row.actor_id])).rows[0];
   requireOkbAccess(owner);
-  const sample={company:{name:'Компания',status:'active',previousStatus:'prospect'},task:{title:'Исходная задача'}};
-  for(const action of definition.graph?definition.graph.nodes.flatMap(node=>node.type==='task'?[node.config]:[]):[definition]){
-   await validateTaskAssignment(db,owner,processTask(definition,sample,new Date(),action));
-  }
-  const cursor=(await okbPool().query('SELECT coalesce(max(id),0) cursor FROM company_status_events')).rows[0].cursor;
+  await validateTargets(db,owner,definition);
+  const cursor=definition.trigger==='company_status'?(await okbPool().query('SELECT coalesce(max(id),0) cursor FROM company_status_events')).rows[0].cursor:0;
   const revision=row.revision+1;
   await db.query('INSERT INTO business_versions(process_id,revision,definition,published_by) VALUES($1,$2,$3,$4)',[id,revision,JSON.stringify(definition),actor.id]);
   await db.query(`UPDATE business_processes SET enabled=true,revision=$2,published_revision=$2,enabled_since=clock_timestamp(),
-   quiet_cursor=NULL,event_cursor=$3 WHERE id=$1`,[id,revision,cursor]);
+   quiet_cursor=NULL,event_cursor=$3,monitor_next_at=NULL WHERE id=$1`,[id,revision,cursor]);
  });
 }
-type RunContext={company?:{id?:string;name:string;status:string;previousStatus?:string|null};task?:{title:string;assigneeId:string}};
-async function executeProcess(db:Db,row:{id:string;actor_id:string;published_revision:number},definition:Definition,eventId:string,context:RunContext,now:Date){
- const plan=processPlan(definition,context),taskIds:string[]=[];
+type RunContext={company?:{id?:string;name:string;status:string;previousStatus?:string|null};task?:{title:string;assigneeId:string};subject?:Person};
+type ProcessRow={id:string;actor_id:string;published_revision:number};
+type Plan=ReturnType<typeof processPlan>;
+async function recipient(db:Db,id:string,subject?:Person){
+ if(id==='@subject'){assert(subject,400,'Укажите сотрудника для проверки.');return subject.id;}
+ if(id!=='@manager')return id;
+ assert(subject,400,'Укажите сотрудника для поиска руководителя.');
+ const manager=(await db.query('SELECT manager_id FROM org_reporting WHERE employee_id=$1',[subject.id])).rows[0]?.manager_id;
+ assert(manager,409,'В оргструктуре не назначен руководитель для '+subject.name+'.');
+ return manager as string;
+}
+async function executeProcess(db:Db,row:ProcessRow,definition:Definition,eventId:string,context:RunContext,now:Date,
+ prepared?:{plan:Plan;matched:Task[]}){
+ const actor=(await db.query<User>('SELECT * FROM users WHERE id=$1',[row.actor_id])).rows[0];
+ const tasks=!prepared&&definition.graph?.nodes.some(node=>node.type==='metric')?await visibleTasks(actor,db):[];
+ const plan=prepared?.plan??processPlan(definition,context,measurement(definition,tasks.filter(task=>!definition.companyId||task.company_id===definition.companyId),now).values);
+ const taskIds:string[]=[];
  let error:string|null=null;
  if(plan.actions.length){
   await db.query('SAVEPOINT process_task');
   try{
-   const actor=(await db.query<User>('SELECT * FROM users WHERE id=$1',[row.actor_id])).rows[0];
    requireOkbAccess(actor);
-   for(const [index,action] of plan.actions.entries())taskIds.push(await makeTask(db,actor,processTask(definition,context,now,action),'process:'+row.id+':'+eventId+':'+index));
+   for(const action of plan.actions){
+    const key='process:'+row.id+':'+eventId+':'+action.id;
+    const id=await recipient(db,action.type==='task'?action.config.assigneeId:action.config.recipientId,context.subject);
+    if(prepared){
+     const target=(await db.query<User>('SELECT * FROM users WHERE id=$1',[id])).rows[0];
+     assert(target,400,'Получатель не найден.');
+     assert(prepared.matched.every(task=>canSee(target,task)),403,'Получатель не видит все задачи из выборки.');
+    }
+    if(action.type==='task')taskIds.push(await makeTask(db,actor,processTask(definition,action.context,now,{...action.config,assigneeId:id}),key));
+    else{
+     const message=renderTemplate(action.config.message,action.context).trim();
+     assert(message.length>0&&message.length<=220,400,'Текст уведомления после подстановки должен содержать до 220 символов.');
+     await notify(db,null,id,message,key);
+    }
+   }
   }catch(e){
    await db.query('ROLLBACK TO SAVEPOINT process_task');
    taskIds.length=0;
-   error=e instanceof AppError?e.message:'Не удалось создать задачи для события.';
+   error=e instanceof AppError?e.message:'Не удалось выполнить действия процесса.';
   }
   await db.query('RELEASE SAVEPOINT process_task');
  }
+ const trace=context.subject?[{nodeId:'subject',label:context.subject.name},...plan.trace]:plan.trace;
  await db.query('INSERT INTO business_runs(process_id,event_id,branch,task_id,error,process_revision,trace) VALUES($1,$2,$3,$4,$5,$6,$7)',
-  [row.id,eventId,plan.branch,taskIds[0]??null,error,row.published_revision,JSON.stringify(plan.trace)]);
+  [row.id,eventId,plan.branch,taskIds[0]??null,error,row.published_revision,JSON.stringify(trace)]);
  for(const taskId of taskIds)await db.query('INSERT INTO business_run_tasks(process_id,event_id,task_id) VALUES($1,$2,$3)',[row.id,eventId,taskId]);
+ return !error;
+}
+async function runMonitor(db:Db,row:ProcessRow&{monitor_next_at:string|null},definition:Definition,now:Date){
+ if(row.monitor_next_at&&Date.parse(row.monitor_next_at)>now.getTime())return;
+ const actor=(await db.query<User>('SELECT * FROM users WHERE id=$1',[row.actor_id])).rows[0];
+ requireOkbAccess(actor);
+ const tasks=await visibleTasks(actor,db);
+ const grouped=new Map<string,Task[]>();
+ for(const task of tasks){
+  if(definition.companyId&&task.company_id!==definition.companyId)continue;
+  const group=grouped.get(task.assignee_id);
+  if(group)group.push(task);else grouped.set(task.assignee_id,[task]);
+ }
+ const subjects=await processSubjects(definition,db);
+ const states=(await db.query<{subject_id:string;active_nodes:string[]}>('SELECT subject_id,active_nodes FROM business_monitor_states WHERE process_id=$1',[row.id])).rows;
+ for(const subject of subjects){
+  const scope=grouped.get(subject.id)??[];
+  const measured=measurement(definition,scope,now),context={subject};
+  const plan=processPlan(definition,context,measured.values),active=plan.actions.map(action=>action.id);
+  const previous=states.find(state=>state.subject_id===subject.id);
+  const pending=plan.actions.filter(action=>!previous?.active_nodes.includes(action.id));
+  const changed=!previous||previous.active_nodes.some(id=>!active.includes(id))||pending.length>0;
+  if(!changed)continue;
+  const ok=await executeProcess(db,row,definition,randomUUID(),context,now,{plan:{...plan,actions:pending},matched:measured.matched});
+  if(ok)await db.query(`INSERT INTO business_monitor_states(process_id,subject_id,active_nodes) VALUES($1,$2,$3)
+   ON CONFLICT(process_id,subject_id) DO UPDATE SET active_nodes=excluded.active_nodes`,[row.id,subject.id,active]);
+ }
+ await db.query('UPDATE business_processes SET monitor_next_at=$2 WHERE id=$1',[row.id,new Date(now.getTime()+definition.monitor!.everyMinutes*60000).toISOString()]);
 }
 async function runProcess(id:string,now:Date){
  await transaction(async db=>{
@@ -205,7 +294,9 @@ async function runProcess(id:string,now:Date){
   const published=(await db.query('SELECT definition FROM business_versions WHERE process_id=$1 AND revision=$2',[row.id,row.published_revision])).rows[0];
   if(!published)return;
   const definition=processInput.parse(published.definition);
-  if(definition.trigger==='company_status'){
+  if(definition.trigger==='monitor')await runMonitor(db,row,definition,now);
+  else if(definition.trigger==='company_status'){
+   if(!okbConfigured())return;
    const events=(await okbPool().query('SELECT id,event_id,snapshot FROM company_status_events WHERE id>$1 AND ($2::timestamptz IS NULL OR occurred_at>=$2) ORDER BY id LIMIT 5',[row.event_cursor,row.enabled_since])).rows;
    for(const item of events){
     if(!definition.companyId||definition.companyId===item.snapshot.id)await executeProcess(db,row,definition,item.event_id,{company:item.snapshot},now);
@@ -231,6 +322,7 @@ async function runProcess(id:string,now:Date){
     await executeProcess(db,row,definition,item.event_id,{company,task:{title:t.title,assigneeId:t.assignee_id}},now);
    }
   }else{
+   if(!okbConfigured())return;
    const companies=(await okbPool().query(`SELECT id,name,status,coalesce(last_contact_at,created_at) AS quiet_since FROM companies
     WHERE status='active' AND ($1::uuid IS NULL OR id>$1) AND ($2::uuid IS NULL OR id=$2)
     AND coalesce(last_contact_at,created_at)+make_interval(days=>$3::int) BETWEEN $4 AND $5
@@ -246,8 +338,7 @@ async function runProcess(id:string,now:Date){
  });
 }
 export async function runProcesses(now=new Date()){
- if(!okbConfigured())return;
- const processes=(await pool.query('SELECT id FROM business_processes WHERE enabled ORDER BY last_polled_at NULLS FIRST,id LIMIT 8')).rows;
+ const processes=(await pool.query('SELECT id FROM business_processes WHERE enabled AND (monitor_next_at IS NULL OR monitor_next_at<=$1) ORDER BY last_polled_at NULLS FIRST,id LIMIT 8',[now.toISOString()])).rows;
  for(const {id} of processes){
   try{await runProcess(id,now);}
   catch{

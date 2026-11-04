@@ -104,3 +104,6 @@ main select:disabled { opacity:.6; }
 .bpm-ports { position:absolute; top:20px; right:-7px; display:grid; gap:10px; }
 .bpm-ports button { width:14px; height:14px; padding:0; border:1px solid var(--theme-accent); border-radius:50%; background:var(--theme-surface,white); cursor:crosshair; }
 .bpm-ports button[data-active="true"] { background:var(--theme-accent); }
+
+.metric-filter { display:grid; gap:7px; border:1px solid var(--line); border-radius:6px; margin:0; padding:8px; min-width:0; }
+.metric-filter legend { padding:0 4px; }

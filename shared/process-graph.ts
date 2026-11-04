@@ -1,3 +1,4 @@
+import {compareNumber,filterError,metrics,type MetricConfig} from './process-metrics.js';
 // Draw Run graph conventions: stable node IDs and one edge per named output port.
 import {chooseBranch} from './draw-run-rules.js';
 
@@ -5,16 +6,19 @@ export const fields=['company.name','company.status','company.previousStatus','t
 export const operators=['=','!=','contains','exists'] as const;
 type Point={id:string;x:number;y:number};
 export type GraphAction={title:string;assigneeId:string;price:number;deadlineHours:number|null};
+export type GraphNotice={recipientId:string;message:string};
 export type ProcessNode=Point&(
  {type:'start'}|{type:'end'}|
  {type:'condition';config:{field:typeof fields[number];operator:typeof operators[number];value:string}}|
- {type:'task';config:GraphAction}
+ {type:'task';config:GraphAction}|{type:'metric';config:MetricConfig}|{type:'notify';config:GraphNotice}
 );
 export type ProcessGraph={nodes:ProcessNode[];edges:{from:string;to:string;sourcePort:'next'|'yes'|'no'}[]};
 export type Trace={nodeId:string;label:string;branch?:'yes'|'no'};
+export type PlannedAction=({type:'task';config:GraphAction}|{type:'notify';config:GraphNotice})&{id:string;context:Record<string,unknown>};
+export const processOutput=(node:ProcessNode)=>node.type==='condition'||node.type==='metric';
 
 export function ports(node:ProcessNode):ProcessGraph['edges'][number]['sourcePort'][]{
- return node.type==='end'?[]:node.type==='condition'?['yes','no']:['next'];
+ return node.type==='end'?[]:processOutput(node)?['yes','no']:['next'];
 }
 export function graphErrors(graph:ProcessGraph,trigger:string){
  const errors:string[]=[],map=new Map(graph.nodes.map(node=>[node.id,node]));
@@ -41,6 +45,7 @@ export function graphErrors(graph:ProcessGraph,trigger:string){
  for(const node of graph.nodes){
   if(!seen.has(node.id))errors.push('Есть блоки, недоступные из старта.');
   if(ports(node).some(port=>!outgoing.has(node.id+':'+port)))errors.push('Соедините каждый выход с другим блоком или финишем.');
+  if(node.type==='metric'){for(const filter of node.config.filters){const issue=filterError(filter);if(issue)errors.push(issue);}}
   if(node.type==='condition'){
    if(node.config.operator!=='exists'&&!node.config.value)errors.push('Заполните значение условия.');
    if(trigger!=='task_accepted'&&node.config.field.startsWith('task.'))errors.push('Поля задачи доступны для события приёмки.');
@@ -48,22 +53,29 @@ export function graphErrors(graph:ProcessGraph,trigger:string){
  }
  return [...new Set(errors)];
 }
-export function runGraph(graph:ProcessGraph,context:Record<string,unknown>){
- const actions:GraphAction[]=[],trace:Trace[]=[],seen=new Set<string>();
+export function runGraph(graph:ProcessGraph,context:Record<string,unknown>,measurements:Record<string,number>={}){
+ const actions:PlannedAction[]=[],trace:Trace[]=[],seen=new Set<string>();
  let current:ProcessNode|undefined=graph.nodes.find(node=>node.type==='start');
  let branch:'yes'|'no'='yes';
  while(current&&!seen.has(current.id)){
   seen.add(current.id);
   let port:'next'|'yes'|'no'='next';
-  if(current.type==='condition'){
+  if(current.type==='metric'){
+   const value:number|undefined=measurements[current.id];
+   port=typeof value==='number'&&Number.isFinite(value)&&compareNumber(value,current.config.operator,current.config.threshold)?'yes':'no';
+   if(!trace.some(step=>step.branch))branch=port;
+   const label=metrics[current.config.metric];
+   trace.push({nodeId:current.id,label:label+' · '+(value??'—')+' '+current.config.operator+' '+current.config.threshold,branch:port});
+   context={...context,metric:{value,label,threshold:current.config.threshold,nodeId:current.id}};
+  }else if(current.type==='condition'){
    port=chooseBranch(current.config,context);
    if(!trace.some(step=>step.branch))branch=port;
    trace.push({nodeId:current.id,label:current.config.field+' '+current.config.operator+' '+current.config.value,branch:port});
   }else{
-   if(current.type==='task')actions.push(current.config);
-   trace.push({nodeId:current.id,label:current.type==='task'?current.config.title:current.type==='start'?'Старт':'Финиш'});
+   if(current.type==='task'||current.type==='notify')actions.push({type:current.type,config:current.config,id:current.id,context} as PlannedAction);
+   trace.push({nodeId:current.id,label:current.type==='task'?current.config.title:current.type==='notify'?'Уведомление':current.type==='start'?'Старт':'Финиш'});
   }
-  const edge=graph.edges.find(edge=>edge.from===current?.id&&edge.sourcePort===port);
+  const edge:ProcessGraph['edges'][number]|undefined=graph.edges.find(edge=>edge.from===current?.id&&edge.sourcePort===port);
   current=graph.nodes.find(node=>node.id===edge?.to);
  }
  return {branch,actions,trace};
