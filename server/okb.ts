@@ -61,3 +61,24 @@ export async function saveCompany(actor:User,input:unknown,id?:string){
   throw e;
  }finally{db.release();}
 }
+
+export async function getCompany(actor:User,id:string){
+ requireOkbAccess(actor);
+ const company=(await okbPool().query('SELECT * FROM companies WHERE id=$1',[id])).rows[0];
+ assert(company,404,'Компания не найдена в ОКБ.');
+ return company;
+}
+export async function companyContacts(actor:User,id:string){
+ await getCompany(actor,id);
+ return (await okbPool().query('SELECT * FROM company_contacts WHERE company_id=$1 ORDER BY occurred_at DESC LIMIT 50',[id])).rows;
+}
+export async function recordCompanyContact(actor:User,id:string,input:unknown){
+ requireOkbAccess(actor);
+ const {note}=z.object({note:z.string().trim().min(3).max(2000)}).parse(input);
+ const {rows}=await okbPool().query(`WITH updated AS (UPDATE companies SET last_contact_at=clock_timestamp(),
+   updated_at=clock_timestamp(),version=version+1 WHERE id=$1 RETURNING id,last_contact_at)
+  INSERT INTO company_contacts(id,company_id,author_id,note,occurred_at)
+   SELECT $2,id,$3,$4,last_contact_at FROM updated RETURNING *`,[id,randomUUID(),actor.id,note]);
+ assert(rows.length,404,'Компания не найдена в ОКБ.');
+ return rows[0];
+}

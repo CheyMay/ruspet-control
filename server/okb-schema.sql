@@ -15,3 +15,18 @@ CREATE TABLE IF NOT EXISTS company_status_events (
  snapshot jsonb NOT NULL,
  occurred_at timestamptz NOT NULL DEFAULT clock_timestamp()
 );
+
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS created_at timestamptz;
+UPDATE companies c SET created_at=COALESCE((SELECT min(e.occurred_at) FROM company_status_events e WHERE e.company_id=c.id),c.updated_at)
+ WHERE c.created_at IS NULL;
+ALTER TABLE companies ALTER COLUMN created_at SET DEFAULT clock_timestamp(),ALTER COLUMN created_at SET NOT NULL;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS last_contact_at timestamptz;
+CREATE TABLE IF NOT EXISTS company_contacts (
+ id uuid PRIMARY KEY,
+ company_id uuid NOT NULL REFERENCES companies,
+ author_id text NOT NULL,
+ note text NOT NULL,
+ occurred_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);
+CREATE INDEX IF NOT EXISTS company_contacts_recent ON company_contacts(company_id,occurred_at DESC);
+CREATE INDEX IF NOT EXISTS company_quiet_since ON companies ((coalesce(last_contact_at,created_at))) WHERE status='active';

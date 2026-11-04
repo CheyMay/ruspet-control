@@ -3,6 +3,7 @@ import {randomUUID} from 'node:crypto';
 import {transaction,type Db} from './db.js';
 import {assert,canRequest,canEdit,canSee,canManage,globalAccess} from './domain.js';
 import {event,notify,refreshTaskFindings} from './service.js';
+import {getCompany} from './okb.js';
 import {MockTaskProvider} from './providers.js';
 import type {Task,User} from '../shared/types.js';
 import type {TaskInput} from './task-input.js';
@@ -17,9 +18,10 @@ export async function validateTaskAssignment(db:Db,u:User,input:TaskInput,id?:st
  return owner!;
 }
 export async function createTask(u:User,input:TaskInput){return transaction(async db=>{
+ if(input.companyId)await getCompany(u,input.companyId);
  const owner=await validateTaskAssignment(db,u,input),id='L-'+randomUUID().slice(0,8);
  assert(input.price!==undefined&&Number.isFinite(input.price)&&input.price>=0,400,'Цена новой задачи обязательна.');
- const task=(await db.query("INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,price,deadline,original_deadline,planned_start,planned_end,status,priority,code,important,customer_risk,parent_id,custom_fields) VALUES($1,$2,$3,$4,$5,$6,$14,$7,$7,$8,$9,'active','normal',$10,$11,$12,$13,$15) RETURNING *",[id,input.title,input.description,owner.branch_id,owner.id,u.id,input.deadline,input.plannedStart,input.plannedEnd,input.title.split(/\s/)[0],input.important,input.customerRisk,input.parentId,input.price,JSON.stringify(input.customFields??[])])).rows[0];
+ const task=(await db.query("INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,price,deadline,original_deadline,planned_start,planned_end,status,priority,code,important,customer_risk,parent_id,custom_fields,company_id) VALUES($1,$2,$3,$4,$5,$6,$14,$7,$7,$8,$9,'active','normal',$10,$11,$12,$13,$15,$16) RETURNING *",[id,input.title,input.description,owner.branch_id,owner.id,u.id,input.deadline,input.plannedStart,input.plannedEnd,input.title.split(/\s/)[0],input.important,input.customerRisk,input.parentId,input.price,JSON.stringify(input.customFields??[]),input.companyId??null])).rows[0];
  await db.query('INSERT INTO mock_provider_tasks(id,snapshot,revision) VALUES($1,$2,1)',[id,JSON.stringify(task)]);await refreshTaskFindings(db,task,u);await event(db,id,u.id,'created','Создана локальная задача',{after:task});await recordTaskBarrier(db,u,id,'Создание задачи');return {id};
 });}
 async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reason:string){return transaction(async db=>{
@@ -28,7 +30,12 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
  assert(before&&canSee(u,before),404,'Задача недоступна.');assert(canEdit(u,before),403,'Редактировать может постановщик или руководитель.');assert(reason?.trim().length>=5&&reason.length<=4000,400,'Укажите причину изменения, минимум 5 символов.');assert(before.status==='active',409,'Редактировать можно только задачу в работе.');assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
  assert(input.deadline===before.deadline,400,'Крайний срок меняется через запрос согласования.');
  const owner=await validateTaskAssignment(db,u,input,id,before.assignee_id,before.creator_id);
- const after=(await db.query('UPDATE tasks SET title=$2,description=$3,assignee_id=$4,branch_id=$5,planned_start=$6,planned_end=$7,important=$8,customer_risk=$9,parent_id=$10,code=$11,price=COALESCE($12,price),custom_fields=COALESCE($13,custom_fields),version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.title,input.description,owner.id,owner.branch_id,input.plannedStart,input.plannedEnd,input.important,input.customerRisk,input.parentId,input.title.split(/\s/)[0],input.price??null,input.customFields===undefined?null:JSON.stringify(input.customFields)])).rows[0];
+ const companyId=input.companyId===undefined?before.company_id??null:input.companyId;
+ if(companyId!==(before.company_id??null)){
+  assert(globalAccess(u),403,'Связь с ОКБ меняет руководство.');
+  if(companyId)await getCompany(u,companyId);
+ }
+ const after=(await db.query('UPDATE tasks SET title=$2,description=$3,assignee_id=$4,branch_id=$5,planned_start=$6,planned_end=$7,important=$8,customer_risk=$9,parent_id=$10,code=$11,price=COALESCE($12,price),custom_fields=COALESCE($13,custom_fields),company_id=$14,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.title,input.description,owner.id,owner.branch_id,input.plannedStart,input.plannedEnd,input.important,input.customerRisk,input.parentId,input.title.split(/\s/)[0],input.price??null,input.customFields===undefined?null:JSON.stringify(input.customFields),companyId])).rows[0];
  await provider.applyApprovedChange(db,after,before.version);await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[id]);
  if(before.assignee_id!==after.assignee_id)await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);await refreshTaskFindings(db,after,u);
  await event(db,id,u.id,'task_edited','Изменены параметры задачи, проверки обновлены.',{before,after,reason});return {id};

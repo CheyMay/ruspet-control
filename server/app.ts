@@ -1,4 +1,5 @@
-import {listCompanies,saveCompany} from './okb.js';
+import {companyWork,listTaskTemplates,saveTaskTemplate,removeTaskTemplate} from './task-workspace.js';
+import {listCompanies,saveCompany,getCompany,companyContacts,recordCompanyContact} from './okb.js';
 import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,previewProcess,toggleProcess} from './work-design.js';
 import {taskInput} from './task-input.js';
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
@@ -86,6 +87,13 @@ export function createApp() {
  app.post('/api/bot/click',async(req,res)=>res.json(await botClick(req.actor,'preview',z.object({token:z.string().max(64)}).parse(req.body).token)));
  app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,'preview',input.text,input.inputId))});
  app.get('/api/okb/companies',async(req,res)=>res.json(await listCompanies(req.actor,typeof req.query.q==='string'?req.query.q:'')));
+ app.get('/api/okb/companies/:id',async(req,res)=>res.json(await getCompany(req.actor,z.uuid().parse(req.params.id))));
+ app.get('/api/okb/companies/:id/work',async(req,res)=>res.json(await companyWork(req.actor,z.uuid().parse(req.params.id))));
+ app.get('/api/okb/companies/:id/contacts',async(req,res)=>res.json(await companyContacts(req.actor,z.uuid().parse(req.params.id))));
+ app.post('/api/okb/companies/:id/contacts',async(req,res)=>res.status(201).json(await recordCompanyContact(req.actor,z.uuid().parse(req.params.id),req.body)));
+ app.get('/api/task-templates',async(req,res)=>res.json(await listTaskTemplates(req.actor)));
+ app.post('/api/task-templates',async(req,res)=>res.status(201).json(await saveTaskTemplate(req.actor,req.body)));
+ app.delete('/api/task-templates/:id',async(req,res)=>{await removeTaskTemplate(req.actor,z.uuid().parse(req.params.id));res.json({ok:true});});
  app.post('/api/okb/companies',async(req,res)=>res.status(201).json(await saveCompany(req.actor,req.body)));
  app.put('/api/okb/companies/:id',async(req,res)=>res.json(await saveCompany(req.actor,req.body,z.uuid().parse(req.params.id))));
  app.get('/api/work-design/schedules',async(req,res)=>res.json(await listSchedules(req.actor)));

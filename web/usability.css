@@ -62,3 +62,24 @@ main select:disabled { opacity:.6; }
 .task-extra dd { margin:0; white-space:pre-wrap; overflow-wrap:anywhere; }
 .sidebar nav { min-height:0; overflow-y:auto; }
 @media(max-width:620px) { .process-flow { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+
+.task-quick-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px; margin:8px 0 12px; }
+.task-hints,.task-template-library,.task-company-picker { margin:12px 0; padding:12px; border:1px solid var(--line); border-radius:7px; background:var(--theme-surface-soft); }
+.task-template-library summary { cursor:pointer; font-weight:600; }
+.task-hints p,.task-template-library p { margin:5px 0; }
+.task-hints ul { padding-inline-start:18px; margin:4px 0; }
+.task-hints button,.task-company-link button { white-space:normal; text-align:left; }
+.task-company-picker select { width:100%; }
+.task-company-picker label { margin-bottom:8px; }
+.task-template-library .task-share-template { display:flex; flex-direction:row; align-items:center; gap:8px; }
+.okb-related { margin-top:18px; }
+.okb-contact-history p { overflow-wrap:anywhere; white-space:pre-wrap; }
+
+.task-mode { margin:0 0 14px; padding:0; border:0; min-width:0; }
+.task-mode legend { font-size:12px; font-weight:600; padding:0; margin-bottom:7px; }
+.task-mode>div { display:flex; gap:6px; flex-wrap:wrap; }
+.task-editor .task-mode label { display:flex; flex-direction:row; align-items:center; flex:1 1 125px; gap:7px; padding:9px; margin:0; border:1px solid var(--line); border-radius:7px; cursor:pointer; }
+.task-mode label:has(input:checked) { background:var(--theme-surface-soft); border-color:var(--green); }
+.task-mode input { margin:0; flex:none; accent-color:var(--green); }
+.task-mode small { display:block; margin-top:3px; }
+.task-editor-actions { position:sticky; bottom:-24px; z-index:1; background:var(--theme-surface,white); margin-inline:-24px; margin-bottom:-24px; padding:12px 24px; border-top:1px solid var(--line); }

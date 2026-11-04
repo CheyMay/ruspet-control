@@ -9,6 +9,6 @@ export const taskInput=z.object({
  price:z.number().finite().min(0).max(999999999999.99).refine(n=>Math.abs(n*100-Math.round(n*100))<0.001).optional(),
  title:z.string().trim().min(3).max(500),description:z.string().trim().max(10000),assigneeId:z.string().trim().min(1).max(100),
  deadline:z.iso.datetime({offset:true}).nullable(),plannedStart:z.iso.datetime({offset:true}).nullable(),plannedEnd:z.iso.datetime({offset:true}).nullable(),
- important:z.boolean().nullable(),customerRisk:z.boolean().nullable(),parentId:z.string().trim().max(100).nullable(),customFields:customFieldsInput.optional()
+ important:z.boolean().nullable(),customerRisk:z.boolean().nullable(),parentId:z.string().trim().max(100).nullable(),customFields:customFieldsInput.optional(),companyId:z.uuid().nullable().optional()
 });
 export type TaskInput=z.infer<typeof taskInput>;
