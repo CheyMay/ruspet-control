@@ -12,7 +12,7 @@ import {actionItems,canReview} from '../shared/actions.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize,queueLabels} from '../shared/analytics.js';
 import type {User,Task} from '../shared/types.js';
-export type BotScreen={format?:'HTML';document?:{reportId:string};links?:{text:string;url:string}[];text:string;buttons:{text:string;token:string}[][]};
+export type BotScreen={timingKind?:'menu'|'task';format?:'HTML';document?:{reportId:string};links?:{text:string;url:string}[];text:string;buttons:{text:string;token:string}[][]};
 type Payload={op:string;id?:string;page?:number;filter?:string;query?:string;kind?:string;version?:number;target?:string;step?:number;revision?:number;values?:Record<string,string>;minutes?:number};
 type Field={key:string;label:string;min:number};
 type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};
@@ -27,27 +27,17 @@ const button=(text:string,op:string,extra:Partial<Payload>={})=>({text,payload:{
 const home=[button('📅 Срок сегодня','day'),button('📥 Ждут решения','inbox')];
 export async function clearBotDraft(u:User,ch:string){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch])})}
 export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<BotScreen>{
- const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(x=>x.id===id)?.name||id;
- if(p.op==='search'){
-  const query=(p.query||'').trim().toLocaleLowerCase('ru-RU');assert(query.length>=2&&query.length<=100,400,'Для поиска введите не менее 2 символов после /search.');
-  const list=data.tasks.filter(t=>t.id.toLocaleLowerCase('ru-RU').includes(query)||t.title.toLocaleLowerCase('ru-RU').includes(query)||name(t.assignee_id).toLocaleLowerCase('ru-RU').includes(query));
-  const page=Math.max(0,Math.min(p.page||0,Math.max(0,Math.ceil(list.length/6)-1))),slice=list.slice(page*6,page*6+6);
-  return screen(u,ch,`Поиск: ${p.query}\nНайдено задач: ${list.length}\n\n${slice.map((t,i)=>`${i+1}. #${t.id} ${t.title.slice(0,150)}`).join('\n')||'Совпадений нет.'}\n\nСтраница ${page+1}/${Math.max(1,Math.ceil(list.length/6))}`, [...slice.map((t,i)=>[button(`${i+1}. Открыть #${t.id}`,'task',{id:t.id})]),[...(page?[button('← Назад','search',{query:p.query,page:page-1})]:[]),...(page*6+6<list.length?[button('Далее →','search',{query:p.query,page:page+1})]:[])],[button('Меню','home')]]);
- }
- if(p.op==='reminder_days'){
-  await detail(u,p.id!);const selected=(p.query||'').split(',').filter(Boolean).map(Number),names=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
-  const choices=names.map((name,i)=>button((selected.includes(i+1)?'✓ ':'')+name,'reminder_days',{id:p.id,query:(selected.includes(i+1)?selected.filter(d=>d!==i+1):[...selected,i+1]).join(',')}));
-  return screen(u,ch,'Выберите дни напоминания по задаче #'+p.id+' · время московское',[choices.slice(0,4),choices.slice(4),...(selected.length?[[button('Далее: время и недели','form',{id:p.id,kind:'reminder',values:{days:selected.join(',')}})]]:[]),[button('К задаче','task',{id:p.id})]]);
- }
- if(p.op==='task_reminders'){
-  const state=await listTaskReminders(u,p.id!),active=state.schedules.filter(r=>r.enabled);
-  return screen(u,ch,'Напоминания по задаче #'+p.id+'\n'+(active.map(r=>`${name(r.recipient_id)}: дни ${r.days.join(', ')} · ${r.times.join(', ')} МСК · ${r.weeks} нед.`).join('\n')||'Расписаний нет.')+'\nНеподтверждённые сообщения повторяются каждые 30 минут до конца дня.',[[button('Новое напоминание для меня','reminder_days',{id:p.id})],...active.map(r=>[button('Выключить: '+r.times.join(', '),'confirm',{kind:'reminder_cancel',id:p.id,target:r.id})]),[button('К задаче','task',{id:p.id}),button('Ожидают подтверждения','alerts')]]);
- }
- if(p.op==='alerts'){const alerts=(await userAlerts(u)).filter(a=>!a.acknowledged_at&&!a.canceled_at);return screen(u,ch,'Напоминания, ожидающие подтверждения: '+alerts.length, [...alerts.slice(0,15).map(a=>[button('ОК · '+(a.task_id?'#'+a.task_id:a.kind),'confirm',{kind:'alert_ack',target:a.id})]),[button('Меню','home')]]);}
- if(p.op==='edit'){const d=await detail(u,p.id!);assert(canEdit(u,d.task)&&d.task.status==='active',403,'Редактирование доступно постановщику или руководителю.');return screen(u,ch,'Редактирование #'+d.task.id+' · '+d.task.title,[[button('Название','form',{kind:'edit_title',id:p.id,version:d.task.version})],[button('Описание','form',{kind:'edit_description',id:p.id,version:d.task.version})],[button('Цена задачи','form',{kind:'edit_price',id:p.id,version:d.task.version})],[button('Исполнитель','assignee_list',{id:p.id,version:d.task.version})],[button('Крайний срок через согласование','form',{kind:'deadline',id:p.id,version:d.task.version})],[button('К задаче','task',{id:p.id})]]);}
- if(p.op==='assignee_list'){const d=await detail(u,p.id!);assert(canEdit(u,d.task),403,'Нет права редактировать задачу.');const people=await taskAssignees(u,p.id!);const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/8)-1));return screen(u,ch,'Выберите исполнителя · страница '+(page+1),[...people.slice(page*8,page*8+8).map(person=>[button(person.name,'assignee_prepare',{id:p.id,version:d.task.version,target:person.id})]),[...(page?[button('← Назад','assignee_list',{id:p.id,page:page-1})]:[]),...((page+1)*8<people.length?[button('Далее →','assignee_list',{id:p.id,page:page+1})]:[])],[button('К задаче','task',{id:p.id})]]);}
+ const result=await renderView(u,ch,p);
+ if(p.op==='home'||p.op==='task')result.timingKind=p.op==='home'?'menu':'task';
+ return result;
+}
+async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
  if(['task','history','discussion'].includes(p.op)){
-  const d=await detail(u,p.id!),t=d.task;
+  const d=await detail(u,p.id!),t=d.task,now=new Date();
+  const ids=[t.assignee_id,t.creator_id,...d.comments.map(c=>c.author_id),...d.events.map(e=>e.actor_id),...d.approvals.flatMap(a=>a.route.map((step:{userId:string})=>step.userId))];
+  const people=(await pool.query('SELECT id,name FROM users WHERE id=ANY($1)',[ids])).rows;
+  const name=(id:string)=>people.find(x=>x.id===id)?.name||id;
+  const showPlanning=p.op==='history'&&(await config(pool)).config.showPlanning;
   if(p.op==='discussion'){
    const list=[...d.comments].reverse(),page=Math.max(0,Math.min(p.page||0,Math.max(0,list.length-1))),c=list[page];
    return screen(u,ch,`Обсуждение #${t.id} · ${list.length} сообщений\n\n${c?name(c.author_id)+' · '+date(c.created_at)+' МСК\n'+c.body.slice(0,3300):'Сообщений пока нет.'}`,[[...(page?[button('← Новее','discussion',{id:t.id,page:page-1})]:[]),...(page+1<list.length?[button('Ранее →','discussion',{id:t.id,page:page+1})]:[])],[button('Написать комментарий','form',{kind:'comment',id:t.id,target:c?.approval_id||undefined})],[button('К задаче','task',{id:t.id}),button('Меню','home')]]);
@@ -56,7 +46,7 @@ export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<Bo
    const fields:Record<string,string>={title:'Название',description:'Описание',deadline:'Срок',status:'Состояние',assignee_id:'Исполнитель',planned_start:'Плановое начало',planned_end:'Плановое окончание'};
    const undone=new Set(d.events.flatMap(e=>e.kind==='action_undone'&&Array.isArray(e.data.originalEvents)?e.data.originalEvents as string[]:[]));
    const texts=d.events.flatMap(e=>{let text=`${date(e.created_at)} МСК · ${e.actor_id?name(e.actor_id):'Система'}\n${e.message}${undone.has(e.id)?' · действие отменено':''}`;const before=e.data.before as Record<string,unknown>|undefined,after=e.data.after as Record<string,unknown>|undefined;
-    if(before&&after)for(const [key,label] of Object.entries(fields).filter(([key])=>data.rules.showPlanning||!key.startsWith('planned_')))if(before[key]!==after[key])text+=`\n${label}: ${String(before[key]??'—')} → ${String(after[key]??'—')}`;
+    if(before&&after)for(const [key,label] of Object.entries(fields).filter(([key])=>showPlanning||!key.startsWith('planned_')))if(before[key]!==after[key])text+=`\n${label}: ${String(before[key]??'—')} → ${String(after[key]??'—')}`;
     for(const key of ['reason','progress','plan','comment','body','question','answer'])if(e.data[key])text+=`\n${({reason:'Причина',progress:'Сделано',plan:'План / результат',comment:'Замечание / решение',body:'Комментарий',question:'Уточнение',answer:'Ответ'} as Record<string,string>)[key]}: ${String(e.data[key])}`;
     return Array.from({length:Math.max(1,Math.ceil(text.length/3000))},(_,i)=>text.slice(i*3000,(i+1)*3000));});
    const page=Math.max(0,Math.min(p.page||0,texts.length-1));return screen(u,ch,`История #${t.id} · ${page+1}/${Math.max(1,texts.length)}\n\n${texts[page]||'Записей пока нет.'}`,[[...(page? [button('← Ранее в списке','history',{id:t.id,page:page-1})]:[]),...(page+1<texts.length?[button('Дальше →','history',{id:t.id,page:page+1})]:[])],[button('К задаче','task',{id:t.id}),button('Меню','home')]]);
@@ -78,6 +68,25 @@ export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<Bo
   rows.push([button('Обсуждение','discussion',{id:t.id}),form('Написать комментарий','comment',pending?.id)]);const lastAction=await lastUndo(u,t.id);if(lastAction)rows.push([button('Отменить последнее действие','undo_prepare',{id:t.id,target:lastAction.id})]);
   rows.push([button('История','history',{id:t.id}),button('Меню','home')]);return screen(u,ch,text,rows);
  }
+ const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(x=>x.id===id)?.name||id;
+ if(p.op==='search'){
+  const query=(p.query||'').trim().toLocaleLowerCase('ru-RU');assert(query.length>=2&&query.length<=100,400,'Для поиска введите не менее 2 символов после /search.');
+  const list=data.tasks.filter(t=>t.id.toLocaleLowerCase('ru-RU').includes(query)||t.title.toLocaleLowerCase('ru-RU').includes(query)||name(t.assignee_id).toLocaleLowerCase('ru-RU').includes(query));
+  const page=Math.max(0,Math.min(p.page||0,Math.max(0,Math.ceil(list.length/6)-1))),slice=list.slice(page*6,page*6+6);
+  return screen(u,ch,`Поиск: ${p.query}\nНайдено задач: ${list.length}\n\n${slice.map((t,i)=>`${i+1}. #${t.id} ${t.title.slice(0,150)}`).join('\n')||'Совпадений нет.'}\n\nСтраница ${page+1}/${Math.max(1,Math.ceil(list.length/6))}`, [...slice.map((t,i)=>[button(`${i+1}. Открыть #${t.id}`,'task',{id:t.id})]),[...(page?[button('← Назад','search',{query:p.query,page:page-1})]:[]),...(page*6+6<list.length?[button('Далее →','search',{query:p.query,page:page+1})]:[])],[button('Меню','home')]]);
+ }
+ if(p.op==='reminder_days'){
+  await detail(u,p.id!);const selected=(p.query||'').split(',').filter(Boolean).map(Number),names=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
+  const choices=names.map((name,i)=>button((selected.includes(i+1)?'✓ ':'')+name,'reminder_days',{id:p.id,query:(selected.includes(i+1)?selected.filter(d=>d!==i+1):[...selected,i+1]).join(',')}));
+  return screen(u,ch,'Выберите дни напоминания по задаче #'+p.id+' · время московское',[choices.slice(0,4),choices.slice(4),...(selected.length?[[button('Далее: время и недели','form',{id:p.id,kind:'reminder',values:{days:selected.join(',')}})]]:[]),[button('К задаче','task',{id:p.id})]]);
+ }
+ if(p.op==='task_reminders'){
+  const state=await listTaskReminders(u,p.id!),active=state.schedules.filter(r=>r.enabled);
+  return screen(u,ch,'Напоминания по задаче #'+p.id+'\n'+(active.map(r=>`${name(r.recipient_id)}: дни ${r.days.join(', ')} · ${r.times.join(', ')} МСК · ${r.weeks} нед.`).join('\n')||'Расписаний нет.')+'\nНеподтверждённые сообщения повторяются каждые 30 минут до конца дня.',[[button('Новое напоминание для меня','reminder_days',{id:p.id})],...active.map(r=>[button('Выключить: '+r.times.join(', '),'confirm',{kind:'reminder_cancel',id:p.id,target:r.id})]),[button('К задаче','task',{id:p.id}),button('Ожидают подтверждения','alerts')]]);
+ }
+ if(p.op==='alerts'){const alerts=(await userAlerts(u)).filter(a=>!a.acknowledged_at&&!a.canceled_at);return screen(u,ch,'Напоминания, ожидающие подтверждения: '+alerts.length, [...alerts.slice(0,15).map(a=>[button('ОК · '+(a.task_id?'#'+a.task_id:a.kind),'confirm',{kind:'alert_ack',target:a.id})]),[button('Меню','home')]]);}
+ if(p.op==='edit'){const d=await detail(u,p.id!);assert(canEdit(u,d.task)&&d.task.status==='active',403,'Редактирование доступно постановщику или руководителю.');return screen(u,ch,'Редактирование #'+d.task.id+' · '+d.task.title,[[button('Название','form',{kind:'edit_title',id:p.id,version:d.task.version})],[button('Описание','form',{kind:'edit_description',id:p.id,version:d.task.version})],[button('Цена задачи','form',{kind:'edit_price',id:p.id,version:d.task.version})],[button('Исполнитель','assignee_list',{id:p.id,version:d.task.version})],[button('Крайний срок через согласование','form',{kind:'deadline',id:p.id,version:d.task.version})],[button('К задаче','task',{id:p.id})]]);}
+ if(p.op==='assignee_list'){const d=await detail(u,p.id!);assert(canEdit(u,d.task),403,'Нет права редактировать задачу.');const people=await taskAssignees(u,p.id!);const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/8)-1));return screen(u,ch,'Выберите исполнителя · страница '+(page+1),[...people.slice(page*8,page*8+8).map(person=>[button(person.name,'assignee_prepare',{id:p.id,version:d.task.version,target:person.id})]),[...(page?[button('← Назад','assignee_list',{id:p.id,page:page-1})]:[]),...((page+1)*8<people.length?[button('Далее →','assignee_list',{id:p.id,page:page+1})]:[])],[button('К задаче','task',{id:p.id})]]);}
  if(p.op==='brief'){
   assert(u.role!=='employee',403,'Сводка команды доступна руководителям.');
   const s=summarize(data.tasks,now),pending=data.approvals.filter(a=>a.state==='pending').length;

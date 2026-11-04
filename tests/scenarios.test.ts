@@ -163,10 +163,13 @@ test('failed scheduled report retries atomically; an interrupted third attempt b
  await db.pool.query("INSERT INTO job_runs(job_key,state,attempts) VALUES('reports-v5:morning:2026-11-05','running',3)");await tick(new Date('2026-11-05T09:01:00+03:00'));assert.equal((await db.pool.query("SELECT state FROM job_runs WHERE job_key='reports-v5:morning:2026-11-05'")).rows[0].state,'failed');await saveAutomation(admin,{enabled:false,morning:'09:00',evening:'19:01'});
 });
 test('archive searches all stored days, paginates without duplicate rows and enforces scope',async()=>{
- const available=Number((await db.pool.query("SELECT count(*) n FROM reports WHERE scope='company' AND kind<>'nextday'")).rows[0].n);for(let i=available;i<21;i++)await service.makeReport(users.find(u=>u.id==='director')!,'snapshot','pagination-'+i);
+ const available=Number((await db.pool.query("SELECT count(*) n FROM reports WHERE scope='company' AND kind<>'nextday'")).rows[0].n);for(let i=available;i<21;i++)await service.makeReport(users.find(u=>u.id==='director')!,'snapshot','pagination-'+i,new Date('2026-11-12T09:00:00+03:00'));
  const first=await request('director','/reports?page=0');assert.equal(first.status,200);assert.ok(first.data.total>20);assert.equal(first.data.items.length,20);assert.ok(first.data.items.every((r:any)=>!r.rows));
  const second=await request('director','/reports?page=1');const ids=new Set(first.data.items.map((r:any)=>r.id));assert.ok(second.data.items.every((r:any)=>!ids.has(r.id)));
- const filtered=await request('director','/reports?kind=snapshot&from=2026-11-04&to=2026-11-04');assert.equal(filtered.data.total,1);
+ const filtered=await request('director','/reports?kind=snapshot&from=2026-11-04&to=2026-11-04');const expected=(await db.pool.query("SELECT id FROM reports WHERE scope='company' AND kind='snapshot' AND day='2026-11-04'")).rows.map(r=>r.id);
+ assert.ok(expected.length>0);
+ assert.equal(filtered.data.total,expected.length);
+ assert.deepEqual(new Set(filtered.data.items.map((r:any)=>r.id)),new Set(expected));
  assert.equal((await request('anna','/reports')).data.total,0);assert.equal((await request('director','/reports?from=2026-11-05&to=2026-11-04')).status,400);
 });
 
@@ -610,4 +613,21 @@ test('a malformed bridge response is uncertain delivery rather than definite Tel
  globalThis.fetch=async()=>new Response(JSON.stringify({proxy_error:true}),{status:502});
  try{await deliver(new Date());const delivery=(await db.pool.query('SELECT state FROM task_alert_deliveries WHERE alert_id=$1',[alert])).rows[0];assert.equal(delivery.state,'uncertain');}
  finally{globalThis.fetch=saved;if(previous===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previous;await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');}
+});
+
+test('system health and access directory enforce administrator scope and omit credentials',async()=>{
+ for(const path of ['/system/status','/system/access']){
+  assert.equal((await request('anna',path)).status,403);
+  assert.equal((await request('director',path)).status,403);
+ }
+ await db.pool.query("DELETE FROM telegram_response_times");
+ await db.pool.query("INSERT INTO telegram_response_times(kind,ok,duration_ms) VALUES('menu',true,200),('menu',false,900)");
+ const health=await request('admin','/system/status');
+ assert.equal(health.status,200);
+ assert.deepEqual(health.data.telegram.timings.find((row:any)=>row.kind==='menu'),{kind:'menu',samples:2,errors:1,median:200,p95:200});
+ const directory=await request('admin','/system/access');
+ assert.equal(directory.status,200);
+ const anna=directory.data.find((person:any)=>person.id==='anna');
+ assert.equal(anna.visibleTasks,(await service.visibleTasks(users.find(u=>u.id==='anna')!)).length);
+ for(const secret of ['password_hash','token_hash','chat_id'])assert.ok(!JSON.stringify(directory.data).includes(secret));
 });

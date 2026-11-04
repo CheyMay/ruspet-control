@@ -128,3 +128,6 @@ tbody tr:hover{background:var(--theme-surface-soft, #f7faf6)}
 .date-filter{display:flex;align-items:center;gap:7px;color:var(--theme-text-secondary, #657568);font-size:12px;white-space:nowrap}.date-filter input{min-width:135px;max-width:150px;height:36px;padding:6px 8px;border:1px solid var(--theme-border, #d9e2d9);border-radius:4px;background:var(--theme-surface, #fff);color:var(--theme-text, #304733)}
 
 .manager-action-note{padding:10px 13px;border-left:3px solid var(--theme-border-strong, #77977e);background:var(--theme-surface-soft, #f3f7f2);color:var(--theme-text, #4d6353);font-size:12px;line-height:1.55}
+.freshness { display:flex; flex-wrap:wrap; gap:8px 22px; margin:8px 0 0; }
+.freshness dd { margin:3px 0 0; font-weight:600; }
+.automation-settings .source-banner input { max-width:100%; width:24rem; }

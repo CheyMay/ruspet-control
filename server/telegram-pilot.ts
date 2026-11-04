@@ -43,13 +43,21 @@ export async function pairPilot(u:User,targetUserId=u.id){
 export async function configurePilot(u:User,input:{enabled:boolean;delivery:boolean}){assert(u.role==='admin',403,'Подключение настраивает администратор.');await pool.query('UPDATE telegram_settings SET enabled=$1,delivery=$2,enabled_at=CASE WHEN $1 AND NOT enabled THEN now() ELSE enabled_at END WHERE id=1',[input.enabled,input.delivery]);}
 let lastSend=0;const chatSend=new Map<string,number>();
 async function send(chat:string,s:BotScreen,message?:number){const slot=Math.max(Date.now(),lastSend+80,(chatSend.get(chat)||0)+1050);lastSend=slot;chatSend.set(chat,slot);if(slot>Date.now())await sleep(slot-Date.now());if(s.document){const user=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0];assert(user,403,'Чат не привязан.');const report=await getReport(user,s.document.reportId),bytes=await reportPdf(report);const form=new FormData();form.set('chat_id',chat);form.set('caption',s.text.slice(0,1000));form.set('document',new Blob([new Uint8Array(bytes)],{type:'application/pdf'}),`ruspet-${report.day}.pdf`);let response:Response;try{response=await telegramRequest(`https://api.telegram.org/bot${await token()}/sendDocument`,form,35000)}catch{throw new AppError(502,'Не получено подтверждение отправки PDF. Проверьте чат перед повтором.');}const data=await response.json() as any;if(typeof data?.ok!=='boolean')throw new AppError(502,'Отправка PDF не подтверждена мостом.');if(!data.ok)throw new TelegramRejected(502,'Telegram отклонил PDF.');if(!Number.isInteger(data.result?.message_id))throw new AppError(502,'Нет подтверждения отправки PDF.');return data.result;}const body={chat_id:chat,text:s.text,...(s.format==='HTML'?{parse_mode:'HTML'}:{}),reply_markup:{inline_keyboard:s.buttons.filter(r=>r.length).map(r=>r.map(b=>({text:b.text,callback_data:b.token}))).concat((s.links||[]).map(b=>[{text:b.text,url:b.url}] as any))},link_preview_options:{is_disabled:true}};if(message){try{return await call('editMessageText',{...body,message_id:message})}catch{}}return call('sendMessage',body)}
+async function reply(chat:string,s:BotScreen,started:number,message?:number){
+ const kind=s.document?'pdf':s.timingKind;
+ let ok=false;
+ try{await send(chat,s,message);ok=true;}finally{
+  if(kind)try{await pool.query('INSERT INTO telegram_response_times(kind,ok,duration_ms) VALUES($1,$2,$3)',[kind,ok,Math.round(performance.now()-started)]);}catch{console.error('Telegram response timing unavailable');}
+ }
+}
 export async function handlePilotUpdate(update:any){
+ const started=performance.now();
  const c=update.callback_query,m=update.message||c?.message;if(!m||m.chat?.type!=='private')return;const chat=String(m.chat.id);
  const code=typeof m.text==='string'&&!c?m.text.match(/^\/start ([a-f0-9]{40})$/)?.[1]:null;
  if(code){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(431008)');const p=(await db.query('SELECT * FROM telegram_pairings WHERE token_hash=$1 AND expires_at>now() FOR UPDATE',[digest(code)])).rows[0];if(!p)return;const old=(await db.query('SELECT chat_id,user_id FROM telegram_binding WHERE chat_id=$1 OR user_id=$2',[chat,p.user_id])).rows[0];if(old&&(old.chat_id!==chat||old.user_id!==p.user_id))return;if(!old)await db.query('INSERT INTO telegram_binding(chat_id,user_id) VALUES($1,$2)',[chat,p.user_id]);await db.query('DELETE FROM telegram_pairings WHERE token_hash=$1',[digest(code)])})}
  const u=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0] as User|undefined;if(!u)return;
  const ch='telegram:'+chat;
- if(c){try{await call('answerCallbackQuery',{callback_query_id:c.id})}catch{};try{await send(chat,await botClick(u,ch,String(c.data)),m.message_id)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',buttons:(await botView(u,ch)).buttons})}return}
+ if(c){try{await call('answerCallbackQuery',{callback_query_id:c.id})}catch{};try{await reply(chat,await botClick(u,ch,String(c.data)),started,m.message_id)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',buttons:(await botView(u,ch)).buttons})}return}
  try{
   const text=String(m.text||'').trim();let response:BotScreen;
   if(code||/^\/(start|menu|status|cancel|task|today|tasks|inbox|reports|search)(\s|$)/.test(text))await clearBotDraft(u,ch);
@@ -60,8 +68,12 @@ export async function handlePilotUpdate(update:any){
   else if(['/today','/tasks','/inbox','/reports'].includes(text))response=await botView(u,ch,{op:({'/today':'day','/tasks':'tasks','/inbox':'inbox','/reports':'reports'} as Record<string,string>)[text]});
   else if(!text)response={text:'Пока принимаются текст и ссылки на материалы. Опишите результат и добавьте ссылку; загрузка файлов будет отдельным этапом.',buttons:[]};
   else response=await botText(u,ch,text,String(update.update_id));
-  await send(chat,response);
+  await reply(chat,response,started);
  }catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось обработать сообщение. Попробуйте ещё раз или откройте /menu.',buttons:[]})}
+}
+export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:string,limit:number|null=null){
+ const included=(await visibleTasks(user)).map(t=>t.id);
+ return (await pool.query("SELECT o.* FROM outbox o WHERE o.withdrawn_at IS NULL AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[])) AND o.created_at>=greatest($2::timestamptz,$3::timestamptz) AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text) ORDER BY o.created_at LIMIT $5",[user.id,enabledAt,pairedAt,included,limit])).rows;
 }
 export async function deliver(now=new Date()){
  const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled||!cfg.delivery)return;
@@ -76,8 +88,7 @@ export async function deliver(now=new Date()){
   catch(e){await pool.query('UPDATE task_alert_deliveries SET state=$3 WHERE alert_id=$1 AND slot=$2',[alert.id,slot,e instanceof TelegramRejected?'failed':'uncertain']);}
  }
 
- const included=(await visibleTasks({...binding,id:binding.user_id} as User)).map(t=>t.id);
- const rows=(await pool.query("SELECT o.* FROM outbox o WHERE o.withdrawn_at IS NULL AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[])) AND o.created_at>=greatest($2::timestamptz,$3::timestamptz) AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text) ORDER BY o.created_at LIMIT 12",[binding.user_id,cfg.enabled_at,binding.paired_at,included])).rows;if(!rows.length)continue;
+ const rows=await pendingOutbox(user,cfg.enabled_at,binding.paired_at,12);if(!rows.length)continue;
  const id=randomUUID();await pool.query("INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state) VALUES($1,$2,$3,'sending')",[id,binding.chat_id,JSON.stringify(rows.map(r=>r.id))]);
  const u={...binding,id:binding.user_id} as User;
  try{const home=await botView(u,'telegram:'+binding.chat_id);const sent=await send(binding.chat_id,{text:`РУСПЭТ · новые события (${rows.length})\n\n${rows.map(r=>escapeHtml(r.body.slice(0,220))+'\n<a href="'+escapeHtml(taskLink(publicOrigin(),r.task_id?{task:r.task_id}:{}))+'">'+(r.task_id?'Открыть задачу #'+escapeHtml(r.task_id):'Открыть панель')+'</a>').join('\n\n')}`,format:'HTML',buttons:home.buttons});await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id])}
@@ -85,14 +96,19 @@ export async function deliver(now=new Date()){
  }
 }
 export function startPilot(){if(process.env.TELEGRAM_WORKER_DISABLED==='true')return ()=>{};let stopped=false,lastCleanup=0;const run=async()=>{while(!stopped){let lock;try{
-  if(Date.now()-lastCleanup>3600000){await pool.query('DELETE FROM bot_buttons WHERE expires_at<now()');await pool.query('DELETE FROM bot_sessions WHERE expires_at<now()');await pool.query("DELETE FROM bot_inputs WHERE created_at<now()-interval '7 days'");lastCleanup=Date.now()}
+  if(Date.now()-lastCleanup>3600000){await pool.query('DELETE FROM bot_buttons WHERE expires_at<now()');await pool.query('DELETE FROM bot_sessions WHERE expires_at<now()');await pool.query("DELETE FROM bot_inputs WHERE created_at<now()-interval '7 days'");await pool.query("DELETE FROM telegram_response_times WHERE created_at<now()-interval '7 days'");lastCleanup=Date.now()}
   const cfg=(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled){await sleep(3000);continue}
   lock=await pool.connect();if(!(await lock.query('SELECT pg_try_advisory_lock(431009) ok')).rows[0].ok){lock.release();lock=undefined;await sleep(3000);continue}
   if(!transportChecked){const me=await call('getMe'),info=await call('getWebhookInfo');assert(!info.url,409,'Есть webhook: polling не запущен.');username=me.username;await pool.query('INSERT INTO telegram_runtime(id,heartbeat_at,username) VALUES(1,now(),$1) ON CONFLICT(id) DO UPDATE SET username=excluded.username',[username]);transportChecked=true}
   await pool.query("UPDATE task_alert_deliveries SET state='uncertain' WHERE state='sending'");
   await pool.query("UPDATE telegram_delivery SET state='uncertain',error='Процесс прерван во время отправки. Требуется проверка доставки.' WHERE state='sending'");
   await pool.query('INSERT INTO telegram_runtime(id,heartbeat_at,error) VALUES(1,now(),NULL) ON CONFLICT(id) DO UPDATE SET heartbeat_at=now(),error=NULL');
-  await deliver();const offset=Number((await pool.query('SELECT next_update FROM telegram_cursor WHERE id=1')).rows[0].next_update);
+  const delivery=deliver().then(()=>({ok:true as const}),error=>({ok:false as const,error}));
+  try{
+  const offset=Number((await pool.query('SELECT next_update FROM telegram_cursor WHERE id=1')).rows[0].next_update);
   const updates=await call('getUpdates',{offset,timeout:20,limit:10,allowed_updates:['message','callback_query']});
+  assert(Array.isArray(updates),502,'Telegram вернул неожиданный ответ при опросе.');
+  await pool.query('UPDATE telegram_runtime SET last_poll_at=now(),heartbeat_at=now() WHERE id=1');
   for(const update of updates){if(stopped)break;const enabled=(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0].enabled;if(!enabled)break;await handlePilotUpdate(update);await pool.query('UPDATE telegram_cursor SET next_update=$1 WHERE id=1',[update.update_id+1])}
+  }finally{const result=await delivery;if(!result.ok)throw result.error;}
  }catch(e){transportChecked=false;if(!stopped){try{await pool.query("INSERT INTO telegram_runtime(id,heartbeat_at,error) VALUES(1,now(),$1) ON CONFLICT(id) DO UPDATE SET heartbeat_at=now(),error=excluded.error",[e instanceof AppError?e.message:'Telegram недоступен. Повтор через 10 секунд.'])}catch{}await sleep(10000)}}finally{if(lock){try{await lock.query('SELECT pg_advisory_unlock(431009)')}finally{lock.release()}}}}};void run();return()=>{stopped=true};}

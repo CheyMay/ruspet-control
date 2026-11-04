@@ -1,3 +1,4 @@
+import {useRememberedFilter} from './remembered-filter.js';
 import {useEffect,useRef,useState} from 'react';
 import {Operations} from './Operations.js';
 import {ReportSummaryView} from './ReportSummary.js';
@@ -10,7 +11,7 @@ const local=(v:Date)=>new Date(v.getTime()+10800000).toISOString().slice(0,16);
 const iso=(s:string)=>new Date(s+':00+03:00').toISOString();
 export function Reports({data,refresh,initialReport=null,downloadPdf=false}:{data:Bootstrap;refresh:()=>Promise<unknown>;initialReport?:string|null;downloadPdf?:boolean}){
  const [kind,setKind]=useState('snapshot'),[from,setFrom]=useState(local(new Date()).slice(0,10)+'T00:00'),[to,setTo]=useState(''),[actor,setActor]=useState('all'),[owner,setOwner]=useState(data.user.role==='employee'?data.user.id:'all'),[creator,setCreator]=useState('all'),[price,setPrice]=useState('all'),[queue,setQueue]=useState('all');
- const [archiveFilter,setArchiveFilter]=useState('all'),[archiveFrom,setArchiveFrom]=useState(''),[archiveTo,setArchiveTo]=useState(''),[page,setPage]=useState(0),[archive,setArchive]=useState<{items:Report[];total:number}>({items:[],total:0}),[selected,setSelected]=useState<Report|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [archiveFilter,setArchiveFilter]=useRememberedFilter(data.user.id,'Reports.archiveFilter','all'),[archiveFrom,setArchiveFrom]=useRememberedFilter(data.user.id,'Reports.archiveFrom',''),[archiveTo,setArchiveTo]=useRememberedFilter(data.user.id,'Reports.archiveTo',''),[page,setPage]=useState(0),[archive,setArchive]=useState<{items:Report[];total:number}>({items:[],total:0}),[selected,setSelected]=useState<Report|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
  const generation=useRef(0),requestId=useRef<string|null>(null),first=useRef(false),pdfDone=useRef(false);
  async function open(id:string){const seq=++generation.current;setError('');try{const report=await api<Report>('/reports/'+id);if(seq===generation.current)setSelected(report);}catch(e){if(seq===generation.current)setError((e as Error).message)}}
  useEffect(()=>{let live=true;const q=new URLSearchParams({page:String(page)});if(archiveFilter!=='all')q.set('kind',archiveFilter);if(archiveFrom)q.set('from',archiveFrom);if(archiveTo)q.set('to',archiveTo);api<{items:Report[];total:number}>('/reports?'+q).then(a=>{if(live)setArchive(a)}).catch(e=>{if(live)setError(e.message)});return()=>{live=false}},[page,archiveFilter,archiveFrom,archiveTo,data.reports]);

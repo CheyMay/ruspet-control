@@ -1,6 +1,6 @@
+import {useRememberedFilter} from './remembered-filter.js';
 import {priceCounts,priceLabels} from '../shared/pricing.js';
 import {actionItems} from '../shared/actions.js';
-import {useState} from 'react';
 import {ArrowRight,ArrowUpRight,CalendarDays,Clock3,CheckCheck,GitPullRequest,AlertCircle,CircleHelp} from 'lucide-react';
 import type {Bootstrap,Task} from '../shared/types.js';
 import {summarize,queueLabels,daysFrom,plannedMinutesOn,plannedInterval} from '../shared/analytics.js';
@@ -8,7 +8,7 @@ import {businessDay,taskQueue} from '../shared/queues.js';
 const short=(d:string)=>new Date(d+'T12:00:00+03:00').toLocaleDateString('ru-RU',{day:'numeric',month:'short',timeZone:'Europe/Moscow'});
 const colors={overdue:'#b65e50',today:'#b59650',upcoming:'#628977',no_deadline:'#9a879c',review:'#718caa',completed:'#b1c3b5'};
 export function Dashboard({data,now,go,open}: {data:Bootstrap;now:Date;go:(filter:string,owner?:string,price?:string)=>void;open:(id:string)=>void}){
- const [owner,setOwner]=useState('all'),[tab,setTab]=useState('control');
+ const [owner,setOwner]=useRememberedFilter(data.user.id,'Dashboard.owner','all'),[tab,setTab]=useRememberedFilter(data.user.id,'Dashboard.tab','control');
  const tasks=data.tasks.filter(t=>owner==='all'||t.assignee_id===owner),stats=summarize(tasks,now),ids=new Set(tasks.map(t=>t.id));
  const users=data.users.filter(u=>data.tasks.some(t=>t.assignee_id===u.id));
  const pending=data.approvals.filter(a=>a.state==='pending'&&ids.has(a.task_id)),waiting=data.controls.filter(c=>['waiting','escalated'].includes(c.state)&&ids.has(c.task_id));

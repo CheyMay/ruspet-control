@@ -1,10 +1,10 @@
-import {useState} from 'react';
+import {useRememberedFilter} from './remembered-filter.js';
 import type {Bootstrap} from '../shared/types.js';
 import {taskQueue} from '../shared/queues.js';
 
 export function QualityWorkspace({data,open,settings}:{data:Bootstrap;open:(id:string,tab?:string)=>void;settings:()=>void}){
  const manager=data.user.role!=='employee';
- const [scope,setScope]=useState(manager?'all':'mine'),[owner,setOwner]=useState('all'),[creator,setCreator]=useState('all'),[severity,setSeverity]=useState('all'),[rule,setRule]=useState('all'),[badness,setBadness]=useState('all');
+ const [scope,setScope]=useRememberedFilter(data.user.id,'QualityWorkspace.scope',manager?'all':'mine'),[owner,setOwner]=useRememberedFilter(data.user.id,'QualityWorkspace.owner','all'),[creator,setCreator]=useRememberedFilter(data.user.id,'QualityWorkspace.creator','all'),[severity,setSeverity]=useRememberedFilter(data.user.id,'QualityWorkspace.severity','all'),[rule,setRule]=useRememberedFilter(data.user.id,'QualityWorkspace.rule','all'),[badness,setBadness]=useRememberedFilter(data.user.id,'QualityWorkspace.badness','all');
  const visible=data.tasks.filter(t=>(manager||t.assignee_id===data.user.id)&&(scope!=='mine'||t.assignee_id===data.user.id)&&(scope!=='created'||t.creator_id===data.user.id)&&(scope!=='team'||t.assignee_id!==data.user.id)&&(owner==='all'||t.assignee_id===owner)&&(creator==='all'||t.creator_id===creator));
  const rows=visible.map(t=>({task:t,all:data.findings.filter(f=>f.task_id===t.id)})).filter(row=>row.all.length&&(badness!=='many'||row.all.length>=3)&&(badness!=='week'||taskQueue(row.task,new Date(data.serverTime))==='overdue'&&Date.parse(row.task.deadline!)<Date.parse(data.serverTime)-7*86400000)).map(row=>({...row,findings:row.all.filter(f=>(severity==='all'||f.severity===severity)&&(rule==='all'||f.rule===rule))})).filter(row=>row.findings.length);
  const name=(id:string)=>data.users.find(u=>u.id===id)?.name||id;

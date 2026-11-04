@@ -82,7 +82,7 @@ export async function tickTaskReminders(now=new Date()){
  });
 }
 
-export async function pendingAlerts(u:User,now=new Date()){
+export async function pendingAlerts(u:User,now=new Date(),limit:number|null=5){
  const allowed=(await visibleTasks(u)).filter(t=>t.status!=='completed').map(t=>t.id);
- return (await pool.query('SELECT a.* FROM task_alerts a WHERE recipient_id=$1 AND acknowledged_at IS NULL AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3)) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=$4)) AND NOT EXISTS(SELECT 1 FROM task_alert_deliveries d WHERE d.alert_id=a.id AND (d.state IN (\'sending\',\'uncertain\') OR d.created_at>$2::timestamptz-interval \'30 minutes\')) ORDER BY due_at LIMIT 5',[u.id,now.toISOString(),allowed,reportScope(u)])).rows;
+ return (await pool.query('SELECT a.* FROM task_alerts a WHERE recipient_id=$1 AND acknowledged_at IS NULL AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3)) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=$4)) AND NOT EXISTS(SELECT 1 FROM task_alert_deliveries d WHERE d.alert_id=a.id AND (d.state IN (\'sending\',\'uncertain\') OR d.created_at>$2::timestamptz-interval \'30 minutes\')) ORDER BY due_at LIMIT $5',[u.id,now.toISOString(),allowed,reportScope(u),limit])).rows;
 }

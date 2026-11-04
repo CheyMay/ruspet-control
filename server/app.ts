@@ -16,6 +16,7 @@ import { z, ZodError } from 'zod';
 import { pool } from './db.js';
 import { AppError, assert } from './domain.js';
 import * as service from './service.js';
+import {accessDirectory,systemStatus} from './system-status.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {createTask,editTask,reviewTask,taskAssignees} from './workflow.js';
 import type { User } from '../shared/types.js';
@@ -70,6 +71,8 @@ export function createApp() {
  app.get('/api/tasks/:id/reminders',async(req,res)=>res.json(await listTaskReminders(req.actor,String(req.params.id))));
  app.post('/api/tasks/:id/reminders',async(req,res)=>res.status(201).json(await saveTaskReminder(req.actor,String(req.params.id),reminderInput.parse(req.body))));
  app.delete('/api/reminders/:id',async(req,res)=>res.json(await disableTaskReminder(req.actor,String(req.params.id))));
+ app.get('/api/system/status',async(req,res)=>res.json(await systemStatus(req.actor)));
+ app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
  app.get('/api/operations',async(req,res)=>{assert(req.actor.role!=='employee',403,'Расписание доступно руководителю.');res.json(await operationsStatus());});
  app.put('/api/operations',async(req,res)=>{const time=z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);await saveAutomation(req.actor,z.object({enabled:z.boolean(),morning:time,evening:time}).parse(req.body));await tick();res.json({ok:true});});
  app.post('/api/operations/retry',async(req,res)=>{await retryJob(req.actor,z.object({key:text}).parse(req.body).key);await tick();res.json({ok:true});});

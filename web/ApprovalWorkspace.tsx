@@ -1,9 +1,10 @@
+import {useRememberedFilter} from './remembered-filter.js';
 import {useState,type ReactNode} from 'react';
 import {businessDay} from '../shared/queues.js';
 import type {Approval,Bootstrap} from '../shared/types.js';
 import {HelpHint} from './Management.js';
 export function ApprovalWorkspace({data,render}:{data:Bootstrap;render:(a:Approval)=>ReactNode}){
- const [tab,setTab]=useState('pending'),[query,setQuery]=useState(''),[owner,setOwner]=useState('all'),[actor,setActor]=useState('all'),[type,setType]=useState('all'),[from,setFrom]=useState(''),[to,setTo]=useState('');
+ const [tab,setTab]=useRememberedFilter(data.user.id,'ApprovalWorkspace.tab','pending'),[query,setQuery]=useState(''),[owner,setOwner]=useRememberedFilter(data.user.id,'ApprovalWorkspace.owner','all'),[actor,setActor]=useRememberedFilter(data.user.id,'ApprovalWorkspace.actor','all'),[type,setType]=useRememberedFilter(data.user.id,'ApprovalWorkspace.type','all'),[from,setFrom]=useRememberedFilter(data.user.id,'ApprovalWorkspace.from',''),[to,setTo]=useRememberedFilter(data.user.id,'ApprovalWorkspace.to','');
  const waiting=(a:Approval)=>!!a.clarification_requested_at&&!a.clarification_answered_at;
  const current=(a:Approval)=>waiting(a)?a.requester_id:a.route[a.current_step]?.userId;
  const items=data.approvals.filter(a=>{const t=data.tasks.find(t=>t.id===a.task_id);return (tab==='all'||tab==='mine'&&a.state==='pending'&&current(a)===data.user.id||tab==='clarification'&&a.state==='pending'&&waiting(a)||tab==='canceled'&&!!a.canceled_at||a.state===tab&&!a.canceled_at)&&(owner==='all'||t?.assignee_id===owner)&&(actor==='all'||current(a)===actor)&&(type==='all'||a.type===type)&&(!from||businessDay(a.created_at)>=from)&&(!to||businessDay(a.created_at)<=to)&&`${a.task_id} ${t?.title||''} ${a.reason}`.toLowerCase().includes(query.toLowerCase())});

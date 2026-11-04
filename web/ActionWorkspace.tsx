@@ -1,9 +1,10 @@
+import {useRememberedFilter} from './remembered-filter.js';
 import {useMemo,useState} from 'react';
 import {businessDay} from '../shared/queues.js';
 import {actionItems} from '../shared/actions.js';
 import type {Bootstrap} from '../shared/types.js';
 export function ActionWorkspace({data,open}: {data:Bootstrap;open:(id:string,tab?:string)=>Promise<void>}){
- const [scope,setScope]=useState('mine'),[kind,setKind]=useState('all'),[query,setQuery]=useState(''),[metric,setMetric]=useState('all'),[owner,setOwner]=useState('all'),[from,setFrom]=useState(''),[to,setTo]=useState('');
+ const [scope,setScope]=useRememberedFilter(data.user.id,'ActionWorkspace.scope','mine'),[kind,setKind]=useRememberedFilter(data.user.id,'ActionWorkspace.kind','all'),[query,setQuery]=useState(''),[metric,setMetric]=useRememberedFilter(data.user.id,'ActionWorkspace.metric','all'),[owner,setOwner]=useRememberedFilter(data.user.id,'ActionWorkspace.owner','all'),[from,setFrom]=useRememberedFilter(data.user.id,'ActionWorkspace.from',''),[to,setTo]=useRememberedFilter(data.user.id,'ActionWorkspace.to','');
  const items=useMemo(()=>actionItems(data),[data]),mine=items.filter(a=>a.mine),now=Date.parse(data.serverTime);
  const filtered=(scope==='mine'?mine:items).filter(a=>(kind==='all'||a.kind===kind)&&(metric==='all'||metric==='mine'&&a.mine||metric==='decisions'&&['decision','review','clarification'].includes(a.kind)||metric==='old'&&!!a.since&&now-Date.parse(a.since)>86400000)&&(owner==='all'||a.ownerId===owner)&&(!from||!!a.since&&businessDay(a.since)>=from)&&(!to||!!a.since&&businessDay(a.since)<=to)&&(a.title+' '+a.taskId+' '+data.users.find(u=>u.id===a.ownerId)?.name).toLowerCase().includes(query.toLowerCase()));
  const age=(since:string|null)=>{if(!since)return '';const min=Math.max(0,Math.floor((now-Date.parse(since))/60000));return min<60?`${min} мин.`:min<1440?`${Math.floor(min/60)} ч.`:`${Math.floor(min/1440)} дн.`};
