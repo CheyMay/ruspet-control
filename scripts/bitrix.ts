@@ -33,6 +33,7 @@ try{
    console.log(await syncActivity(request,taskId,arg?requiredId(arg):undefined));
    break;
   case 'watch':
+   if((await pool.query('SELECT enabled AND verified_at IS NOT NULL active FROM bitrix_event_capture WHERE id=1')).rows[0]?.active)throw new BitrixError('Подписки уже включены. Старый периодический опрос запрещён; используйте очередь событий.');
    if(process.env.BITRIX_POLL_ENABLED!=='true')throw new BitrixError('Для опроса укажите BITRIX_POLL_ENABLED=true.');
    for(;;){
     const {rows}=await pool.query("SELECT task_id FROM bitrix_task_links WHERE checked_at IS NULL OR checked_at<now()-interval '5 minutes' ORDER BY checked_at NULLS FIRST,task_id LIMIT 10");

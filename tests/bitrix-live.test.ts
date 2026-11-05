@@ -14,7 +14,7 @@ const messages=new Map<string,{id:number;date:string;author_id:number;text:strin
 const transport:BitrixRequest=async<T>(method:BitrixMethod,body:any):Promise<T>=>{
  calls.push({method,body});
  if(method==='tasks.task.getFields')return {fields:{TITLE:{title:'Название',type:'string'},UF_PRICE:{title:'Цена задачи',type:'double'},UF_NOTES:{title:'Дополнительные сведения',type:'string'}}} as T;
- if(method==='user.get')return [{ID:body.ID,ACTIVE:true,NAME:'Фикстура',LAST_NAME:body.ID}] as T;
+ if(method==='user.get')return [{ID:body.FILTER?.ID,ACTIVE:true,NAME:'Фикстура',LAST_NAME:body.FILTER?.ID}] as T;
  if(method==='im.dialog.messages.get'){const id=String(body.DIALOG_ID).slice(4);return {messages:messages.get(id)||[],users:[{id:201,name:'Фикстура'}]} as T;}
  if(method==='tasks.task.history.list')return {list:[]} as T;
  const task=remote.get(String(body.taskId||body.TASKID||body.fields?.taskId));assert(task,'fixture task exists');
@@ -52,6 +52,15 @@ before(async()=>{
  server=(await import('../server/app.js')).createApp().listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));base=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
 });
 after(async()=>{if(server)await new Promise<void>(r=>server.close(()=>r()));if(savedDemo===undefined)delete process.env.DEMO_AUTH;else process.env.DEMO_AUTH=savedDemo;if(savedWrite===undefined)delete process.env.BITRIX_WRITE_ENABLED;else process.env.BITRIX_WRITE_ENABLED=savedWrite;await db?.pool.end();if(adminConnection){await adminConnection.query(`DROP DATABASE IF EXISTS ${database}`);await adminConnection.end();}});
+
+test('verified event mode skips background task scans and reads an idle task only when its ID is queued',async()=>{
+ const task=await makeLinked('9799');
+ await db.pool.query("UPDATE bitrix_event_capture SET enabled=true,verified_at=now() WHERE id=1");
+ const before=calls.length;remote.get('9799')!.title='РЗМ* Изменено по событию';
+ await live.tickLiveSync(transport);assert.equal(calls.slice(before).filter(c=>c.method==='tasks.task.get'&&String(c.body.taskId)==='9799').length,0);
+ await live.tickLiveSync(transport,{taskIds:[task.id],poll:false});assert.equal((await db.pool.query('SELECT title FROM tasks WHERE id=$1',[task.id])).rows[0].title,'РЗМ* Изменено по событию');
+ await db.pool.query('UPDATE bitrix_event_capture SET enabled=false,verified_at=NULL WHERE id=1');await db.pool.query('UPDATE bitrix_task_links SET live_enabled=false WHERE task_id=$1',[task.id]);
+});
 
 test('delegated acceptance arriving from Bitrix submits its source and queues the source review through the existing transport',async()=>{
  const lead=(await db.pool.query<User>("SELECT * FROM users WHERE id='lead-msk'")).rows[0];

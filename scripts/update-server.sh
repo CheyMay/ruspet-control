@@ -5,6 +5,7 @@ umask 022
 [[ $EUID == 0 ]] || { echo 'Запустите обновление от root.'; exit 1; }
 exec 9>/run/lock/ruspet-update.lock
 flock -n 9 || { echo 'Другое обновление уже запущено.'; exit 1; }
+branch=${RUSPET_UPDATE_BRANCH:-feature/bitrix-initial-sync}
 repo=/root/ruspet-code
 app=/opt/ruspet
 backup=/root/ruspet-before-$(date -u +%Y%m%dT%H%M%S)
@@ -30,17 +31,19 @@ if ! git diff --quiet || ! git diff --cached --quiet; then
   echo 'В репозитории есть несохранённые правки. Остановились до обновления.'
   exit 1
 fi
-git fetch origin refs/heads/feature/company-delegation:refs/remotes/origin/feature/company-delegation
-git switch feature/company-delegation
-git pull --ff-only origin feature/company-delegation
+git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
+git switch "$branch"
+git pull --ff-only origin "$branch"
 systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 env GOMAXPROCS=1 npm ci --no-audit --no-fund
 systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 npm run check
 systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 env GOMAXPROCS=1 npm run build
 services=(ruspet.service)
-if systemctl is-active --quiet ruspet-bot-proxy.service; then
-  test "$(systemctl show ruspet-bot-proxy.service -p WorkingDirectory --value)" = "$app"
-  services+=(ruspet-bot-proxy.service)
-fi
+for candidate in ruspet-bot-proxy.service ruspet-bitrix-import.service; do
+  if systemctl is-active --quiet "$candidate"; then
+    test "$(systemctl show "$candidate" -p WorkingDirectory --value)" = "$app"
+    services+=("$candidate")
+  fi
+done
 install -d -m 700 "$backup"
 trap 'echo "Обновление остановлено из-за ошибки. Не выполняйте повторный импорт задач. Резервные файлы: $backup"' ERR
 systemctl stop "${services[@]}"

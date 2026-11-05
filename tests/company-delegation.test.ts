@@ -103,7 +103,7 @@ test('task CRM company references resolve without exposing the registry; contact
 });
 
 test('CRM pagination uses documented fields and stable IDs, rejects malformed pages',async()=>{
- const request:BitrixRequest=async<T>(method:Parameters<BitrixRequest>[0],params:object)=>{assert.equal(method,'crm.company.list');assert.deepEqual(params,{order:{ID:'ASC'},filter:{'>ID':'7'},select:['*','UF_*'],start:0});return [{ID:'8',TITLE:'Фикстура',ASSIGNED_BY_ID:'202',UF_EXTRA:'value'}] as T;};
+ const request:BitrixRequest=async<T>(method:Parameters<BitrixRequest>[0],params:object)=>{assert.equal(method,'crm.company.list');assert.deepEqual(params,{order:{ID:'ASC'},filter:{'>ID':'7'},select:['*','UF_*'],start:-1});return [{ID:'8',TITLE:'Фикстура',ASSIGNED_BY_ID:'202',UF_EXTRA:'value'}] as T;};
  const result=await companies.fetchBitrixCompanies(request,'7');assert.equal(result.cursor,'8');assert.equal(result.complete,true);assert.equal(result.companies[0].externalManagerId,'202');assert.equal(result.companies[0].raw.UF_EXTRA,'value');
  await assert.rejects(()=>companies.fetchBitrixCompanies((async()=>[{ID:'7',TITLE:'Фикстура'}]) as BitrixRequest,'7'),/порядок/);
 });

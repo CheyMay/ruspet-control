@@ -38,6 +38,7 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_id bigint;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_manager_id bigint;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_snapshot jsonb;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_synced_at timestamptz;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_deleted_at timestamptz;
 CREATE UNIQUE INDEX IF NOT EXISTS company_bitrix_identity ON companies(bitrix_portal,bitrix_id) WHERE bitrix_id IS NOT NULL;
 ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_status_check;
 ALTER TABLE companies ADD CONSTRAINT companies_status_check CHECK(status IN ('prospect','active','former','unclassified'));

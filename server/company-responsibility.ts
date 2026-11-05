@@ -23,6 +23,7 @@ export async function resolveCompanyResponsibility(task:Task,available:User[],db
    if(companies.length===1)company=(await okbPool().query('SELECT * FROM companies WHERE bitrix_portal=$1 AND bitrix_id=$2',[snapshot.portal||process.env.BITRIX_PORTAL,companies[0]])).rows[0];
   }
   if(!company)return empty('Компания не связана с ОКБ или ещё не загружена из Битрикс24. Выберите менеджера вручную.');
+  if(company.bitrix_deleted_at)return empty('Компания удалена в Битрикс24. Проверьте связь с ОКБ и выберите исполнителя вручную.');
   let managerId=company.manager_id;
   if(company.manager_source==='bitrix'&&company.bitrix_manager_id){const link=(await db.query('SELECT user_id FROM bitrix_user_links WHERE external_id=$1',[company.bitrix_manager_id])).rows[0];managerId=link?.user_id||null;}
   const result:ResponsibilityHint={...empty('У компании не указан ответственный менеджер. Выберите его вручную.'),companyId:company.id,companyName:company.name,source:company.manager_source==='bitrix'?'bitrix':'okb'};
@@ -39,7 +40,7 @@ export async function companyResponsibility(actor:User,id:string){
  const company=await getCompany(actor,id);
  const local=company.manager_source==='bitrix'&&company.bitrix_manager_id?(await pool.query('SELECT user_id FROM bitrix_user_links WHERE external_id=$1',[company.bitrix_manager_id])).rows[0]?.user_id:company.manager_id;
  const manager=local?(await pool.query('SELECT id,name,role FROM users WHERE id=$1',[local])).rows[0]:null;
- return {companyId:id,version:company.version,manager:manager||null,source:company.manager_source||null,externalManagerId:company.bitrix_manager_id?String(company.bitrix_manager_id):null,syncedAt:company.bitrix_synced_at};
+ return {companyId:id,version:company.version,deletedInBitrix:!!company.bitrix_deleted_at,manager:manager||null,source:company.manager_source||null,externalManagerId:company.bitrix_manager_id?String(company.bitrix_manager_id):null,syncedAt:company.bitrix_synced_at};
 }
 const incomingCompany=z.object({externalId:z.string().regex(/^[1-9]\d{0,17}$/),name:z.string().trim().min(1).max(250),externalManagerId:z.string().regex(/^[1-9]\d{0,17}$/).nullable(),raw:z.record(z.string(),z.unknown())}).refine(item=>
  bitrixId(item.raw.ID)===item.externalId&&typeof item.raw.TITLE==='string'&&item.raw.TITLE.trim()===item.name&&bitrixId(item.raw.ASSIGNED_BY_ID)===item.externalManagerId,
@@ -56,11 +57,11 @@ export async function syncCompanySnapshots(actor:User,input:unknown){
   for(const item of value.companies){
    const previous=(await database.query('SELECT * FROM companies WHERE bitrix_portal=$1 AND bitrix_id=$2 FOR UPDATE',[value.portal,item.externalId])).rows[0];
    const manager=item.externalManagerId?(await pool.query('SELECT user_id FROM bitrix_user_links WHERE external_id=$1',[item.externalManagerId])).rows[0]?.user_id||null:null;
-   const responsibilityChanged=!previous||previous.manager_id!==manager||String(previous.bitrix_manager_id||'')!==(item.externalManagerId||'')||previous.manager_source!=='bitrix';
+   const responsibilityChanged=!previous||!!previous.bitrix_deleted_at||previous.manager_id!==manager||String(previous.bitrix_manager_id||'')!==(item.externalManagerId||'')||previous.manager_source!=='bitrix';
    const id=previous?.id||randomUUID();result.push({externalId:item.externalId,companyId:previous?.id||null,action:previous?'update':'create',managerMapped:!!manager});
    if(value.dryRun)continue;
-   const company=(await database.query(previous?`UPDATE companies SET name=$2,manager_id=$3,manager_source='bitrix',bitrix_portal=$4,bitrix_id=$5,bitrix_manager_id=$6,bitrix_snapshot=$7,bitrix_synced_at=now(),
-    version=version+CASE WHEN name IS DISTINCT FROM $2 OR manager_id IS DISTINCT FROM $3 OR bitrix_manager_id IS DISTINCT FROM $6::bigint OR manager_source IS DISTINCT FROM 'bitrix' THEN 1 ELSE 0 END,updated_at=now() WHERE id=$1 RETURNING *`:
+   const company=(await database.query(previous?`UPDATE companies SET name=$2,manager_id=$3,manager_source='bitrix',bitrix_portal=$4,bitrix_id=$5,bitrix_manager_id=$6,bitrix_snapshot=$7,bitrix_synced_at=now(),bitrix_deleted_at=NULL,
+    version=version+CASE WHEN name IS DISTINCT FROM $2 OR manager_id IS DISTINCT FROM $3 OR bitrix_manager_id IS DISTINCT FROM $6::bigint OR manager_source IS DISTINCT FROM 'bitrix' OR bitrix_deleted_at IS NOT NULL THEN 1 ELSE 0 END,updated_at=now() WHERE id=$1 RETURNING *`:
     `INSERT INTO companies(id,name,manager_id,manager_source,bitrix_portal,bitrix_id,bitrix_manager_id,bitrix_snapshot,bitrix_synced_at,status,contact,notes) VALUES($1,$2,$3,'bitrix',$4,$5,$6,$7,now(),'unclassified','','') RETURNING *`,[id,item.name,manager,value.portal,item.externalId,item.externalManagerId,JSON.stringify(item.raw)])).rows[0];
    result[result.length-1].companyId=company.id;
    if(responsibilityChanged)await database.query('INSERT INTO company_responsibility_events(id,company_id,actor_id,source,before_value,after_value) VALUES($1,$2,$3,\'bitrix\',$4,$5)',[randomUUID(),company.id,actor.id,previous?JSON.stringify({managerId:previous.manager_id,externalManagerId:previous.bitrix_manager_id}):null,JSON.stringify({managerId:manager,externalManagerId:item.externalManagerId})]);
@@ -71,7 +72,7 @@ export async function syncCompanySnapshots(actor:User,input:unknown){
 }
 export async function fetchBitrixCompanies(request:BitrixRequest,after='0'){
  assert(after==='0'||bitrixId(after),400,'Некорректный курсор компаний.');
- const result=await request<Record<string,unknown>[]>('crm.company.list',{order:{ID:'ASC'},filter:{'>ID':after},select:['*','UF_*'],start:0});
+ const result=await request<Record<string,unknown>[]>('crm.company.list',{order:{ID:'ASC'},filter:{'>ID':after},select:['*','UF_*'],start:-1});
  assert(Array.isArray(result)&&result.length<=50,502,'Ожидалась одна страница компаний Битрикс24.');
  let cursor=after;
  const companies=result.map(raw=>{const id=bitrixId(raw.ID);assert(id&&BigInt(id)>BigInt(cursor),502,'Нарушен порядок ID компаний.');cursor=id;assert(typeof raw.TITLE==='string'&&raw.TITLE.trim(),502,'У компании нет названия.');const manager=bitrixId(raw.ASSIGNED_BY_ID);assert(raw.ASSIGNED_BY_ID==null||raw.ASSIGNED_BY_ID===''||raw.ASSIGNED_BY_ID==='0'||raw.ASSIGNED_BY_ID===0||manager,502,'Некорректный ID ответственного компании.');return {externalId:id,name:raw.TITLE,externalManagerId:manager,raw};});

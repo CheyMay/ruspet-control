@@ -1,0 +1,26 @@
+[Unit]
+Description=RUSPET resumable Bitrix24 archive and event reader
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ruspet
+Group=ruspet
+WorkingDirectory=/opt/ruspet
+Environment=NODE_ENV=production
+EnvironmentFile=/opt/ruspet/.bitrix-import.env
+ExecStart=/usr/bin/env node --import tsx /opt/ruspet/scripts/bitrix-initial-sync.ts watch ${BITRIX_INITIAL_RUN_ID} --actor ${BITRIX_ARCHIVE_ACTOR_ID}
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=90
+CPUQuota=60%
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectHome=true
+ProtectSystem=strict
+ReadWritePaths=-/opt/ruspet/.secrets -/opt/ruspet/.local/bitrix-archive
+
+[Install]
+WantedBy=multi-user.target

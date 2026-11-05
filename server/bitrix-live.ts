@@ -146,7 +146,7 @@ function operationComment(op:any,actorName:string){
  for(const [key,label] of Object.entries(labels))if(typeof data[key]==='string'&&data[key].trim())parts.push(label+': '+data[key]);
  return `РУСПЭТ · ${actorName}\n${parts.join('\n')}\n[ruspet:${op.event_id}]`;
 }
-export async function tickLiveSync(request:BitrixRequest){
+export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:string[];poll?:boolean}={}){
  const lock=await pool.connect();let acquired=false;
  try{
   acquired=(await lock.query('SELECT pg_try_advisory_lock(431025) ok')).rows[0].ok;if(!acquired)return {sent:0,paused:true};
@@ -154,9 +154,11 @@ export async function tickLiveSync(request:BitrixRequest){
   // A previous process may have died after the portal accepted a request.
   await pool.query("UPDATE bitrix_operations SET state='uncertain',error='Обработчик прерван. Требуется сверка с Битрикс24.' WHERE state='processing'");
   let sent=0;
+  const capture=(await pool.query('SELECT enabled,verified_at FROM bitrix_event_capture WHERE id=1')).rows[0];
+  const poll=options.poll??!(capture?.enabled&&capture.verified_at);
   const links=(await pool.query(`SELECT l.* FROM bitrix_task_links l LEFT JOIN LATERAL
    (SELECT state,retry_at FROM bitrix_operations WHERE task_id=l.task_id AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 1) q ON true
-   WHERE l.live_enabled ORDER BY coalesce(q.state IN ('pending','failed') AND (q.retry_at IS NULL OR q.retry_at<=now()),false) DESC,l.live_polled_at NULLS FIRST,l.task_id LIMIT 20`)).rows;
+   WHERE l.live_enabled AND ($1::boolean OR l.task_id=ANY($2::text[]) OR q.state IN ('pending','failed','processing','uncertain','blocked')) ORDER BY coalesce(q.state IN ('pending','failed') AND (q.retry_at IS NULL OR q.retry_at<=now()),false) DESC,l.live_polled_at NULLS FIRST,l.task_id LIMIT 20`,[poll,options.taskIds||[]])).rows;
   for(const link of links){
    const id=link.task_id,externalId=String(link.external_id);
    await pool.query('UPDATE bitrix_task_links SET live_polled_at=now() WHERE task_id=$1',[id]);

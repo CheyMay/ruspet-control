@@ -1,3 +1,6 @@
+import {receiveBitrixEvent} from './bitrix-events.js';
+import {archiveStatus} from './bitrix-archive.js';
+import {selectedPilotManagers} from './pilot-selection.js';
 import {companyResponsibility,syncCompanySnapshots} from './company-responsibility.js';
 import {myDelegations,orgDirectory,setManager,saveSubstitution,revokeSubstitution} from './org.js';
 import {companyWork,listTaskTemplates,saveTaskTemplate,removeTaskTemplate} from './task-workspace.js';
@@ -37,6 +40,7 @@ const reportParameters=z.object({actorId:z.string().max(100).optional(),from:dat
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 export function createApp() {
  const app=express(); app.disable('x-powered-by'); app.use('/api/integrations/v1/companies/batch',express.json({limit:'512kb'})); app.use(express.json({limit:'32kb'}));
+ app.post('/api/bitrix/events',express.urlencoded({extended:true,limit:'128kb',parameterLimit:1000}),async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await receiveBitrixEvent(req.body));});
  const loginAttempts=new Map<string,{count:number;since:number}>();
  app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'");next();});
  app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.get('origin')){const allowed=[`http://${req.get('host')}`,'http://127.0.0.1:5173','http://localhost:5173'];if(process.env.PUBLIC_ORIGIN)allowed.push(new URL(process.env.PUBLIC_ORIGIN).origin);if(!allowed.includes(req.get('origin')!))return res.status(403).json({error:'Запрос с другого сайта запрещён.'});}next();});
@@ -92,6 +96,8 @@ export function createApp() {
  app.get('/api/tasks/:id/reminders',async(req,res)=>res.json(await listTaskReminders(req.actor,String(req.params.id))));
  app.post('/api/tasks/:id/reminders',async(req,res)=>res.status(201).json(await saveTaskReminder(req.actor,String(req.params.id),reminderInput.parse(req.body))));
  app.delete('/api/reminders/:id',async(req,res)=>res.json(await disableTaskReminder(req.actor,String(req.params.id))));
+ app.get('/api/system/bitrix-archive',async(req,res)=>res.json(await archiveStatus(req.actor)));
+ app.get('/api/system/selected-managers',async(req,res)=>res.json(await selectedPilotManagers(req.actor)));
  app.get('/api/system/status',async(req,res)=>res.json(await systemStatus(req.actor)));
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
  app.get('/api/system/pilot',async(req,res)=>{assert(req.actor.role==='admin',403,'Подготовку пилота видит администратор.');res.json(await pilotReadiness());});

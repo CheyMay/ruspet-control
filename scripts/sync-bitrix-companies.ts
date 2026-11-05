@@ -11,6 +11,7 @@ const {values}=parseArgs({options:{actor:{type:'string'},apply:{type:'boolean'},
 let stopped=false;process.once('SIGTERM',()=>{stopped=true;});process.once('SIGINT',()=>{stopped=true;});
 try{
  assert(values.actor,400,'Укажите --actor с ID администратора.');
+ if(values.watch)assert(!(await pool.query('SELECT enabled AND verified_at IS NOT NULL active FROM bitrix_event_capture WHERE id=1')).rows[0]?.active,409,'При активной подписке используйте адресные обновления по событиям, а не полный периодический импорт компаний.');
  assert(!values.watch||values.apply,400,'Периодический импорт требует --apply.');
  assert(!values.watch||values.after==='0',400,'Периодическая синхронизация требует полного обхода с --after 0.');
  const pages=Number(values['max-pages']);assert(Number.isInteger(pages)&&pages>=1&&pages<=1000,400,'--max-pages: от 1 до 1000.');

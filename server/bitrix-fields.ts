@@ -22,7 +22,7 @@ export async function fullSelection(db:Db=pool){return ['*',...(await db.query("
 export async function mapBitrixUser(request:BitrixRequest,userId:string,externalId:string,confirmed:boolean){
  const local=(await pool.query('SELECT id,name,role FROM users WHERE id=$1',[userId])).rows[0];assert(local,404,'Локальный пользователь не найден.');
  assert(bitrixId(externalId),400,'Нужен числовой ID пользователя Битрикс24.');
- const remote=await request<Record<string,unknown>[]>('user.get',{ID:externalId});
+ const remote=await request<Record<string,unknown>[]>('user.get',{FILTER:{ID:externalId},select:['ID','NAME','LAST_NAME','ACTIVE','UF_DEPARTMENT']});
  assert(Array.isArray(remote)&&remote.length===1&&String(remote[0].ID)===externalId,400,'Битрикс24 не подтвердил пользователя.');
  assert(remote[0].ACTIVE===true||remote[0].ACTIVE==='Y',400,'Пользователь Битрикс24 не активен.');
  if(confirmed){

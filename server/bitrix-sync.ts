@@ -35,7 +35,7 @@ async function stage(task:Remote,db:Db=pool,raw:Record<string,unknown>|null=null
 export async function scanProject(request:BitrixRequest,groupId:string,after:string,maxPages:number){
  let cursor=after,total=0;
  for(let page=0;page<maxPages;page++){
-  const result=await request<{tasks:Record<string,unknown>[]}>('tasks.task.list',{order:{ID:'asc'},filter:{GROUP_ID:groupId,'>ID':cursor},select:await fullSelection()});
+  const result=await request<{tasks:Record<string,unknown>[]}>('tasks.task.list',{order:{ID:'asc'},filter:{GROUP_ID:groupId,'>ID':cursor},select:await fullSelection(),start:-1});
   if(!Array.isArray(result.tasks))throw new BitrixError('Нет списка задач в ответе REST.');
   if(!result.tasks.length)return {total,cursor,complete:true};
   for(const row of result.tasks){

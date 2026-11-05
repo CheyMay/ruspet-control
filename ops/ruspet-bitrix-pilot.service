@@ -19,6 +19,7 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectHome=true
 ProtectSystem=strict
+ReadWritePaths=-/opt/ruspet/.secrets
 
 [Install]
 WantedBy=multi-user.target
