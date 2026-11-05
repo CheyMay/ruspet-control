@@ -4,6 +4,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {assert,globalAccess} from './domain.js';
 import type {User} from '../shared/types.js';
+import {pool as mainPool} from './db.js';
 
 let pool:pg.Pool|undefined;
 export const okbConfigured=()=>!!process.env.OKB_DATABASE_URL;
@@ -26,7 +27,7 @@ export async function migrateOkb(){
 }
 const companyInput=z.object({name:z.string().trim().min(2).max(250),
  taxId:z.string().trim().regex(/^(?:\d{10}|\d{12})$/).nullable(),
- status:z.enum(['prospect','active','former']),contact:z.string().trim().max(500),notes:z.string().trim().max(4000)});
+ status:z.enum(['prospect','active','former','unclassified']),contact:z.string().trim().max(500),notes:z.string().trim().max(4000),managerId:z.string().trim().min(1).max(100).nullable().optional()});
 export type CompanyInput=z.infer<typeof companyInput>;
 export function requireOkbAccess(actor:User){assert(globalAccess(actor),403,'ОКБ доступна руководству.');}
 export async function listCompanies(actor:User,query:string){
@@ -47,10 +48,14 @@ export async function saveCompany(actor:User,input:unknown,id?:string){
   const previous=id?(await db.query('SELECT * FROM companies WHERE id=$1 FOR UPDATE',[id])).rows[0]:null;
   if(id)assert(previous,404,'Компания не найдена.');
   if(id)assert(previous.version===version,409,'Карточка изменилась. Обновите список.');
-  const args=[id??randomUUID(),value.name,value.taxId,value.status,value.contact,value.notes];
+  const manager=value.managerId===undefined?previous?.manager_id??null:value.managerId;
+  if(manager)assert((await mainPool.query('SELECT 1 FROM users WHERE id=$1',[manager])).rowCount,400,'Менеджер не найден в системе.');
+  const changedManager=manager!==(previous?.manager_id??null);
+  const args=[id??randomUUID(),value.name,value.taxId,value.status,value.contact,value.notes,manager,changedManager?'manual':previous?.manager_source??(manager?'manual':null)];
   const company=(await db.query(id?`UPDATE companies SET name=$2,tax_id=$3,status=$4,contact=$5,notes=$6,
-   version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING *`:
-   'INSERT INTO companies(id,name,tax_id,status,contact,notes) VALUES($1,$2,$3,$4,$5,$6) RETURNING *',args)).rows[0];
+   manager_id=$7,manager_source=$8,version=version+1,updated_at=clock_timestamp() WHERE id=$1 RETURNING *`:
+   'INSERT INTO companies(id,name,tax_id,status,contact,notes,manager_id,manager_source) VALUES($1,$2,$3,$4,$5,$6,$7,$8) RETURNING *',args)).rows[0];
+  if(changedManager)await db.query("INSERT INTO company_responsibility_events(id,company_id,actor_id,source,before_value,after_value) VALUES($1,$2,$3,'manual',$4,$5)",[randomUUID(),company.id,actor.id,JSON.stringify({managerId:previous?.manager_id??null}),JSON.stringify({managerId:manager})]);
   if(previous?.status!==company.status)await db.query(`INSERT INTO company_status_events(event_id,company_id,snapshot) VALUES($1,$2,$3)`,
    [randomUUID(),company.id,JSON.stringify({id:company.id,name:company.name,status:company.status,previousStatus:previous?.status??null})]);
   await db.query('COMMIT');

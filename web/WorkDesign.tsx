@@ -8,9 +8,9 @@ import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import type {User} from '../shared/types.js';
 
-export const companyStates={prospect:'Потенциальный клиент',active:'В работе',former:'Бывший клиент'} as const;
+export const companyStates={prospect:'Потенциальный клиент',active:'В работе',former:'Бывший клиент',unclassified:'Не указан'} as const;
 type CompanyState=keyof typeof companyStates;
-type Company={id:string;name:string;tax_id:string|null;status:CompanyState;contact:string;notes:string;version:number;updated_at:string};
+type Company={manager_id:string|null;manager_source:'manual'|'bitrix'|null;bitrix_manager_id?:string|null;bitrix_synced_at?:string|null;id:string;name:string;tax_id:string|null;status:CompanyState;contact:string;notes:string;version:number;updated_at:string};
 export const canUseOkb=(user:User)=>['admin','director','sales_head'].includes(user.role);
 const errorText=(error:unknown)=>error instanceof Error?error.message:'Не удалось выполнить запрос.';
 
@@ -35,7 +35,7 @@ export function Okb({initialId,users,openTask,createTask}:{initialId:string|null
   const f=new FormData(event.currentTarget),existing=editor&&editor!=='new'?editor:null;
   try{
    await api('/okb/companies'+(existing?'/'+existing.id:''),existing?'PUT':'POST',{
-    name:f.get('name'),taxId:String(f.get('taxId')||'').trim()||null,status:f.get('status'),contact:f.get('contact'),notes:f.get('notes'),version:existing?.version
+    name:f.get('name'),taxId:String(f.get('taxId')||'').trim()||null,status:f.get('status'),contact:f.get('contact'),notes:f.get('notes'),...(String(f.get('managerId')||'')!==(existing?.manager_id||'')?{managerId:String(f.get('managerId')||'')||null}:{}),version:existing?.version
    });
    setEditor(null);setReload(n=>n+1);
   }catch(e){setError(errorText(e));}finally{setBusy(false);}
@@ -47,8 +47,8 @@ export function Okb({initialId,users,openTask,createTask}:{initialId:string|null
    {!editor&&error&&<p className="alert error" role="alert">{error}</p>}
    {!rows&&!error&&<p role="status">Загружаем компании…</p>}
    {rows?.length===0&&<p>В выборке нет компаний.</p>}
-   {!!rows?.length&&<div className="table-scroll"><table><thead><tr><th>Компания</th><th>ИНН</th><th>Статус</th><th>Контакт</th><th>Обновлена</th></tr></thead><tbody>{rows.map(row=><tr key={row.id}>
-    <td><button className="text-button" onClick={()=>{setError('');setEditor(row);}}>{row.name}</button></td><td>{row.tax_id||'—'}</td><td>{companyStates[row.status]}</td><td>{row.contact||'—'}</td><td>{moscowTimestamp(row.updated_at)}</td>
+   {!!rows?.length&&<div className="table-scroll"><table><thead><tr><th>Компания</th><th>ИНН</th><th>Статус</th><th>Ответственный менеджер</th><th>Контакт</th><th>Обновлена</th></tr></thead><tbody>{rows.map(row=><tr key={row.id}>
+    <td><button className="text-button" onClick={()=>{setError('');setEditor(row);}}>{row.name}</button></td><td>{row.tax_id||'—'}</td><td>{companyStates[row.status]}</td><td>{users.find(u=>u.id===row.manager_id)?.name||(row.manager_source==='bitrix'&&row.bitrix_manager_id?'Не сопоставлен с Битрикс24':'Не указан')}</td><td>{row.contact||'—'}</td><td>{moscowTimestamp(row.updated_at)}</td>
    </tr>)}</tbody></table></div>}
   </section>
   {editor&&<div className="modal-backdrop"><div className="modal task-editor" role="dialog" aria-modal="true" aria-label="Карточка компании"><form key={company?.id||'new'} className="work-design-form" onSubmit={save}>
@@ -56,6 +56,8 @@ export function Okb({initialId,users,openTask,createTask}:{initialId:string|null
    {error&&<p className="alert error" role="alert">{error}</p>}
    <label>Название<input name="name" required minLength={2} maxLength={250} defaultValue={company?.name}/></label>
    <div className="editor-grid"><label>ИНН<input name="taxId" inputMode="numeric" pattern="[0-9]{10}|[0-9]{12}" maxLength={12} defaultValue={company?.tax_id??''}/></label><label>Статус<select name="status" defaultValue={company?.status??'prospect'}>{Object.entries(companyStates).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label></div>
+   <label>Ответственный менеджер<select name="managerId" defaultValue={company?.manager_id||''}><option value="">Не указан</option>{users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
+   {company?.manager_source==='bitrix'&&<p className="muted">Ответственный загружен из Битрикс24{company.bitrix_synced_at?' · '+moscowTimestamp(company.bitrix_synced_at):''}. Следующая синхронизация обновит его по данным портала.</p>}
    <label>Контакт<input name="contact" maxLength={500} defaultValue={company?.contact}/></label>
    <label>Заметки<textarea name="notes" maxLength={4000} defaultValue={company?.notes}/></label>
    <button className="button primary" disabled={busy}>Сохранить компанию</button>

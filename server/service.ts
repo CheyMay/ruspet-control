@@ -1,3 +1,5 @@
+import {delegatedTaskAccepted} from './delegation-review.js';
+import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
 import {enqueueBitrixOperation} from './bitrix-live.js';
 import {generateReport} from './reports-v5.js';
@@ -15,6 +17,7 @@ import { providers } from './providers.js';
 const adapters=providers();
 const planningFindings=new Set(['planned_overdue','missing_plan_start','missing_plan_end','negative_plan','long_plan','plan_after_deadline','plan_before_creation','child_plan','parent_unavailable','child_deadline','children_unavailable']);
 export async function event(db:Db,taskId:string|null,actor:string|null,kind:string,message:string,data:object={}) {
+ if(taskId&&['review_submitted','task_completed'].includes(kind))await requireAcceptedDelegations(db,taskId);
  const after=(data as {after?:Task}).after;
  if(taskId&&after?.version&&['created','task_edited','review_submitted','review_returned','task_completed','deadline_changed','action_undone'].includes(kind))await db.query('INSERT INTO task_sync_queue(id,task_id,task_version,payload) VALUES($1,$2,$3,$4) ON CONFLICT(task_id,task_version) DO NOTHING',[randomUUID(),taskId,after.version,JSON.stringify({kind,after,context:Object.fromEntries(Object.entries(data).filter(([key])=>!['before','after'].includes(key)))})]);
  const id=randomUUID();
@@ -23,6 +26,8 @@ export async function event(db:Db,taskId:string|null,actor:string|null,kind:stri
  if(taskId&&kind==='task_completed')await db.query(`INSERT INTO task_acceptance_events(event_id,task_id,occurred_at,available_at)
   SELECT $1,$2,clock_timestamp(),clock_timestamp()+interval '5 minutes' WHERE NOT EXISTS(SELECT 1 FROM business_runs WHERE task_id=$2)
   AND NOT EXISTS(SELECT 1 FROM business_run_tasks WHERE task_id=$2)`,[id,taskId]);
+ if(taskId&&kind==='task_completed')await delegatedTaskAccepted(db,taskId);
+ return id;
 }
 export async function notify(db:Db,taskId:string|null,recipient:string,body:string,key:string) {
  await db.query('INSERT INTO outbox(id,task_id,recipient_id,body,dedupe_key) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),taskId,recipient,body,key]);
@@ -33,6 +38,7 @@ export async function visibleTasksForCompany(user:User,id:string):Promise<Task[]
 }
 export async function visibleTasks(user:User,db:Db=pool):Promise<Task[]> { return (await db.query('SELECT * FROM tasks ORDER BY deadline ASC NULLS LAST,id')).rows.filter(t=>canSee(user,t)); }
 async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
+ if(lock)await lockDelegationChain(db,id);
  const task=(await db.query(`SELECT * FROM tasks WHERE id=$1${lock?' FOR UPDATE':''}`,[id])).rows[0];
  assert(task && canSee(user,task),404,'Задача не найдена или недоступна.'); return task;
 }

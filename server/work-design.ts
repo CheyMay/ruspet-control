@@ -1,3 +1,4 @@
+import {runDelegationReviews} from './delegation-review.js';
 import {measureTasks} from '../shared/process-metrics.js';
 import {processGraph} from './process-graph-input.js';
 import {graphErrors,runGraph,type GraphAction,type PlannedAction,type Trace} from '../shared/process-graph.js';
@@ -34,7 +35,7 @@ export const processInput=z.object({
  .refine(input=>input.trigger!=='company_quiet'||!!input.quietDays,'Укажите срок без контакта.')
  .refine(input=>!!input.graph||input.trigger==='task_accepted'||!input.field.startsWith('task.'),'Поле задачи доступно для события приёмки.');
 type Definition=z.infer<typeof processInput>;
-const companySample=z.object({name:z.string().max(250),status:z.enum(['active','former','prospect']),previousStatus:z.enum(['active','former','prospect']).nullable()});
+const companySample=z.object({name:z.string().max(250),status:z.enum(['active','former','prospect','unclassified']),previousStatus:z.enum(['active','former','prospect','unclassified']).nullable()});
 const msDay=86400000,moscow=10800000;
 
 export function nextOccurrence(startsAt:string,unit:Frequency,every:number,after:Date){
@@ -353,6 +354,7 @@ export function startWorkDesign(){
   if(running)return;
   running=true;
   try{
+   await runDelegationReviews().catch(()=>console.error('Delegation review tick failed'));
    await runSchedules().catch(()=>console.error('Task schedule tick failed'));
    await runProcesses().catch(()=>console.error('Business process tick failed'));
   }finally{running=false;}

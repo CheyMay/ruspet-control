@@ -1,3 +1,5 @@
+import {delegatedTaskAccepted} from './delegation-review.js';
+import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual as equal} from 'node:util';
 import {pool,transaction,type Db} from './db.js';
@@ -52,6 +54,7 @@ async function remoteValues(raw:Record<string,unknown>,cfg:Config):Promise<Value
  return {title:task.title,description:task.description,deadline:task.deadline,price,assignee_id:owner.user_id,creator_id:author.user_id,status:state};
 }
 async function applyInbound(db:Db,task:Task,next:Values,raw:Record<string,unknown>,initial=false){
+ if(next.status!==task.status&&next.status!=='active')await requireAcceptedDelegations(db,task.id);
  const owner=(await db.query('SELECT branch_id FROM users WHERE id=$1',[next.assignee_id])).rows[0];
  const changed:string[]=[...changeFields,'creator_id' as const].filter(k=>!same(localValues(task)[k],next[k]));
  if(owner.branch_id!==task.branch_id)changed.push('branch_id');if(!changed.length)return;
@@ -65,6 +68,12 @@ async function applyInbound(db:Db,task:Task,next:Values,raw:Record<string,unknow
  await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[task.id]);
  if(next.status==='completed'||task.assignee_id!==next.assignee_id)await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[task.id]);
  await db.query("INSERT INTO task_events(id,task_id,kind,message,data) VALUES($1,$2,'bitrix_change','Обновлены поля из Битрикс24',$3)",[randomUUID(),task.id,JSON.stringify({before:task,after:updated,fields:changed})]);
+ if(!initial&&task.status!==updated.status){
+  if(updated.status==='completed'){
+   await db.query("UPDATE task_submissions SET state='accepted',remark='Приёмка зафиксирована в Битрикс24',decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[task.id]);
+   await delegatedTaskAccepted(db,task.id);
+  }else if(updated.status==='active')await db.query("UPDATE task_submissions SET state='returned',remark='Возврат зафиксирован в Битрикс24',decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[task.id]);
+ }
  const {refreshTaskFindings}=await import('./service.js');const actor=(await db.query('SELECT * FROM users WHERE id=$1',[next.creator_id])).rows[0];await refreshTaskFindings(db,updated,actor);
 }
 export async function activateLiveTask(request:BitrixRequest,id:string,acceptBitrix=false){
@@ -73,6 +82,7 @@ export async function activateLiveTask(request:BitrixRequest,id:string,acceptBit
  const raw=await readLiveTask(request,String(link.external_id)),remote=await remoteValues(raw,cfg);
  assert(['Y',true].includes(fieldValue(raw,'TASK_CONTROL') as 'Y'),409,'Для пилота включите контроль после завершения задачи в Битрикс24.');
  return transaction(async db=>{
+  await lockDelegationChain(db,id);
   const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
   const members=(await db.query('SELECT user_id FROM bitrix_pilot_members WHERE user_id=ANY($1)',[[remote.assignee_id,remote.creator_id]])).rows;
   assert(new Set(members.map(p=>p.user_id)).size===new Set([remote.assignee_id,remote.creator_id]).size,409,'Исполнитель и постановщик должны быть в подтверждённом составе пилота.');
@@ -86,7 +96,7 @@ export async function activateLiveTask(request:BitrixRequest,id:string,acceptBit
  });
 }
 export async function deactivateLiveTask(id:string){return transaction(async db=>{
- await db.query('SELECT 1 FROM tasks WHERE id=$1 FOR UPDATE',[id]);
+ await lockDelegationChain(db,id);
  assert(!(await db.query('SELECT enabled FROM bitrix_live_config WHERE id=1')).rows[0].enabled,409,'Сначала приостановите пилот.');
  assert(!(await db.query("SELECT 1 FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled')",[id])).rowCount,409,'Сначала завершите или сверьте очередь задачи.');
  const result=await db.query('UPDATE bitrix_task_links SET live_enabled=false WHERE task_id=$1 AND live_enabled',[id]);assert(result.rowCount,404,'Активная связь не найдена.');return {deactivated:true};
@@ -151,7 +161,7 @@ export async function tickLiveSync(request:BitrixRequest){
    const id=link.task_id,externalId=String(link.external_id);
    await pool.query('UPDATE bitrix_task_links SET live_polled_at=now() WHERE task_id=$1',[id]);
    const op=await transaction(async db=>{
-    await db.query('SELECT 1 FROM tasks WHERE id=$1 FOR UPDATE',[id]);
+    await lockDelegationChain(db,id);
     const candidate=(await db.query("SELECT * FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 1 FOR UPDATE",[id])).rows[0];
     if(!candidate||!['pending','failed'].includes(candidate.state)||candidate.retry_at&&Date.parse(candidate.retry_at)>Date.now())return candidate?{...candidate,skip:true}:null;
     await db.query("UPDATE bitrix_operations SET state='processing',phase='reading',attempts=attempts+1 WHERE event_id=$1",[candidate.event_id]);return candidate;
@@ -162,6 +172,7 @@ export async function tickLiveSync(request:BitrixRequest){
     let raw=await readLiveTask(request,externalId),remote=await remoteValues(raw,cfg);
     if(!op){
      await transaction(async db=>{
+      await lockDelegationChain(db,id);
       const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
       if((await db.query("SELECT 1 FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled')",[id])).rowCount)return;
       const changed=changeFields.filter(k=>!same(localValues(task)[k],link.live_baseline?.[k]));assert(!changed.length,409,'Локальные поля изменены вне подтверждённой очереди: '+changed.join(', '));
@@ -190,6 +201,7 @@ export async function tickLiveSync(request:BitrixRequest){
      await write('tasks.task.chat.message.send',{fields:{taskId:externalId,text}});
     assert((typeof ack==='number'||typeof ack==='string')&&!!bitrixId(ack)||typeof ack==='object'&&ack!==null&&(ack as any).result===true,502,'Отправка комментария не подтверждена.');
     await transaction(async db=>{
+     await lockDelegationChain(db,id);
      const current=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
      assert(current.creator_id===remote.creator_id,409,'Постановщик изменился во время отправки. Требуется сверка.');
      await db.query("UPDATE bitrix_operations SET state='sent',phase='done',error=NULL,finished_at=now() WHERE event_id=$1",[op.event_id]);
@@ -228,7 +240,7 @@ export async function recoverOperation(request:BitrixRequest,id:string,mode:'ret
   assert(found,409,'Комментарий с маркером операции не найден в загруженном обсуждении. Автоповтор запрещён. Проверьте чат и при необходимости загрузите старшие страницы.');
  }
  await transaction(async db=>{
-  await db.query('SELECT 1 FROM tasks WHERE id=$1 FOR UPDATE',[op.task_id]);
+  await lockDelegationChain(db,op.task_id);
   const result=await db.query("UPDATE bitrix_operations SET state=$2,error=NULL,retry_at=NULL,finished_at=CASE WHEN $2='sent' THEN now() ELSE NULL END WHERE event_id=$1 AND state='uncertain'",[id,commentPhase?'sent':'pending']);assert(result.rowCount,409,'Операция уже изменена.');
   if(commentPhase){
    const current=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[op.task_id])).rows[0];assert(current.creator_id===remote.creator_id,409,'Постановщик изменился. Требуется сверка.');

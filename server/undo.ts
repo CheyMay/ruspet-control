@@ -1,3 +1,5 @@
+import {lockDelegationChain} from './delegation-lock.js';
+import {undoDelegatedSource} from './delegation-review.js';
 import {isDeepStrictEqual} from 'node:util';
 import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
@@ -15,6 +17,7 @@ export async function lastUndo(u:User,taskId?:string,db:Db=pool){
 }
 export async function undoLastAction(u:User,id:string){return transaction(async db=>{
  const lookup=(await db.query('SELECT task_id FROM undo_actions WHERE id=$1 AND actor_id=$2',[id,u.id])).rows[0];assert(lookup,404,'Действие не найдено.');
+ await lockDelegationChain(db,lookup.task_id);
  const current=(await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[lookup.task_id])).rows[0] as Task;assert(current&&canSee(u,current),404,'Задача недоступна.');
  const row=(await db.query('SELECT * FROM undo_actions WHERE id=$1 FOR UPDATE',[id])).rows[0];
  const latest=(await db.query('SELECT id FROM undo_actions WHERE actor_id=$1 ORDER BY created_at DESC,id DESC LIMIT 1',[u.id])).rows[0];
@@ -34,6 +37,7 @@ export async function undoLastAction(u:User,id:string){return transaction(async 
  assert(!(await db.query("SELECT 1 FROM bitrix_operations WHERE event_id=ANY($1::uuid[]) AND (attempts>0 OR state IN ('processing','sent','uncertain'))",[originalIds])).rowCount,409,'Действие уже передавалось в Битрикс24. Требуется отдельное исправление.');
  await db.query("UPDATE bitrix_operations SET state='canceled' WHERE event_id=ANY($1::uuid[]) AND attempts=0",[originalIds]);
  assert(!(await db.query("SELECT 1 FROM task_sync_queue WHERE task_id=$1 AND task_version>$2 AND (state='sent' OR attempts>0)",[current.id,before.task.version])).rowCount,409,'Изменение уже передавалось внешнему обработчику. Требуется отдельное исправление.');
+ if(before.task.status!==after.task.status&&after.task.status==='completed')await undoDelegatedSource(db,current,id,u);
  // Resolve newly opened records before restoring the original active route/control.
  const beforeApprovals=new Set(before.approvals.map(a=>a.id));
  for(const a of after.approvals)if(!beforeApprovals.has(a.id))await db.query("UPDATE approvals SET state='stale',canceled_at=now(),deferred_until=NULL WHERE id=$1",[a.id]);
@@ -43,7 +47,7 @@ export async function undoLastAction(u:User,id:string){return transaction(async 
  // Keep the original submission and its outcome. A restored review is a new,
  // explicitly linked projection, not a rewritten acceptance/return record.
  for(const s of after.submissions){const old=before.submissions.find(x=>x.id===s.id);if(!old||!isDeepStrictEqual(old,s))await db.query('UPDATE task_submissions SET withdrawn_at=now() WHERE id=$1',[s.id]);}
- for(const s of before.submissions){const actual=after.submissions.find(x=>x.id===s.id);if(s.state==='review'&&(!actual||!isDeepStrictEqual(s,actual)))await db.query("INSERT INTO task_submissions(id,task_id,round,result,author_id,state,restored_from) SELECT $1,$2,coalesce(max(round),0)+1,$3,$4,'review',$5 FROM task_submissions WHERE task_id=$2",[randomUUID(),current.id,s.result,s.author_id,s.id]);}
+ for(const s of before.submissions){const actual=after.submissions.find(x=>x.id===s.id);if(s.state==='review'&&(!actual||!isDeepStrictEqual(s,actual)))await db.query("INSERT INTO task_submissions(id,task_id,round,result,author_id,state,restored_from,automatic,based_on_tasks) SELECT $1,$2,coalesce(max(round),0)+1,$3,$4,'review',$5,$6,$7 FROM task_submissions WHERE task_id=$2",[randomUUID(),current.id,s.result,s.author_id,s.id,s.automatic??false,s.based_on_tasks??[]]);}
  const oldControls=new Set(before.controls.map(c=>c.id));for(const c of after.controls)if(!oldControls.has(c.id))await db.query("UPDATE control_requests SET state='resolved' WHERE id=$1",[c.id]);
  for(const c of before.controls)await db.query('UPDATE control_requests SET state=$2,reason=$3,progress=$4,plan=$5,due_at=$6,reminders=$7 WHERE id=$1',[c.id,c.state,c.reason,c.progress,c.plan,c.due_at,c.reminders]);
  const oldComments=new Set(before.comments.map(c=>c.id));for(const c of after.comments)if(!oldComments.has(c.id))await db.query('UPDATE comments SET withdrawn_at=now() WHERE id=$1',[c.id]);

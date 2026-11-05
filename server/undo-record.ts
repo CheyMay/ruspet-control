@@ -1,3 +1,4 @@
+import {lockDelegationChain} from './delegation-lock.js';
 import {randomUUID} from 'node:crypto';
 import {isDeepStrictEqual} from 'node:util';
 import {transaction,type Db} from './db.js';
@@ -17,6 +18,7 @@ export function sameState(a:ActionState,b:ActionState){
 }
 export async function recordTaskAction<T>(u:User,id:string,label:string,run:()=>Promise<T>):Promise<T>{
  return transaction(async db=>{
+  await lockDelegationChain(db,id);
   const task=(await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0] as Task;assert(task&&canSee(u,task),404,'Задача недоступна.');
   const before=await actionState(db,id),result=await run(),after=await actionState(db,id);
   const known=new Set(before.events.map(e=>e.id)),added=after.events.filter(e=>!known.has(e.id));

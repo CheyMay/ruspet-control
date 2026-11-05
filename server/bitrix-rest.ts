@@ -3,7 +3,7 @@ import {setTimeout as delay} from 'node:timers/promises';
 import {pool} from './db.js';
 import {createBitrixTransport,BitrixTransportError} from './bitrix-transport.js';
 
-export type BitrixMethod='tasks.task.list'|'tasks.task.get'|'tasks.task.update'|'tasks.task.history.list'|'im.dialog.messages.get'|'task.commentitem.getlist'|'tasks.task.getFields'|'user.get'|'tasks.task.complete'|'tasks.task.approve'|'tasks.task.disapprove'|'tasks.task.renew'|'tasks.task.chat.message.send'|'task.commentitem.add';
+export type BitrixMethod='tasks.task.list'|'tasks.task.get'|'tasks.task.update'|'tasks.task.history.list'|'im.dialog.messages.get'|'task.commentitem.getlist'|'tasks.task.getFields'|'user.get'|'tasks.task.complete'|'tasks.task.approve'|'tasks.task.disapprove'|'tasks.task.renew'|'tasks.task.chat.message.send'|'task.commentitem.add'|'crm.company.list'|'crm.company.get'|'crm.company.fields';
 const knownErrors=new Set(['QUERY_LIMIT_EXCEEDED','OPERATION_TIME_LIMIT','NO_AUTH_FOUND','ACCESS_DENIED','OVERLOAD_LIMIT','ERROR_TASK_NOT_FOUND']);
 export class BitrixError extends Error {constructor(message:string,public disposition:'rejected'|'uncertain'='rejected'){super(message);}}
 

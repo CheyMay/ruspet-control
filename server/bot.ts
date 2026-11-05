@@ -85,19 +85,20 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   rows.push([...(page?[button('← Назад','reports',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1})]:[])],[button('Общий отчёт сейчас','report_now')],[button('Итоги дня и завтра','report_evening')],[button('Меню','home')]);return screen(u,ch,'Отчёты · '+archive.total+'\nВыберите снимок или сформируйте новый. Каждый отчёт сохраняет время и параметры.',rows);
  }
  if(p.op==='delegate_list'||p.op==='delegate_preview'){
-  const {people,version}=await delegationTargets(u,p.id!);
-  if(p.op==='delegate_preview'){
-   const person=people.find(person=>person.id===p.target);
+  const {people,version,responsibility}=await delegationTargets(u,p.id!);
+  const automatic=p.op==='delegate_list'&&p.filter!=='manual'&&!!responsibility.managerId;
+  if(p.op==='delegate_preview'||automatic){
+   const person=people.find(person=>person.id===(automatic?responsibility.managerId:p.target));
    assert(person,403,'Выберите подчинённого из доступного списка.');
-   return screen(u,ch,`Создать поручение по задаче #${p.id} для ${person.name}?\nСрок перейдёт в копию. Цена копии — 0 ₽. Результат вернётся руководителю на приёмку.`,[
-    [button('Создать поручение','confirm',{kind:'delegate',id:p.id,version,target:person.id})],
-    [button('Другой сотрудник','delegate_list',{id:p.id}),button('К задаче','task',{id:p.id})]
+   return screen(u,ch,`Создать поручение по задаче #${p.id} для ${person.name}?${automatic?'\nОтветственный компании «'+responsibility.companyName+'» · '+(responsibility.source==='bitrix'?'Битрикс24':'ОКБ'):''}\nПосле приёмки всех поручений основная задача перейдёт на приёмку.\nСрок перейдёт в копию. Цена копии — 0 ₽. Результат вернётся руководителю на приёмку.`,[
+    [button('Создать поручение','confirm',{kind:'delegate',id:p.id,version,target:person.id,...(automatic?{values:{assignment:'auto',responsibilityToken:responsibility.token!}}:{})})],
+    [button('Другой сотрудник','delegate_list',{id:p.id,filter:'manual'}),button('К задаче','task',{id:p.id})]
    ]);
   }
   const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/8)-1));
-  return screen(u,ch,people.length?'Кому делегировать задачу #'+p.id+'?':'В вашей области нет доступных подчинённых.',[
+  return screen(u,ch,people.length?(responsibility.reason?responsibility.reason+'\n':'')+'Кому делегировать задачу #'+p.id+'?':'В вашей области нет доступных подчинённых.',[
    ...people.slice(page*8,page*8+8).map(person=>[button(person.name,'delegate_preview',{id:p.id,target:person.id})]),
-   [...(page?[button('← Назад','delegate_list',{id:p.id,page:page-1})]:[]),...((page+1)*8<people.length?[button('Далее →','delegate_list',{id:p.id,page:page+1})]:[])],
+   [...(page?[button('← Назад','delegate_list',{id:p.id,page:page-1,filter:'manual'})]:[]),...((page+1)*8<people.length?[button('Далее →','delegate_list',{id:p.id,page:page+1,filter:'manual'})]:[])],
    [button('К задаче','task',{id:p.id})]
   ]);
  }
@@ -156,7 +157,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   }
   const v=p.values||{};let result='Действие сохранено.',resultTask:string|undefined;
   if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}
-  else if(p.kind==='delegate'){const copy=await delegateTask(u,p.id!,{assigneeId:p.target!,expectedVersion:p.version!});resultTask=copy.id;result='Поручение #'+copy.id+' создано. Результат вернётся руководителю на приёмку.';}
+  else if(p.kind==='delegate'){const copy=await delegateTask(u,p.id!,{...(p.values?.assignment==='auto'?{responsibilityToken:p.values.responsibilityToken}:{assigneeId:p.target!}),expectedVersion:p.version!});resultTask=copy.id;result='Поручение #'+copy.id+' создано. Результат вернётся руководителю на приёмку.';}
   else if(p.kind==='comment'){await addComment(u,p.id!,v.comment,p.target);result='Комментарий сохранён в обсуждении задачи и доступен руководителю.'}
   else if(p.kind==='reminder'){await saveTaskReminder(u,p.id!,{recipientId:u.id,days:v.days.split(',').map(Number),times:v.times.split(',').map(s=>s.trim()),weeks:Number(v.weeks)});result='Напоминание сохранено. Время московское. Для доставки привяжите свой чат в панели.'}
   else if(p.kind==='reminder_cancel'){await disableTaskReminder(u,p.target!);result='Расписание выключено.'}

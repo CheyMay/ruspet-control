@@ -1,3 +1,5 @@
+import {lockDelegationChain} from './delegation-lock.js';
+import {resolveCompanyResponsibility} from './company-responsibility.js';
 import {actingManager,delegatesFor} from './org.js';
 import {recordTaskAction,recordTaskBarrier} from './undo-record.js';
 import {randomUUID} from 'node:crypto';
@@ -47,18 +49,26 @@ export async function delegationTargets(actor:User,id:string){
  assert(task&&canSee(actor,task),404,'Задача недоступна.');
  const manager=await actingManager(actor,task);
  assert(manager,403,'Делегировать можно свою задачу в работе или задачу руководителя, которого вы замещаете.');
- return {version:task.version,people:(await delegatesFor(manager)).filter(person=>availableDelegate(actor,manager,person))};
+ const people=(await delegatesFor(manager)).filter(person=>availableDelegate(actor,manager,person));
+ return {version:task.version,people,responsibility:await resolveCompanyResponsibility(task,people)};
 
 }
-export async function delegateTask(actor:User,id:string,input:{assigneeId:string;expectedVersion:number;instruction?:string;deadline?:string|null}){
+export async function delegateTask(actor:User,id:string,input:{assigneeId?:string;responsibilityToken?:string;expectedVersion:number;instruction?:string;deadline?:string|null}){
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock_shared(431036)');
+  await lockDelegationChain(db,id);
   const source=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
   assert(source&&canSee(actor,source),404,'Задача недоступна.');
   const manager=await actingManager(actor,source,db);
   assert(manager,403,'Делегировать можно свою задачу в работе или задачу руководителя, которого вы замещаете.');
   assert(source.version===input.expectedVersion,409,'Задача изменилась. Откройте её заново.');
-  const target=(await delegatesFor(manager,db)).find(p=>p.id===input.assigneeId&&availableDelegate(actor,manager,p));
+  const available=(await delegatesFor(manager,db)).filter(p=>availableDelegate(actor,manager,p));
+  const responsibility=input.assigneeId?null:await resolveCompanyResponsibility(source,available,db);
+  if(!input.assigneeId){
+   assert(responsibility?.managerId,422,responsibility?.reason||'Выберите исполнителя вручную.');
+   assert(!input.responsibilityToken||input.responsibilityToken===responsibility.token,409,'Ответственный компании изменился. Откройте делегирование заново.');
+  }
+  const target=available.find(p=>p.id===(input.assigneeId||responsibility?.managerId));
   assert(target,403,'Выберите подчинённого из доступного списка.');
   const existing=(await db.query("SELECT id FROM tasks WHERE delegated_from_id=$1 AND assignee_id=$2 AND status<>'completed' LIMIT 1",[id,target.id])).rows[0];
   if(existing)assert(false,409,'У сотрудника уже есть открытое поручение #'+existing.id+'.');
@@ -66,10 +76,10 @@ export async function delegateTask(actor:User,id:string,input:{assigneeId:string
   const deadline=input.deadline===undefined?source.deadline:input.deadline;
   const copy=await insertTask(db,manager,{title:source.title,description:instruction?[source.description,'Уточнение руководителя: '+instruction].filter(Boolean).join('\n\n'):source.description,
    assigneeId:target.id,price:0,deadline,plannedStart:null,plannedEnd:null,important:source.important,
-   customerRisk:null,parentId:source.id,companyId:source.company_id,customFields:source.custom_fields},
+   customerRisk:null,parentId:source.id,companyId:source.company_id||responsibility?.companyId||null,customFields:source.custom_fields},
    source,actor);
   await event(db,source.id,actor.id,'task_delegated','Создано поручение #'+copy.id+' для '+target.name,
-   {delegatedTaskId:copy.id,assigneeId:target.id,instruction,onBehalfOf:manager.id});
+   {delegatedTaskId:copy.id,assigneeId:target.id,instruction,onBehalfOf:manager.id,responsibility});
   await notify(db,copy.id,target.id,actor.name+' делегировал задачу #'+copy.id+' · '+source.title,'delegation:'+copy.id);
   return copy;
  });

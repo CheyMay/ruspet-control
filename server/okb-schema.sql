@@ -30,3 +30,19 @@ CREATE TABLE IF NOT EXISTS company_contacts (
 );
 CREATE INDEX IF NOT EXISTS company_contacts_recent ON company_contacts(company_id,occurred_at DESC);
 CREATE INDEX IF NOT EXISTS company_quiet_since ON companies ((coalesce(last_contact_at,created_at))) WHERE status='active';
+
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS manager_id text;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS manager_source text CHECK(manager_source IN ('manual','bitrix'));
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_portal text;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_id bigint;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_manager_id bigint;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_snapshot jsonb;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_synced_at timestamptz;
+CREATE UNIQUE INDEX IF NOT EXISTS company_bitrix_identity ON companies(bitrix_portal,bitrix_id) WHERE bitrix_id IS NOT NULL;
+ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_status_check;
+ALTER TABLE companies ADD CONSTRAINT companies_status_check CHECK(status IN ('prospect','active','former','unclassified'));
+CREATE TABLE IF NOT EXISTS company_responsibility_events (
+ id uuid PRIMARY KEY,company_id uuid NOT NULL REFERENCES companies,actor_id text,
+ source text NOT NULL CHECK(source IN ('manual','bitrix')),before_value jsonb,after_value jsonb,
+ occurred_at timestamptz NOT NULL DEFAULT clock_timestamp()
+);

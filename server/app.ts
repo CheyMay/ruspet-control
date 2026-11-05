@@ -1,3 +1,4 @@
+import {companyResponsibility,syncCompanySnapshots} from './company-responsibility.js';
 import {myDelegations,orgDirectory,setManager,saveSubstitution,revokeSubstitution} from './org.js';
 import {companyWork,listTaskTemplates,saveTaskTemplate,removeTaskTemplate} from './task-workspace.js';
 import {listCompanies,saveCompany,getCompany,companyContacts,recordCompanyContact} from './okb.js';
@@ -35,7 +36,7 @@ const rules=z.object({requiredPrice:z.boolean().optional(),showPlanning:z.boolea
 const reportParameters=z.object({actorId:z.string().max(100).optional(),from:date.optional(),to:date.optional(),assigneeId:z.string().max(100).optional(),creatorId:z.string().max(100).optional(),priceBand:z.enum(['low','medium','high','premium','unknown']).optional(),queue:z.enum(['all','front','overdue','today','review','completed','no_deadline']).optional()});
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 export function createApp() {
- const app=express(); app.disable('x-powered-by'); app.use(express.json({limit:'32kb'}));
+ const app=express(); app.disable('x-powered-by'); app.use('/api/integrations/v1/companies/batch',express.json({limit:'512kb'})); app.use(express.json({limit:'32kb'}));
  const loginAttempts=new Map<string,{count:number;since:number}>();
  app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'");next();});
  app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.get('origin')){const allowed=[`http://${req.get('host')}`,'http://127.0.0.1:5173','http://localhost:5173'];if(process.env.PUBLIC_ORIGIN)allowed.push(new URL(process.env.PUBLIC_ORIGIN).origin);if(!allowed.includes(req.get('origin')!))return res.status(403).json({error:'Запрос с другого сайта запрещён.'});}next();});
@@ -84,7 +85,7 @@ export function createApp() {
  app.get('/api/tasks/:id/delegation',async(req,res)=>res.json(await delegationLinks(req.actor,String(req.params.id))));
  app.get('/api/tasks/:id/delegation-targets',async(req,res)=>res.json(await delegationTargets(req.actor,String(req.params.id))));
  app.post('/api/tasks/:id/delegate',async(req,res)=>res.status(201).json(await delegateTask(req.actor,String(req.params.id),z.object({
-  assigneeId:z.string().trim().min(1).max(100),expectedVersion:z.number().int().positive(),
+  assigneeId:z.string().trim().min(1).max(100).optional(),responsibilityToken:z.string().regex(/^[a-f0-9]{64}$/).optional(),expectedVersion:z.number().int().positive(),
   instruction:z.string().trim().max(2000).optional(),deadline:date.nullable().optional()
  }).parse(req.body))));
  app.get('/api/tasks/:id/assignees',async(req,res)=>res.json(await taskAssignees(req.actor,String(req.params.id))));
@@ -105,6 +106,8 @@ export function createApp() {
  app.post('/api/bot/screen',async(req,res)=>{await clearBotDraft(req.actor,'preview');res.json(await botView(req.actor,'preview'))});
  app.post('/api/bot/click',async(req,res)=>res.json(await botClick(req.actor,'preview',z.object({token:z.string().max(64)}).parse(req.body).token)));
  app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,'preview',input.text,input.inputId))});
+ app.post('/api/integrations/v1/companies/batch',async(req,res)=>res.json(await syncCompanySnapshots(req.actor,req.body)));
+ app.get('/api/okb/companies/:id/responsibility',async(req,res)=>res.json(await companyResponsibility(req.actor,z.uuid().parse(req.params.id))));
  app.get('/api/okb/companies',async(req,res)=>res.json(await listCompanies(req.actor,typeof req.query.q==='string'?req.query.q:'')));
  app.get('/api/okb/companies/:id',async(req,res)=>res.json(await getCompany(req.actor,z.uuid().parse(req.params.id))));
  app.get('/api/okb/companies/:id/work',async(req,res)=>res.json(await companyWork(req.actor,z.uuid().parse(req.params.id))));

@@ -53,6 +53,34 @@ before(async()=>{
 });
 after(async()=>{if(server)await new Promise<void>(r=>server.close(()=>r()));if(savedDemo===undefined)delete process.env.DEMO_AUTH;else process.env.DEMO_AUTH=savedDemo;if(savedWrite===undefined)delete process.env.BITRIX_WRITE_ENABLED;else process.env.BITRIX_WRITE_ENABLED=savedWrite;await db?.pool.end();if(adminConnection){await adminConnection.query(`DROP DATABASE IF EXISTS ${database}`);await adminConnection.end();}});
 
+test('delegated acceptance arriving from Bitrix submits its source and queues the source review through the existing transport',async()=>{
+ const lead=(await db.pool.query<User>("SELECT * FROM users WHERE id='lead-msk'")).rows[0];
+ await fields.mapBitrixUser(transport,lead.id,'204',true);await db.pool.query("INSERT INTO bitrix_pilot_members(user_id,pilot_role) VALUES($1,'leader')",[lead.id]);
+ const source=await workflow.createTask(director,{title:'РЗМ* Источник поручения',description:'Фикстура автоматической сдачи',assigneeId:lead.id,price:55000,deadline:null,plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null});
+ const child=await workflow.delegateTask(lead,source.id,{assigneeId:anna.id,expectedVersion:1});
+ for(const [id,externalId,owner,creator] of [[source.id,'9801','204','201'],[child.id,'9802','202','204']]){
+  const task=(await db.pool.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+  remote.set(externalId,{id:externalId,chatId:externalId,title:task.title,description:task.description,deadline:task.deadline,status:'2',responsibleId:owner,createdBy:creator,groupId:'123',taskControl:'Y',ufPrice:Number(task.price)});
+  await (await import('../server/bitrix-sync.js')).linkTask(transport,id,externalId);await live.activateLiveTask(transport,id);
+ }
+ await workflow.reviewTask(anna,child.id,'submit','Результат делегированного поручения готов',1);await live.tickLiveSync(transport);
+ assert.equal(remote.get('9802')!.status,'4');assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[source.id])).rows[0].status,'active');
+ remote.get('9802')!.status='5';await live.tickLiveSync(transport);
+ assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[source.id])).rows[0].status,'review');
+ assert.equal((await db.pool.query('SELECT state FROM task_submissions WHERE task_id=$1 AND withdrawn_at IS NULL',[child.id])).rows[0].state,'accepted');
+ const parentSubmission=(await db.pool.query('SELECT * FROM task_submissions WHERE task_id=$1',[source.id])).rows[0];assert.equal(parentSubmission.automatic,true);assert.match(parentSubmission.result,/Результат делегированного поручения готов/);
+ await live.tickLiveSync(transport);assert.equal(remote.get('9801')!.status,'4');
+ assert.equal((await db.pool.query('SELECT count(*)::int n FROM delegation_auto_reviews WHERE source_id=$1',[source.id])).rows[0].n,1);
+ const oldSource=await workflow.createTask(director,{title:'РЗМ* Историческая сверка',description:'Фикстура первичного выравнивания',assigneeId:lead.id,price:0,deadline:null,plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null});
+ const oldChild=await workflow.delegateTask(lead,oldSource.id,{assigneeId:anna.id,expectedVersion:1}),oldTask=(await db.pool.query<Task>('SELECT * FROM tasks WHERE id=$1',[oldChild.id])).rows[0];
+ remote.set('9803',{id:'9803',chatId:'9803',title:oldTask.title,description:oldTask.description,deadline:null,status:'5',responsibleId:'202',createdBy:'204',groupId:'123',taskControl:'Y',ufPrice:0});
+ await (await import('../server/bitrix-sync.js')).linkTask(transport,oldChild.id,'9803');await live.activateLiveTask(transport,oldChild.id,true);
+ assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[oldSource.id])).rows[0].status,'active');
+ // Keep the established pilot roster used by the readiness checks below.
+ await db.pool.query('UPDATE bitrix_task_links SET live_enabled=false WHERE task_id=ANY($1)',[[source.id,child.id,oldChild.id]]);
+ await db.pool.query('DELETE FROM bitrix_pilot_members WHERE user_id=$1',[lead.id]);
+});
+
 test('all task fields survive staging and a live queue synchronizes edits, price, assignee, review, completion and comments in order',async()=>{
  let task=await makeLinked('901');
  const snapshot=(await db.pool.query("SELECT raw FROM bitrix_task_snapshots WHERE external_id=901")).rows[0].raw;
