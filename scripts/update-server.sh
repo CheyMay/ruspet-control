@@ -33,9 +33,9 @@ fi
 git fetch origin refs/heads/feature/company-delegation:refs/remotes/origin/feature/company-delegation
 git switch feature/company-delegation
 git pull --ff-only origin feature/company-delegation
-systemd-run --scope --quiet -p CPUQuota=60% -p Nice=10 env GOMAXPROCS=1 npm ci --no-audit --no-fund
-systemd-run --scope --quiet -p CPUQuota=60% -p Nice=10 npm run check
-systemd-run --scope --quiet -p CPUQuota=60% -p Nice=10 env GOMAXPROCS=1 npm run build
+systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 env GOMAXPROCS=1 npm ci --no-audit --no-fund
+systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 npm run check
+systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 env GOMAXPROCS=1 npm run build
 services=(ruspet.service)
 if systemctl is-active --quiet ruspet-bot-proxy.service; then
   test "$(systemctl show ruspet-bot-proxy.service -p WorkingDirectory --value)" = "$app"
@@ -51,7 +51,7 @@ runuser -u postgres -- pg_dump -Fc ruspet_demo > "$backup/main.dump"
 if runuser -u postgres -- psql -XAtqc "SELECT 1 FROM pg_database WHERE datname='ruspet_okb'" | grep -qx 1; then
   runuser -u postgres -- pg_dump -Fc ruspet_okb > "$backup/okb.dump"
 fi
-systemd-run --scope --quiet -p CPUQuota=60% -p Nice=10 tar --exclude='./node_modules' --exclude='./.git' -czf "$backup/app.tar.gz" -C "$app" .
+systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 tar --exclude='./node_modules' --exclude='./.git' -czf "$backup/app.tar.gz" -C "$app" .
 git archive HEAD | tar -xf - -C "$app"
 if [ -d "$app/node_modules" ]; then
   mv "$app/node_modules" "$backup/node_modules"
