@@ -5,6 +5,8 @@ import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,prev
 import {taskInput} from './task-input.js';
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
 import {createUserAccount} from './account-access.js';
+import {taskIntegration} from './bitrix-fields.js';
+import {pilotReadiness,pilotQueue} from './pilot-readiness.js';
 import {managementProgress,resetObservation,setNudgePreference,nudgeTeam} from './management.js';
 import {lastUndo,undoLastAction} from './undo.js';
 import {listJournal} from './journal.js';
@@ -70,6 +72,7 @@ export function createApp() {
  app.put('/api/management/preferences',async(req,res)=>res.json(await setNudgePreference(req.actor,z.object({enabled:z.boolean()}).parse(req.body).enabled)));
  app.post('/api/management/nudge',async(req,res)=>res.json(await nudgeTeam(req.actor,z.object({confirmed:z.literal(true)}).parse(req.body).confirmed)));
  app.get('/api/tasks/:id/bitrix-activity',async(req,res)=>{assert(req.actor.role==='admin',403,'История интеграции доступна администратору.');res.json((await pool.query('SELECT kind,external_id,occurred_at,author,body FROM bitrix_task_activity WHERE task_id=$1 AND kind=$2 ORDER BY occurred_at DESC,external_id DESC LIMIT 100',[req.params.id,req.query.kind==='history'?'history':'comment'])).rows);});
+ app.get('/api/tasks/:id/integration',async(req,res)=>res.json(await taskIntegration(req.actor,String(req.params.id))));
  app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
  app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));
  app.post('/api/alerts/:id/ack',async(req,res)=>res.json(await acknowledgeAlert(req.actor,String(req.params.id))));
@@ -90,6 +93,8 @@ export function createApp() {
  app.delete('/api/reminders/:id',async(req,res)=>res.json(await disableTaskReminder(req.actor,String(req.params.id))));
  app.get('/api/system/status',async(req,res)=>res.json(await systemStatus(req.actor)));
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
+ app.get('/api/system/pilot',async(req,res)=>{assert(req.actor.role==='admin',403,'Подготовку пилота видит администратор.');res.json(await pilotReadiness());});
+ app.get('/api/system/pilot/queue',async(req,res)=>{assert(req.actor.role==='admin',403,'Очередь пилота видит администратор.');res.json(await pilotQueue());});
  app.post('/api/system/access/:id/account',async(req,res)=>{const input=z.object({username:z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,32}$/)}).parse(req.body);res.status(201).json(await createUserAccount(req.actor,String(req.params.id),input.username));});
  app.get('/api/operations',async(req,res)=>{assert(req.actor.role!=='employee',403,'Расписание доступно руководителю.');res.json(await operationsStatus());});
  app.put('/api/operations',async(req,res)=>{const time=z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);await saveAutomation(req.actor,z.object({enabled:z.boolean(),morning:time,evening:time}).parse(req.body));await tick();res.json({ok:true});});

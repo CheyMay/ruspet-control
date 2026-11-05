@@ -1,3 +1,5 @@
+import {taskIntegration} from './bitrix-fields.js';
+import {integrationLabels} from '../shared/integration-status.js';
 import {lastUndo,undoLastAction} from './undo.js';
 import {formatPrice,priceBand,priceLabels,parsePrice,taskPrice} from '../shared/pricing.js';
 import {reportText,publicOrigin} from './report-content.js';
@@ -52,6 +54,7 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
    const page=Math.max(0,Math.min(p.page||0,texts.length-1));return screen(u,ch,`История #${t.id} · ${page+1}/${Math.max(1,texts.length)}\n\n${texts[page]||'Записей пока нет.'}`,[[...(page? [button('← Ранее в списке','history',{id:t.id,page:page-1})]:[]),...(page+1<texts.length?[button('Дальше →','history',{id:t.id,page:page+1})]:[])],[button('К задаче','task',{id:t.id}),button('Меню','home')]]);
   }
   let text=`#${t.id} · ${t.title}\n${queueLabels[taskQueue(t,now)]}\nИсполнитель: ${name(t.assignee_id)}\nПостановщик: ${name(t.creator_id)}\nСрок: ${date(t.deadline)} МСК\nЦена: ${formatPrice(t)} · ${priceLabels[priceBand(t)]}\n\n${t.description.slice(0,600)||'Описание не заполнено.'}`;
+  const integration=await taskIntegration(u,t.id,false);text+='\n\n'+integrationLabels[integration.state]+(integration.error?'\n'+integration.error:'')+(integration.paused?'\nОтправка приостановлена.':'');
   if(t.custom_fields?.length)text+='\n\nДополнительные поля\n'+t.custom_fields.map(f=>f.label+': '+(f.value||'—')).join('\n').slice(0,420);
   const last=d.submissions[0];if(last)text+=`\n\n${last.restored_from?'Приёмка восстановлена после отмены':'Сдача №'+last.round}: ${last.result.slice(0,500)}${last.remark?'\nЗамечание: '+last.remark.slice(0,500):''}`;
   if(t.delegated_from_id)text+='\n\nПоручение по задаче #'+t.delegated_from_id;
@@ -165,6 +168,8 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   else if(['approve','reject','later','clarify'].includes(p.kind!)){const r=await decide(u,p.target!,{decision:p.kind as 'approve'|'reject'|'later'|'clarify',comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':'Согласование завершено.'}
   else{await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return',v.comment||'',p.version!);result=p.kind==='submit'?'Результат передан на приёмку. Ожидается решение руководителя.':p.kind==='return'?'Задача возвращена. Замечания сохранены для исполнителя.':'Результат принят. Задача завершена.'}
   const undo=await lastUndo(u,undefined,db);
+  if(p.id&&(await db.query("SELECT 1 FROM bitrix_operations WHERE task_id=$1 AND payload->>'actorId'=$2 AND created_at>=transaction_timestamp() AND state='pending' LIMIT 1",[p.id,u.id])).rowCount)result+='\n\nДействие сохранено в РУСПЭТ. Обмен с Битрикс24 выполняется по очереди; состояние видно в карточке задачи.';
+  if(resultTask)result+='\nПоручение создано локально: автоматическое создание задач в Битрикс24 пока не включено.';
   const response=await screen(u,ch,result,[...(resultTask?[[button('Открыть поручение','task',{id:resultTask})]]:[]),[...(p.id?[button('К задаче','task',{id:p.id})]:[]),button('Нужно действие','inbox')],...(undo?[[button('Отменить последнее действие','undo_prepare',{id:undo.task_id,target:undo.id})]]:[])],db);
   await db.query('UPDATE bot_buttons SET receipt=$2 WHERE token=$1',[token,JSON.stringify(response)]);await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);return response;
  });

@@ -30,6 +30,9 @@ export async function undoLastAction(u:User,id:string){return transaction(async 
   assert(!chain.some(t=>t.id===current.id),409,'Отмена создаст цикл в иерархии задач. Требуется отдельное исправление.');
  }
  assert(sameState(live,after),409,'По задаче уже были другие действия или изменились правила. Автоматическая отмена недоступна.');
+ const originalIds=after.events.filter(e=>!before.events.some(old=>old.id===e.id)).map(e=>e.id);
+ assert(!(await db.query("SELECT 1 FROM bitrix_operations WHERE event_id=ANY($1::uuid[]) AND (attempts>0 OR state IN ('processing','sent','uncertain'))",[originalIds])).rowCount,409,'Действие уже передавалось в Битрикс24. Требуется отдельное исправление.');
+ await db.query("UPDATE bitrix_operations SET state='canceled' WHERE event_id=ANY($1::uuid[]) AND attempts=0",[originalIds]);
  assert(!(await db.query("SELECT 1 FROM task_sync_queue WHERE task_id=$1 AND task_version>$2 AND (state='sent' OR attempts>0)",[current.id,before.task.version])).rowCount,409,'Изменение уже передавалось внешнему обработчику. Требуется отдельное исправление.');
  // Resolve newly opened records before restoring the original active route/control.
  const beforeApprovals=new Set(before.approvals.map(a=>a.id));

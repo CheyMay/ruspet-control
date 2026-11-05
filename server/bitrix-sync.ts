@@ -3,6 +3,7 @@ import type {Task} from '../shared/types.js';
 import {pool,transaction,type Db} from './db.js';
 import {MockTaskProvider} from './providers.js';
 import {BitrixError,type BitrixRequest} from './bitrix-rest.js';
+import {fullSelection} from './bitrix-fields.js';
 
 type Values={title:string;description:string;deadline:string|null};
 type Remote=Values&{id:string;status:string|null;responsibleId:string|null;createdBy:string|null;chatId:string|null};
@@ -27,29 +28,29 @@ export function planFields(base:Values,local:Values,remote:Values){
  const inbound=keys.filter(k=>remote[k]!==base[k]&&local[k]===base[k]);
  return {conflict,outbound,inbound};
 }
-async function stage(task:Remote,db:Db=pool){
- await db.query(`INSERT INTO bitrix_task_snapshots(external_id,snapshot) VALUES($1,$2)
- ON CONFLICT(external_id) DO UPDATE SET snapshot=excluded.snapshot,fetched_at=now()`,[task.id,JSON.stringify(task)]);
+async function stage(task:Remote,db:Db=pool,raw:Record<string,unknown>|null=null){
+ await db.query(`INSERT INTO bitrix_task_snapshots(external_id,snapshot,raw) VALUES($1,$2,$3)
+ ON CONFLICT(external_id) DO UPDATE SET snapshot=excluded.snapshot,raw=coalesce(excluded.raw,bitrix_task_snapshots.raw),fetched_at=now()`,[task.id,JSON.stringify(task),raw?JSON.stringify(raw):null]);
 }
 export async function scanProject(request:BitrixRequest,groupId:string,after:string,maxPages:number){
  let cursor=after,total=0;
  for(let page=0;page<maxPages;page++){
-  const result=await request<{tasks:Record<string,unknown>[]}>('tasks.task.list',{order:{ID:'asc'},filter:{GROUP_ID:groupId,'>ID':cursor},select:taskFields});
+  const result=await request<{tasks:Record<string,unknown>[]}>('tasks.task.list',{order:{ID:'asc'},filter:{GROUP_ID:groupId,'>ID':cursor},select:await fullSelection()});
   if(!Array.isArray(result.tasks))throw new BitrixError('Нет списка задач в ответе REST.');
   if(!result.tasks.length)return {total,cursor,complete:true};
   for(const row of result.tasks){
    const task=remoteTask(row);
    if(BigInt(task.id)<=BigInt(cursor))throw new BitrixError('Битрикс24 вернул задачи вне ожидаемого порядка.');
-   await stage(task);cursor=task.id;total++;
+   await stage(task,pool,row);cursor=task.id;total++;
   }
  }
  return {total,cursor,complete:false};
 }
 async function getRemote(request:BitrixRequest,id:string,db:Db=pool){
- const result=await request<{task:Record<string,unknown>}>('tasks.task.get',{taskId:id,select:[...taskFields,'CHAT_ID']});
+ const result=await request<{task:Record<string,unknown>}>('tasks.task.get',{taskId:id,select:await fullSelection(db)});
  const task=remoteTask(result.task??{});
  if(task.id!==id)throw new BitrixError('Битрикс24 вернул другой ID задачи.');
- await stage(task,db);
+ await stage(task,db,result.task);
  return task;
 }
 export async function linkTask(request:BitrixRequest,taskId:string,externalId:string,acceptBitrix=false){
@@ -67,6 +68,7 @@ export async function linkTask(request:BitrixRequest,taskId:string,externalId:st
 export async function syncLinkedTask(request:BitrixRequest,taskId:string,allowWrite:boolean){
  const link=(await pool.query('SELECT * FROM bitrix_task_links WHERE task_id=$1',[taskId])).rows[0];
  if(!link)throw new BitrixError('Задача не связана с Битрикс24.');
+ if(link.live_enabled)throw new BitrixError('Эта задача использует очередь пилота. Запустите scripts/bitrix-pilot.ts watch.');
  let remote=await getRemote(request,String(link.external_id));
  return transaction(async db=>{
   const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[taskId])).rows[0];

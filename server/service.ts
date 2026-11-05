@@ -1,4 +1,5 @@
 import {recordTaskAction} from './undo-record.js';
+import {enqueueBitrixOperation} from './bitrix-live.js';
 import {generateReport} from './reports-v5.js';
 import type {ReportParameters} from '../shared/report-parameters.js';
 import {parseWrittenRule} from '../shared/written-rules.js';
@@ -18,6 +19,7 @@ export async function event(db:Db,taskId:string|null,actor:string|null,kind:stri
  if(taskId&&after?.version&&['created','task_edited','review_submitted','review_returned','task_completed','deadline_changed','action_undone'].includes(kind))await db.query('INSERT INTO task_sync_queue(id,task_id,task_version,payload) VALUES($1,$2,$3,$4) ON CONFLICT(task_id,task_version) DO NOTHING',[randomUUID(),taskId,after.version,JSON.stringify({kind,after,context:Object.fromEntries(Object.entries(data).filter(([key])=>!['before','after'].includes(key)))})]);
  const id=randomUUID();
  await db.query('INSERT INTO task_events(id,task_id,actor_id,kind,message,data) VALUES ($1,$2,$3,$4,$5,$6)',[id,taskId,actor,kind,message,JSON.stringify(data)]);
+ if(taskId)await enqueueBitrixOperation(db,id,taskId,kind,message,data as Record<string,unknown>,actor);
  if(taskId&&kind==='task_completed')await db.query(`INSERT INTO task_acceptance_events(event_id,task_id,occurred_at,available_at)
   SELECT $1,$2,clock_timestamp(),clock_timestamp()+interval '5 minutes' WHERE NOT EXISTS(SELECT 1 FROM business_runs WHERE task_id=$2)
   AND NOT EXISTS(SELECT 1 FROM business_run_tasks WHERE task_id=$2)`,[id,taskId]);
@@ -111,8 +113,8 @@ async function routeFor(db:Db,task:Task,selectors:Rules['routes']['deadline']):P
  const users=(await db.query('SELECT * FROM users ORDER BY id')).rows as User[];
  const labels={branchManager:'Руководитель филиала',salesHead:'Руководитель продаж',director:'Директор',creator:'Постановщик'};
  return selectors.map(selector=>{
-  const u=users.find(u=>selector==='branchManager'?u.role==='branch_manager'&&u.branch_id===task.branch_id:selector==='creator'?u.id===task.creator_id:u.role===(selector==='salesHead'?'sales_head':'director'));
-  assert(u,422,`Не назначен согласующий: ${labels[selector]}`); return {userId:u.id,label:labels[selector]};
+  const matches=users.filter(u=>selector==='branchManager'?u.role==='branch_manager'&&u.branch_id===task.branch_id:selector==='creator'?u.id===task.creator_id:u.role===(selector==='salesHead'?'sales_head':'director'));
+  assert(matches.length===1,422,matches.length?`Неоднозначный маршрут: несколько согласующих «${labels[selector]}». Настройте реальные роли и филиалы.`:`Не назначен согласующий: ${labels[selector]}`);return {userId:matches[0].id,label:labels[selector]};
  });
 }
 async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'completion';reason:string;plan:string;proposedDeadline?:string;expectedVersion:number}) {

@@ -93,3 +93,10 @@ main select:disabled { opacity:.6; }
 
 .metric-filter { display:grid; gap:7px; border:1px solid var(--line); border-radius:6px; margin:0; padding:8px; min-width:0; }
 .metric-filter legend { padding:0 4px; }
+.task-integration { margin-bottom:20px; padding:14px; background:var(--theme-surface-soft); border:1px solid var(--theme-border); border-radius:6px; }
+.task-integration p { margin-top:8px; }
+.task-integration details { margin-top:12px; }
+.task-integration summary { cursor:pointer; }
+.task-integration dl>div { border-top:1px solid var(--theme-border); padding:10px 0; }
+.task-integration dd { margin:5px 0 0; }
+.task-integration pre { white-space:pre-wrap; overflow-wrap:anywhere; font:inherit; font-size:11px; }

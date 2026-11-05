@@ -2,9 +2,9 @@ import {readFile} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
 import {pool} from './db.js';
 
-export type BitrixMethod='tasks.task.list'|'tasks.task.get'|'tasks.task.update'|'tasks.task.history.list'|'im.dialog.messages.get'|'task.commentitem.getlist';
+export type BitrixMethod='tasks.task.list'|'tasks.task.get'|'tasks.task.update'|'tasks.task.history.list'|'im.dialog.messages.get'|'task.commentitem.getlist'|'tasks.task.getFields'|'user.get'|'tasks.task.complete'|'tasks.task.approve'|'tasks.task.disapprove'|'tasks.task.renew'|'tasks.task.chat.message.send'|'task.commentitem.add';
 const knownErrors=new Set(['QUERY_LIMIT_EXCEEDED','OPERATION_TIME_LIMIT','NO_AUTH_FOUND','ACCESS_DENIED','OVERLOAD_LIMIT','ERROR_TASK_NOT_FOUND']);
-export class BitrixError extends Error {}
+export class BitrixError extends Error {constructor(message:string,public disposition:'rejected'|'uncertain'='rejected'){super(message);}}
 
 export function webhookBase(secret:string,portal:string){
  const url=new URL(secret);
@@ -32,8 +32,9 @@ export async function bitrixClient(){
    await db.query("UPDATE bitrix_rest_gate SET next_at=clock_timestamp()+interval '1100 milliseconds' WHERE id=1");
    let response:Response;
    try{
-    response=await fetch(new URL(method,base),{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify(params),signal:AbortSignal.timeout(15000)});
-   }catch{throw new BitrixError('Нет подтверждённого ответа REST Битрикс24.');}
+    const target=new URL(method,base);if(method==='tasks.task.chat.message.send')target.pathname=target.pathname.replace('/rest/','/rest/api/');
+    response=await fetch(target,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify(params),signal:AbortSignal.timeout(15000)});
+   }catch{throw new BitrixError('Нет подтверждённого ответа REST Битрикс24.','uncertain');}
    const body=await response.json().catch(()=>null);
    if(response.status===429||body?.error==='OPERATION_TIME_LIMIT'){
     await db.query("UPDATE bitrix_rest_gate SET next_at=clock_timestamp()+interval '10 minutes' WHERE id=1");
@@ -41,7 +42,8 @@ export async function bitrixClient(){
     await db.query("UPDATE bitrix_rest_gate SET next_at=clock_timestamp()+interval '1 minute' WHERE id=1");
    }
    if(!response.ok||body?.error||!body||!Object.hasOwn(body,'result')){
-    throw new BitrixError(knownErrors.has(body?.error)?body.error:'Ошибка ответа REST Битрикс24 (HTTP '+response.status+').');
+    const rejected=response.status===429||response.status<500&&response.status!==408&&!!body?.error;
+    throw new BitrixError(knownErrors.has(body?.error)?body.error:'Ошибка ответа REST Битрикс24 (HTTP '+response.status+').',rejected?'rejected':'uncertain');
    }
    await db.query('UPDATE bitrix_rest_gate SET last_success_at=clock_timestamp() WHERE id=1');
    return body.result as T;
