@@ -1,20 +1,11 @@
-import {useEffect, useId, useState} from 'react';
+import {useId} from 'react';
+import {useAppearance} from './theme-preferences.js';
 
 export function ThemeToggle() {
- const [dark,setDark]=useState(()=>document.documentElement.dataset.theme==='dark');
+ const {theme}=useAppearance(),dark=theme==='dark';
  const id=useId().replace(/:/g,'');
- useEffect(()=>{
-  const sync=()=>setDark(document.documentElement.dataset.theme==='dark');
-  const observer=new MutationObserver(sync);
-  observer.observe(document.documentElement,{attributes:true,attributeFilter:['data-theme']});
-  return()=>observer.disconnect();
- },[]);
  function toggle(){
-  const next=dark?'light':'dark';
-  document.documentElement.dataset.theme=next;
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content',next==='dark'?'#141c19':'#f5f6f5');
-  try{localStorage.setItem('ruspet-theme',next);}catch{/* Theme still works when storage is unavailable. */}
-  setDark(!dark);
+  window.ruspetAppearance.setTheme(dark?'light':'dark');
  }
  const label=dark?'Включить светлую тему':'Включить тёмную тему';
  return <button type="button" className="theme-toggle" onClick={toggle} aria-label={label} title={label} aria-pressed={dark}>
