@@ -19,7 +19,7 @@ export async function pilotReadiness(){
  add(https,'Для ссылок и защищённых cookies нужен HTTPS PUBLIC_ORIGIN.');
  add(managers.length===2&&leaders.length>0,'Нужны два менеджера и хотя бы один руководитель в подтверждённом составе пилота.');
  let secretReady=false;try{const file=process.env.BITRIX_WEBHOOK_FILE!;await access(file);const info=await stat(file);if(info.isFile()&&(info.mode&0o077)===0){await bitrixClient();secretReady=true;}}catch{}
- add(secretReady&&process.env.BITRIX_PORTAL==='thebest.bitrix24.ru','Нужен доступный закрытый файл вебхука портала thebest.bitrix24.ru (права 600).');
+ add(secretReady&&process.env.BITRIX_PORTAL==='thebest.bitrix24.ru','Нужны доступные закрытые файлы вебхука и выбранного транспорта портала thebest.bitrix24.ru (права 600).');
  const rest=(await pool.query('SELECT portal,last_success_at FROM bitrix_rest_gate WHERE id=1')).rows[0];
  add(rest?.portal==='thebest.bitrix24.ru'&&rest.last_success_at&&Date.now()-Date.parse(rest.last_success_at)<600000,'Нужен успешный ответ REST нужного портала за последние 10 минут.');
  add(cfg.rows[0]?.group_id&&cfg.rows[0]?.price_field,'Должны быть выбраны проект и поле цены Битрикс24.');
