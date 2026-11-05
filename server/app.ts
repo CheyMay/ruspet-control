@@ -4,6 +4,7 @@ import {listCompanies,saveCompany,getCompany,companyContacts,recordCompanyContac
 import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,previewProcess,toggleProcess} from './work-design.js';
 import {taskInput} from './task-input.js';
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
+import {createUserAccount} from './account-access.js';
 import {managementProgress,resetObservation,setNudgePreference,nudgeTeam} from './management.js';
 import {lastUndo,undoLastAction} from './undo.js';
 import {listJournal} from './journal.js';
@@ -89,6 +90,7 @@ export function createApp() {
  app.delete('/api/reminders/:id',async(req,res)=>res.json(await disableTaskReminder(req.actor,String(req.params.id))));
  app.get('/api/system/status',async(req,res)=>res.json(await systemStatus(req.actor)));
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
+ app.post('/api/system/access/:id/account',async(req,res)=>{const input=z.object({username:z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,32}$/)}).parse(req.body);res.status(201).json(await createUserAccount(req.actor,String(req.params.id),input.username));});
  app.get('/api/operations',async(req,res)=>{assert(req.actor.role!=='employee',403,'Расписание доступно руководителю.');res.json(await operationsStatus());});
  app.put('/api/operations',async(req,res)=>{const time=z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);await saveAutomation(req.actor,z.object({enabled:z.boolean(),morning:time,evening:time}).parse(req.body));await tick();res.json({ok:true});});
  app.post('/api/operations/retry',async(req,res)=>{await retryJob(req.actor,z.object({key:text}).parse(req.body).key);await tick();res.json({ok:true});});

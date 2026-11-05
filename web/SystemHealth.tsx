@@ -66,10 +66,16 @@ export function SystemHealth(){
  </section>;
 }
 
-type AccessPerson=User&{accounts:{username:string;enabled:boolean}[];visibleTasks:number;paired_at:string|null;invitation_expires:string|null};
+type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean}[];visibleTasks:number;paired_at:string|null;invitation_expires:string|null};
 export function AccessDirectory({roles}:{roles:Record<string,string>}){
  const {value,error,busy,refresh}=usePanelData<AccessPerson[]>('/system/access');
  const [query,setQuery]=useState(''),[invite,setInvite]=useState<{name:string;url:string}|null>(null),[creating,setCreating]=useState(false),[notice,setNotice]=useState(''),[inviteError,setInviteError]=useState('');
+ const [accountPerson,setAccountPerson]=useState<AccessPerson|null>(null),[accountLogin,setAccountLogin]=useState(''),[accountBusy,setAccountBusy]=useState(false),[accountError,setAccountError]=useState(''),[newAccount,setNewAccount]=useState<{name:string;username:string;password:string}|null>(null);
+ async function createAccount(e:React.FormEvent){
+  e.preventDefault();if(!accountPerson||accountBusy)return;setAccountBusy(true);setAccountError('');
+  try{const result=await api<{name:string;username:string;password:string}>('/system/access/'+encodeURIComponent(accountPerson.id)+'/account','POST',{username:accountLogin});setNewAccount(result);setAccountPerson(null);refresh();}
+  catch(e){setAccountError((e as Error).message);}finally{setAccountBusy(false);}
+ }
  async function createInvite(person:AccessPerson){
   setCreating(true);setInvite(null);setInviteError('');setNotice('');
   try{
@@ -81,12 +87,16 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
  return <section className="panel automation-settings">
   <div className="automation-heading"><div><h2>Доступы сотрудников</h2><p className="muted">Роль, вход в панель, подключение к боту и число доступных рабочих задач.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
   {(error||inviteError)&&<p className="alert error" role="alert">{inviteError||error}</p>}
+  <p className="muted">Пользователей с активным входом: <strong>{value?.filter(p=>p.accounts.some(a=>a.enabled)).length??'—'}</strong>. Количество входов не ограничено десятью. Роль и доступ к задачам сохраняются при создании логина.</p>
+  {accountError&&<p className="alert error" role="alert">{accountError}</p>}
+  {accountPerson&&<form className="source-banner" onSubmit={e=>void createAccount(e)}><strong>Новый вход · {accountPerson.name}</strong><p>Пароль будет сгенерирован автоматически. Роль: {roles[accountPerson.role]}.</p><label>Логин<input aria-label="Логин нового сотрудника" autoComplete="off" required minLength={3} maxLength={32} pattern="[a-z0-9._-]+" value={accountLogin} disabled={accountBusy} onChange={e=>setAccountLogin(e.target.value.toLowerCase())}/></label><button className="button primary" disabled={accountBusy}>{accountBusy?'Создаём…':'Создать персональный вход'}</button><button className="button secondary" type="button" disabled={accountBusy} onClick={()=>setAccountPerson(null)}>Отмена</button></form>}
+  {newAccount&&<div className="source-banner"><strong>Вход создан · {newAccount.name}</strong><p>Сохраните данные и передайте лично сотруднику. Пароль показывается один раз и не хранится в списке доступов.</p><label>Логин<input aria-label="Созданный логин" readOnly value={newAccount.username}/></label><label>Пароль<input aria-label="Созданный пароль" readOnly autoComplete="off" value={newAccount.password}/></label><button className="button secondary" onClick={()=>void navigator.clipboard.writeText(`Сотрудник: ${newAccount.name}\nЛогин: ${newAccount.username}\nПароль: ${newAccount.password}`).then(()=>setNotice('Данные скопированы')).catch(()=>setNotice('Выделите данные и скопируйте вручную.'))}>Копировать доступы</button><button className="button secondary" onClick={()=>{setNewAccount(null);setNotice('');}}>Скрыть данные</button><span role="status">{notice}</span></div>}
   {invite&&<div className="source-banner"><strong>{invite.name} · ссылка на 15 минут</strong><input aria-label="Ссылка подключения" readOnly value={invite.url} onFocus={e=>e.currentTarget.select()}/><button className="button secondary" onClick={()=>void navigator.clipboard.writeText(invite.url).then(()=>setNotice('Ссылка скопирована')).catch(()=>setNotice('Выделите ссылку и скопируйте вручную.'))}>Копировать</button><span role="status">{notice}</span></div>}
   {!value&&busy&&<p role="status">Загружаем список сотрудников…</p>}
   {people&&<><div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, филиал, роль или логин" value={query} onChange={e=>setQuery(e.target.value)}/></div>
    <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
     <td><strong>{p.name}</strong><br/><small>{p.branch_id}</small></td><td>{roles[p.role]}</td><td>{p.visibleTasks}</td>
-    <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>{a.username}{a.enabled?'':' · отключён'}</div>):'Нет учётной записи'}</td>
+    <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>{a.username}{a.enabled?'':' · отключён'}</div>):<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
     <td>{p.paired_at?<span>Подключён · {moscowTimestamp(p.paired_at)}</span>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button></>}</td>
    </tr>)}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}
  </section>;

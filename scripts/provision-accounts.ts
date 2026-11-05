@@ -1,24 +1,35 @@
 import 'dotenv/config';
-import {randomInt} from 'node:crypto';
-import {writeFile,access} from 'node:fs/promises';
+import {parseArgs} from 'node:util';
+import {open,realpath,stat} from 'node:fs/promises';
+import {dirname,resolve} from 'node:path';
 import {pool} from '../server/db.js';
-import {hashPassword} from '../server/passwords.js';
+import {planAccounts,provisionAccounts,type NewAccount} from '../server/account-access.js';
+import {AppError} from '../server/domain.js';
 
-// Run once on the server with an output path outside the repository.
-const path=process.argv[2];
-if(!path||!path.startsWith('/opt/ruspet/.access/'))throw new Error('Укажите защищённый файл внутри /opt/ruspet/.access/.');
-try{await access(path);throw new Error('Файл с доступами уже существует. Не меняем пароли повторно.');}catch(error){if((error as NodeJS.ErrnoException).code!=='ENOENT')throw error;}
-const words=['Kedr','Volna','Sosna','Bereg','Maysky','Reka','Yantar','List','Ozero','Lipa','Kamen','Klen'];
-const accounts=[{username:'admin',role:'admin'},{username:'director',role:'director'}] as const;
-const lines=['РУСПЭТ · отдельные входы','Сохраните пароли в защищённом месте. Учётные записи сейчас привязаны к тестовым ролям.',''];
-try{
- for(const item of accounts){
-  const users=(await pool.query('SELECT id FROM users WHERE role=$1',[item.role])).rows;
-  if(users.length!==1)throw new Error(`Нужно ровно одно назначение роли ${item.role}; найдено ${users.length}.`);
-  const password=`${words[randomInt(words.length)]}${words[randomInt(words.length)]}${randomInt(1000,10000)}`;
-  await pool.query('INSERT INTO login_accounts(username,user_id,password_hash) VALUES($1,$2,$3) ON CONFLICT(username) DO UPDATE SET user_id=excluded.user_id,password_hash=excluded.password_hash,enabled=true',[item.username,users[0].id,await hashPassword(password)]);
-  lines.push(`Логин: ${item.username}\nПароль: ${password}\n`);
+// Defaults to a read-only plan. Apply on the server using its own DATABASE_URL.
+async function main(){
+ const {values}=parseArgs({options:{apply:{type:'boolean',default:false},total:{type:'string',default:'10'},output:{type:'string'}}});
+ const total=Number(values.total);
+ if(!values.apply){
+  const plan=await planAccounts(total);
+  console.log(`Сейчас пользователей с активным входом: ${plan.active}. Цель: ${plan.target}. Будет создано: ${plan.rows.length}.`);
+  for(const person of plan.rows)console.log(`${person.name} · ${person.role} · ${person.username}`);
+  console.log('Пароли и база не изменены. Для создания добавьте --apply --output /opt/ruspet/.access/новый-файл.txt');return;
  }
- await writeFile(path,lines.join('\n'),{mode:0o600,flag:'wx'});
- console.log(`Созданы ${accounts.length} отдельных входа. Файл сохранён: ${path}`);
+ const path=values.output;
+ if(!path||dirname(resolve(path))!=='/opt/ruspet/.access')throw new AppError(400,'Нужен новый файл непосредственно в /opt/ruspet/.access/.');
+ const folder=await realpath(dirname(path)),info=await stat(folder);
+ if(folder!==dirname(path)||(info.mode&0o077)!==0)throw new AppError(400,'Каталог .access должен быть обычным каталогом с правами 700.');
+ const result=await provisionAccounts(total,async(accounts:NewAccount[])=>{
+  const file=await open(path,'wx',0o600);
+  try{
+   const lines=['РУСПЭТ · новые персональные входы','Существующие пароли сохранены. Передайте каждому сотруднику только его данные.','',...accounts.map(a=>`Сотрудник: ${a.name}\nID: ${a.userId}\nРоль: ${a.role}\nЛогин: ${a.username}\nПароль: ${a.password}\n`)];
+   await file.writeFile(lines.join('\n'),'utf8');await file.sync();
+  }finally{await file.close();}
+ });
+ console.log(`Создано входов: ${result.created}. Пользователей с активным входом: ${result.active}.`);
+ if(result.created)console.log(`Новые доступы сохранены в ${path}. Пароли в терминал не выводятся.`);
+}
+try{await main();}catch(e){
+ console.error(e instanceof AppError?e.message:'Создание не подтверждено. Проверьте параметры, подключение, права каталога и наличие файла доступов. Если файл появился, сохраните его и сверьте список входов перед повтором.');process.exitCode=1;
 }finally{await pool.end();}

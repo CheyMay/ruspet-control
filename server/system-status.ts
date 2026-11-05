@@ -1,4 +1,5 @@
 import {readFile} from 'node:fs/promises';
+import {suggestedLogin} from './account-access.js';
 import {pool} from './db.js';
 import {assert,canSee} from './domain.js';
 import {pendingOutbox,pilotStatus} from './telegram-pilot.js';
@@ -57,5 +58,5 @@ export async function accessDirectory(actor:User){
    FROM users u LEFT JOIN telegram_binding b ON b.user_id=u.id ORDER BY u.name,u.id`),
   pool.query<Task>('SELECT * FROM tasks')
  ]);
- return people.rows.map(person=>({...person,accounts:person.accounts??[],visibleTasks:tasks.rows.filter(task=>canSee(person,task)).length}));
+ return people.rows.map(person=>({...person,suggestedLogin:suggestedLogin(person.id),accounts:person.accounts??[],visibleTasks:tasks.rows.filter(task=>canSee(person,task)).length}));
 }
