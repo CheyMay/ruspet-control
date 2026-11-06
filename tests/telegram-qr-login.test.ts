@@ -113,6 +113,16 @@ test('manual binding is admin-only, validates numeric private IDs, rejects reass
  assert.equal((await request('/system/access/director/telegram','PUT',cookie,{telegramId:null,confirmed:true})).status,403);
 });
 
+test('bot failures preserve the Telegram method and a safe reason instead of swallowing all 400 responses',async()=>{
+ const saved=globalThis.fetch;
+ globalThis.fetch=async()=>new Response(JSON.stringify({ok:false,error_code:400,description:'Bad Request: BUTTON_URL_INVALID https://private.example/FICTIONAL-SECRET'}),{status:400});
+ try{
+  await assert.rejects(()=>pilot.handlePilotUpdate({message:{message_id:23,chat:{id:81001,type:'private'},from:{id:81001},text:'/menu'}}),error=>{
+   assert(error instanceof Error);assert.match(error.message,/sendMessage · 400:.*PUBLIC_ORIGIN/);assert(!error.message.includes('FICTIONAL-SECRET'));return true;
+  });
+ }finally{globalThis.fetch=saved}
+});
+
 test('unavailable worker and foreign origins fail closed; password route remains available; challenge creation is rate limited',async()=>{
  await db.pool.query("UPDATE telegram_runtime SET last_poll_at=now()-interval '4 minutes' WHERE id=1");assert.deepEqual(await(await request('/auth/qr/config')).json(),{available:false});assert.equal((await request('/auth/qr','POST','',{})).status,503);
  assert.equal((await request('/auth/login','POST','',{username:admin.id,password})).status,200);
