@@ -14,7 +14,7 @@ import {actionItems,canReview} from '../shared/actions.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize,queueLabels} from '../shared/analytics.js';
 import type {User,Task} from '../shared/types.js';
-export type BotScreen={timingKind?:'menu'|'task';format?:'HTML';document?:{reportId:string};links?:{text:string;url:string}[];text:string;buttons:{text:string;token:string}[][]};
+export type BotScreen={replyKeyboard?:'contact'|'remove';timingKind?:'menu'|'task';format?:'HTML';document?:{reportId:string};links?:{text:string;url:string}[];text:string;buttons:{text:string;token:string}[][]};
 type Payload={op:string;id?:string;page?:number;filter?:string;query?:string;kind?:string;version?:number;target?:string;step?:number;revision?:number;values?:Record<string,string>;minutes?:number};
 type Field={key:string;label:string;min:number};
 type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};

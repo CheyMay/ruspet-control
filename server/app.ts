@@ -1,3 +1,5 @@
+import {importStaff,staffSummary} from './staff-import.js';
+import {listRegistrations,reviewRegistration} from './telegram-onboarding.js';
 import {telegramLoginRouter,sessionUser,clearBrowserLogin,setTelegramBinding} from './telegram-login.js';
 import {receiveBitrixEvent} from './bitrix-events.js';
 import {archiveStatus} from './bitrix-archive.js';
@@ -60,7 +62,7 @@ export function createApp() {
   const key=req.ip||'unknown',now=Date.now(),attempt=loginAttempts.get(key);
   if(attempt&&now-attempt.since<60_000&&attempt.count>=8)throw new AppError(429,'Слишком много попыток. Повторите через минуту.');
   const {username,password}=z.object({username:z.string().trim().toLowerCase().min(3).max(32),password:z.string().min(1).max(200)}).parse(req.body);
-  const account=(await pool.query('SELECT a.password_hash,u.* FROM login_accounts a JOIN users u ON u.id=a.user_id WHERE a.username=$1 AND a.enabled',[username])).rows[0];
+  const account=(await pool.query('SELECT a.password_hash,u.* FROM login_accounts a JOIN users u ON u.id=a.user_id WHERE a.username=$1 AND a.enabled AND a.password_login',[username])).rows[0];
   if(!account||!await verifyPassword(password,account.password_hash)){loginAttempts.set(key,{count:now-(attempt?.since||0)<60_000?(attempt?.count||0)+1:1,since:now-(attempt?.since||0)<60_000?attempt!.since:now});throw new AppError(401,'Неверный логин или пароль.');}
   loginAttempts.delete(key);
   const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",[hash(token),account.id]);
@@ -102,6 +104,10 @@ export function createApp() {
  app.get('/api/system/bitrix-archive',async(req,res)=>res.json(await archiveStatus(req.actor)));
  app.get('/api/system/selected-managers',async(req,res)=>res.json(await selectedPilotManagers(req.actor)));
  app.get('/api/system/status',async(req,res)=>res.json(await systemStatus(req.actor)));
+ app.get('/api/system/staff',async(req,res)=>res.json(await staffSummary(req.actor)));
+ app.post('/api/system/staff/import',express.raw({type:'application/octet-stream',limit:'3mb'}),async(req,res)=>{assert(Buffer.isBuffer(req.body),400,'Нужен файл XLSX.');const expected=req.query.confirmed===undefined?undefined:z.string().regex(/^[a-f0-9]{64}$/).parse(req.query.confirmed);res.json(await importStaff(req.actor,req.body,expected));});
+ app.get('/api/system/registrations',async(req,res)=>res.json(await listRegistrations(req.actor)));
+ app.post('/api/system/registrations/:id',async(req,res)=>{const input=z.object({action:z.enum(['approve','reject']),staffId:z.uuid().optional(),userId:z.string().max(100).optional(),forceNew:z.boolean().optional(),confirmed:z.literal(true)}).parse(req.body);res.json(await reviewRegistration(req.actor,z.uuid().parse(req.params.id),input));});
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
  app.put('/api/system/access/:id/telegram',async(req,res)=>{const input=z.object({telegramId:z.string().trim().max(16).nullable(),confirmed:z.literal(true)}).parse(req.body);res.json(await setTelegramBinding(req.actor,String(req.params.id),input.telegramId));});
  app.get('/api/system/pilot',async(req,res)=>{assert(req.actor.role==='admin',403,'Подготовку пилота видит администратор.');res.json(await pilotReadiness());});

@@ -1,3 +1,4 @@
+import {StaffOnboarding} from './StaffOnboarding.js';
 import {BitrixArchiveStatus} from './BitrixArchiveStatus.js';
 import {PilotReadiness} from './PilotReadiness.js';
 import {TaskIntegration} from './TaskIntegration.js';
@@ -109,7 +110,7 @@ export function App(){
   {page==='delegations'&&managed(data.user)&&<DelegationInbox open={openTask}/>}
   {page==='processes'&&<WorkDesign key={data.user.id} user={data.user} users={data.users} draft={processDraft} open={openTask}/>}
   {page==='settings'&&<Appearance/>}
-  {page==='settings'&&data.user.role==='admin'&&<><BitrixArchiveStatus/><PilotReadiness/><SystemHealth/><AccessDirectory roles={roles}/></>}
+  {page==='settings'&&data.user.role==='admin'&&<><BitrixArchiveStatus/><PilotReadiness/><SystemHealth/><StaffOnboarding roles={roles}/><AccessDirectory roles={roles}/></>}
   {page==='settings'&&data.user.role==='admin'&&<Operations showPlanning={!!data.rules.showPlanning} onChange={refresh}/>}
   {page==='settings'&&managed(data.user)&&<ManagementPreference/>}
   {page==='settings'&&<Settings key={data.rulesVersion} data={data} busy={busy} act={act}/>}

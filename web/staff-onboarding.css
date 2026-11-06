@@ -1,0 +1,9 @@
+.staff-onboarding{display:flex;flex-direction:column;gap:14px;min-width:0}
+.staff-onboarding .source-banner{margin:0;min-width:0}
+.staff-onboarding label{display:flex;flex-direction:column;gap:8px;margin:10px 0}
+.staff-onboarding :is(select,input[type=file]){width:100%;max-width:100%;min-width:0}
+.staff-onboarding .staff-confirm{flex-direction:row;align-items:flex-start}
+.automation-settings .source-banner input[type=checkbox]{width:auto;max-width:none;flex:0 0 auto}
+.staff-onboarding .button{align-self:flex-start;max-width:100%;white-space:normal;line-height:1.5}
+.staff-onboarding .source-banner>button{margin:8px 8px 0 0}
+.staff-onboarding .table-scroll{max-height:340px;overflow:auto;margin:12px 0}

@@ -22,7 +22,16 @@ export async function createUserAccount(actor:User,userId:string,username:string
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock($1)',[accountLock]);
   const user=(await db.query<User>('SELECT * FROM users WHERE id=$1 FOR UPDATE',[userId])).rows[0];
-  assert(user,404,'Сотрудник не найден.');return insertAccount(db,user,username,actor.id);
+  assert(user,404,'Сотрудник не найден.');
+  const current=(await db.query('SELECT * FROM login_accounts WHERE user_id=$1',[user.id])).rows;
+  if(current.length===1&&!current[0].password_login&&current[0].enabled){
+   assert(validLogin(username),400,'Некорректный логин.');
+   assert(!(await db.query('SELECT 1 FROM login_accounts WHERE username=$1 AND user_id<>$2',[username,user.id])).rowCount,409,'Логин занят.');
+   const password=randomBytes(18).toString('base64url');
+   await db.query('UPDATE login_accounts SET username=$2,password_hash=$3,password_login=true WHERE user_id=$1',[user.id,username,await hashPassword(password)]);
+   await event(db,null,actor.id,'account_created','Добавлен вход по паролю',{userId:user.id,username});return {userId:user.id,name:user.name,role:user.role,username,password};
+  }
+  return insertAccount(db,user,username,actor.id);
  });
 }
 async function accountPlan(db:Db,total:number){

@@ -53,7 +53,7 @@ export async function accessDirectory(actor:User){
  assert(actor.role==='admin',403,'Доступы сотрудников видит администратор.');
  const [people,tasks]=await Promise.all([
   pool.query(`SELECT u.*,b.paired_at,b.chat_id AS telegram_id,
-   (SELECT json_agg(json_build_object('username',a.username,'enabled',a.enabled) ORDER BY a.username) FROM login_accounts a WHERE a.user_id=u.id) accounts,
+   (SELECT json_agg(json_build_object('username',a.username,'enabled',a.enabled,'password_login',a.password_login) ORDER BY a.username) FROM login_accounts a WHERE a.user_id=u.id) accounts,
    (SELECT max(p.expires_at) FROM telegram_pairings p WHERE p.user_id=u.id AND p.expires_at>now()) invitation_expires
    FROM users u LEFT JOIN telegram_binding b ON b.user_id=u.id ORDER BY u.name,u.id`),
   pool.query<Task>('SELECT * FROM tasks')

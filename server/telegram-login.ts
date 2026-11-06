@@ -93,7 +93,7 @@ export async function telegramLoginScreen(approval:string,telegramId:string,deci
   const binding=(await db.query(`SELECT b.*,u.name FROM telegram_binding b JOIN users u ON u.id=b.user_id
    WHERE b.chat_id=$1 AND EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=b.user_id AND a.enabled)
    AND EXISTS(SELECT 1 FROM telegram_settings WHERE id=1 AND enabled)`,[telegramId])).rows[0];
-  assert(binding,403,'Для входа администратор должен привязать ваш Telegram к сотруднику с активным входом в панель.');
+  assert(binding,403,'Для входа сначала подключитесь к сотруднику через /start или обратитесь к администратору.');
   assert(!row.binding_id||row.binding_id===binding.id,403,'Этот QR-код уже открыт другим сотрудником. Обновите код на сайте.');
   if(row.state!=='pending')return {text:row.state==='approved'||row.state==='consumed'?'Вход уже подтверждён. Вернитесь в браузер.':'Этот запрос входа отменён. Обновите QR-код на сайте.',buttons:[]};
   if(decision){
@@ -120,7 +120,10 @@ export async function setTelegramBinding(actor:User,userId:string,telegramId:str
    const occupied=(await db.query('SELECT user_id FROM telegram_binding WHERE chat_id=$1',[telegramId])).rows[0];
    assert(!occupied||occupied.user_id===userId,409,'Этот Telegram уже привязан к другому сотруднику.');
    if(!old)await db.query('INSERT INTO telegram_binding(chat_id,user_id) VALUES($1,$2)',[telegramId,userId]);
+   await db.query('DELETE FROM telegram_registration_blocks WHERE chat_id=$1',[telegramId]);
+   await db.query("UPDATE telegram_registrations SET state='cancelled' WHERE chat_id=$1 AND state IN ('name','contact','review')",[telegramId]);
   }else if(old){
+   await db.query('INSERT INTO telegram_registration_blocks(chat_id) VALUES($1) ON CONFLICT DO NOTHING',[old.chat_id]);
    await db.query("DELETE FROM sessions WHERE auth_method='telegram' AND telegram_binding_id=$1",[old.id]);
    await db.query('DELETE FROM telegram_binding WHERE id=$1',[old.id]);
    await db.query("UPDATE telegram_login_requests SET state='cancelled' WHERE user_id=$1 AND state IN ('pending','approved')",[userId]);

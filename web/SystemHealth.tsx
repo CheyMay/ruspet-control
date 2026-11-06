@@ -66,7 +66,7 @@ export function SystemHealth(){
  </section>;
 }
 
-type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean}[];visibleTasks:number;paired_at:string|null;telegram_id:string|null;invitation_expires:string|null};
+type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean;password_login?:boolean}[];visibleTasks:number;paired_at:string|null;telegram_id:string|null;invitation_expires:string|null};
 export function AccessDirectory({roles}:{roles:Record<string,string>}){
  const {value,error,busy,refresh}=usePanelData<AccessPerson[]>('/system/access');
  const [query,setQuery]=useState(''),[invite,setInvite]=useState<{name:string;url:string}|null>(null),[creating,setCreating]=useState(false),[notice,setNotice]=useState(''),[inviteError,setInviteError]=useState('');
@@ -105,7 +105,7 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
   {people&&<><div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, филиал, роль или логин" value={query} onChange={e=>setQuery(e.target.value)}/></div>
    <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
     <td><strong>{p.name}</strong><br/><small>{p.branch_id}</small></td><td>{roles[p.role]}</td><td>{p.visibleTasks}</td>
-    <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>{a.username}{a.enabled?'':' · отключён'}</div>):<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
+    <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>{a.password_login===false?'Telegram / QR':a.username}{a.enabled?'':' · отключён'}{a.password_login===false&&a.enabled&&<button className="text-button" onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setAccountError('');}}>Создать пароль</button>}</div>):<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
     <td>{p.paired_at?<><span>Подключён · {moscowTimestamp(p.paired_at)}<br/>ID: {p.telegram_id}</span><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramConfirmed(false);setInviteError('');}}>Отключить</button></>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramId('');setTelegramConfirmed(false);setInviteError('');}}>Привязать по ID</button></>}</td>
    </tr>)}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}
  </section>;
