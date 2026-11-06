@@ -12,7 +12,9 @@ export async function telegramRequest(url:string,body:object|FormData,timeout:nu
   if(!secret.trim())throw new Error('Missing proxy configuration');
   headers['X-Proxy-Secret']=secret.trim();
   if(body instanceof FormData){body.set('url',url);body.set('method','POST');payload=body;}
-  else{headers['Content-Type']='application/json';payload=JSON.stringify({...body,url,method:'POST'});}
+  // The deployed bridge reads Telegram parameters from body. Keep the flat fields
+  // for existing bridges; both representations contain the same API parameters.
+  else{headers['Content-Type']='application/json';payload=JSON.stringify({...body,url,method:'POST',body});}
  }else if(body instanceof FormData)payload=body;
  else{headers['Content-Type']='application/json';payload=JSON.stringify(body);}
  return fetch(endpoint||url,{method:'POST',headers,body:payload,redirect:'error',signal:AbortSignal.timeout(timeout)});

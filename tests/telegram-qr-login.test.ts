@@ -31,9 +31,14 @@ before(async()=>{
  await qr.setTelegramBinding(admin,'anna','81001');await qr.setTelegramBinding(admin,'director','81002');
  server=(await import('../server/app.js')).createApp().listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));base=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
  const login=await request('/auth/login','POST','',{username:admin.id,password});assert.equal(login.status,200);adminCookie=login.headers.getSetCookie().find(c=>c.startsWith('ruspet_session='))!.split(';')[0];
+ process.env.TELEGRAM_PROXY_URL='https://fixture-qr-bridge.example/forward';process.env.TELEGRAM_PROXY_SECRET='fixture-qr-secret';
  globalThis.fetch=async(url,init)=>{
-  assert(String(url).startsWith('https://api.telegram.org/botFICTIONAL-NOT-A-REAL-TOKEN/'),'No real external requests allowed');
-  const body=JSON.parse(String(init!.body));sent.push({url:String(url),...body});return new Response(JSON.stringify({ok:true,result:{message_id:100}}));
+  assert.equal(String(url),'https://fixture-qr-bridge.example/forward','No real external requests allowed');
+  const envelope=JSON.parse(String(init!.body));
+  assert(envelope.url.startsWith('https://api.telegram.org/botFICTIONAL-NOT-A-REAL-TOKEN/'));
+  assert(envelope.body&&typeof envelope.body==='object','The deployed bridge forwards only body');
+  if(envelope.url.endsWith('/sendMessage'))assert(envelope.body.text?.trim(),'Text must reach the bridge');
+  sent.push({url:envelope.url,...envelope.body});return new Response(JSON.stringify({ok:true,result:{message_id:100}}));
  };
 });
 after(async()=>{globalThis.fetch=realFetch;if(server)await new Promise<void>(r=>server.close(()=>r()));await db?.pool.end();if(adminConnection){await adminConnection.query(`DROP DATABASE IF EXISTS ${database}`);await adminConnection.end();}});
