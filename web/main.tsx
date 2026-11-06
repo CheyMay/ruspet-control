@@ -9,4 +9,5 @@ import './reports-v5.css';
 import './management.css';
 import './usability.css';
 import './appearance.css';
+import './telegram-login.css';
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

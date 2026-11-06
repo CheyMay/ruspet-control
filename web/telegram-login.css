@@ -1,0 +1,7 @@
+.telegram-login{border-top:1px solid var(--theme-border);padding-top:20px;display:flex;flex-direction:column;gap:12px;text-align:center}
+.telegram-login h2{font-size:17px;color:var(--theme-text)}
+.login-card .telegram-login p{margin:0;line-height:1.6}
+.login-qr{align-self:center;max-width:100%;height:auto;aspect-ratio:1;background:#fff;border-radius:8px}
+.login-verification{font-size:22px;letter-spacing:3px;color:var(--theme-text);white-space:nowrap}
+.login-card .telegram-login a.button{height:auto;min-height:41px;display:flex;align-items:center;justify-content:center;text-decoration:none;padding:10px;white-space:normal;line-height:1.4}
+@media(max-width:480px){.login-page{padding:12px}.login-card{padding:22px}.login-verification{letter-spacing:2px}}

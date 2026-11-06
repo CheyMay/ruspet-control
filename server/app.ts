@@ -1,3 +1,4 @@
+import {telegramLoginRouter,sessionUser,clearBrowserLogin,setTelegramBinding} from './telegram-login.js';
 import {receiveBitrixEvent} from './bitrix-events.js';
 import {archiveStatus} from './bitrix-archive.js';
 import {selectedPilotManagers} from './pilot-selection.js';
@@ -46,6 +47,7 @@ export function createApp() {
  app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.get('origin')){const allowed=[`http://${req.get('host')}`,'http://127.0.0.1:5173','http://localhost:5173'];if(process.env.PUBLIC_ORIGIN)allowed.push(new URL(process.env.PUBLIC_ORIGIN).origin);if(!allowed.includes(req.get('origin')!))return res.status(403).json({error:'Запрос с другого сайта запрещён.'});}next();});
  app.get('/api/health',async(_req,res)=>{await pool.query('SELECT 1');res.json({ok:true,database:'postgresql',taskProvider:'mock',telegram:(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0]?.enabled?'personal-pilot':'disabled'});});
  app.get('/api/auth/mode',(_req,res)=>res.json({demo:process.env.DEMO_AUTH!=='false'}));
+ app.use('/api/auth/qr',telegramLoginRouter());
  app.get('/api/demo/users',async(_req,res)=>{assert(process.env.DEMO_AUTH!=='false',403,'Демонстрационный вход отключён.');res.json((await pool.query('SELECT * FROM users ORDER BY id')).rows);});
  app.post('/api/demo/login',async(req,res)=>{
   assert(process.env.DEMO_AUTH!=='false',403,'Демонстрационный вход отключён.');
@@ -63,11 +65,12 @@ export function createApp() {
   loginAttempts.delete(key);
   const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",[hash(token),account.id]);
   res.cookie('ruspet_session',token,{httpOnly:true,sameSite:'strict',secure:!!process.env.PUBLIC_ORIGIN?.startsWith('https://'),maxAge:12*60*60*1000,path:'/'});
+  await clearBrowserLogin(req,res);
   delete account.password_hash;res.json({user:account});
  });
- app.get('/api/auth/me',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(!token)return res.status(401).json({error:'Войдите в систему.'});const user=(await pool.query('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()',[hash(token)])).rows[0];if(!user)return res.status(401).json({error:'Сессия завершена.'});res.json(user);});
- app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
- app.use('/api',async(req,_res,next)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=(await pool.query('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()',[hash(token)])).rows[0];assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
+ app.get('/api/auth/me',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(!token)return res.status(401).json({error:'Войдите в систему.'});const user=await sessionUser(token);if(!user)return res.status(401).json({error:'Сессия завершена.'});res.json(user);});
+ app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);await clearBrowserLogin(req,res);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
+ app.use('/api',async(req,_res,next)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=await sessionUser(token);assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
  app.get('/api/bootstrap',async(req,res)=>res.json(await service.bootstrap(req.actor)));
  app.get('/api/undo/last',async(req,res)=>res.json(await lastUndo(req.actor)));
  app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
@@ -100,6 +103,7 @@ export function createApp() {
  app.get('/api/system/selected-managers',async(req,res)=>res.json(await selectedPilotManagers(req.actor)));
  app.get('/api/system/status',async(req,res)=>res.json(await systemStatus(req.actor)));
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
+ app.put('/api/system/access/:id/telegram',async(req,res)=>{const input=z.object({telegramId:z.string().trim().max(16).nullable(),confirmed:z.literal(true)}).parse(req.body);res.json(await setTelegramBinding(req.actor,String(req.params.id),input.telegramId));});
  app.get('/api/system/pilot',async(req,res)=>{assert(req.actor.role==='admin',403,'Подготовку пилота видит администратор.');res.json(await pilotReadiness());});
  app.get('/api/system/pilot/queue',async(req,res)=>{assert(req.actor.role==='admin',403,'Очередь пилота видит администратор.');res.json(await pilotQueue());});
  app.post('/api/system/access/:id/account',async(req,res)=>{const input=z.object({username:z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,32}$/)}).parse(req.body);res.status(201).json(await createUserAccount(req.actor,String(req.params.id),input.username));});

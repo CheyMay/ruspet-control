@@ -5,7 +5,7 @@ umask 022
 [[ $EUID == 0 ]] || { echo 'Запустите обновление от root.'; exit 1; }
 exec 9>/run/lock/ruspet-update.lock
 flock -n 9 || { echo 'Другое обновление уже запущено.'; exit 1; }
-branch=${RUSPET_UPDATE_BRANCH:-feature/bitrix-initial-sync}
+branch=${RUSPET_UPDATE_BRANCH:-feature/telegram-qr-login}
 repo=/root/ruspet-code
 app=/opt/ruspet
 backup=/root/ruspet-before-$(date -u +%Y%m%dT%H%M%S)

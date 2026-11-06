@@ -66,7 +66,7 @@ export function SystemHealth(){
  </section>;
 }
 
-type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean}[];visibleTasks:number;paired_at:string|null;invitation_expires:string|null};
+type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean}[];visibleTasks:number;paired_at:string|null;telegram_id:string|null;invitation_expires:string|null};
 export function AccessDirectory({roles}:{roles:Record<string,string>}){
  const {value,error,busy,refresh}=usePanelData<AccessPerson[]>('/system/access');
  const [query,setQuery]=useState(''),[invite,setInvite]=useState<{name:string;url:string}|null>(null),[creating,setCreating]=useState(false),[notice,setNotice]=useState(''),[inviteError,setInviteError]=useState('');
@@ -83,12 +83,21 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
    setInvite({name:person.name,url:result.url});refresh();
   }catch(e){setInviteError((e as Error).message);}finally{setCreating(false);}
  }
+ const [telegramPerson,setTelegramPerson]=useState<AccessPerson|null>(null),[telegramId,setTelegramId]=useState(''),[telegramConfirmed,setTelegramConfirmed]=useState(false),[telegramBusy,setTelegramBusy]=useState(false);
+ async function saveTelegram(e:React.FormEvent){
+  e.preventDefault();if(!telegramPerson||!telegramConfirmed||telegramBusy)return;setTelegramBusy(true);setInviteError('');
+  try{await api('/system/access/'+encodeURIComponent(telegramPerson.id)+'/telegram','PUT',{telegramId:telegramPerson.paired_at?null:telegramId.trim(),confirmed:true});setTelegramPerson(null);setInvite(null);refresh();}
+  catch(e){setInviteError((e as Error).message)}finally{setTelegramBusy(false)}
+ }
  const people=value?.filter(p=>[p.name,p.branch_id,roles[p.role],...p.accounts.map(a=>a.username)].some(s=>s.toLocaleLowerCase('ru-RU').includes(query.trim().toLocaleLowerCase('ru-RU'))));
  return <section className="panel automation-settings">
   <div className="automation-heading"><div><h2>Доступы сотрудников</h2><p className="muted">Роль, вход в панель, подключение к боту и число доступных рабочих задач.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
   {(error||inviteError)&&<p className="alert error" role="alert">{inviteError||error}</p>}
   <p className="muted">Пользователей с активным входом: <strong>{value?.filter(p=>p.accounts.some(a=>a.enabled)).length??'—'}</strong>. Количество входов не ограничено десятью. Роль и доступ к задачам сохраняются при создании логина.</p>
   {accountError&&<p className="alert error" role="alert">{accountError}</p>}
+  {telegramPerson&&<form className="source-banner" onSubmit={e=>void saveTelegram(e)}><strong>{telegramPerson.paired_at?'Отключение Telegram':'Привязка Telegram'} · {telegramPerson.name}</strong>
+   {telegramPerson.paired_at?<p>Telegram ID: {telegramPerson.telegram_id}. Входы через Telegram будут завершены, новые подтверждения отменены. Для повторного подключения выдайте новое приглашение.</p>:<><p>Предпочтительно выдать сотруднику персональное приглашение. Для ручной привязки нужен проверенный числовой ID личного аккаунта, а не @имя. Сотрудник должен открыть бота и нажать «Старт».</p><label>Telegram ID<input aria-label="Telegram ID сотрудника" inputMode="numeric" autoComplete="off" pattern="[1-9][0-9]*" maxLength={16} required value={telegramId} onChange={e=>setTelegramId(e.target.value)}/></label></>}
+   <label><input type="checkbox" checked={telegramConfirmed} onChange={e=>setTelegramConfirmed(e.target.checked)}/>Подтверждаю {telegramPerson.paired_at?'отключение привязки':'личность сотрудника и правильность ID'}</label><button className="button primary" disabled={!telegramConfirmed||telegramBusy}>{telegramBusy?'Сохраняем…':telegramPerson.paired_at?'Отключить Telegram':'Привязать Telegram'}</button><button className="button secondary" type="button" disabled={telegramBusy} onClick={()=>setTelegramPerson(null)}>Отмена</button></form>}
   {accountPerson&&<form className="source-banner" onSubmit={e=>void createAccount(e)}><strong>Новый вход · {accountPerson.name}</strong><p>Пароль будет сгенерирован автоматически. Роль: {roles[accountPerson.role]}.</p><label>Логин<input aria-label="Логин нового сотрудника" autoComplete="off" required minLength={3} maxLength={32} pattern="[a-z0-9._-]+" value={accountLogin} disabled={accountBusy} onChange={e=>setAccountLogin(e.target.value.toLowerCase())}/></label><button className="button primary" disabled={accountBusy}>{accountBusy?'Создаём…':'Создать персональный вход'}</button><button className="button secondary" type="button" disabled={accountBusy} onClick={()=>setAccountPerson(null)}>Отмена</button></form>}
   {newAccount&&<div className="source-banner"><strong>Вход создан · {newAccount.name}</strong><p>Сохраните данные и передайте лично сотруднику. Пароль показывается один раз и не хранится в списке доступов.</p><label>Логин<input aria-label="Созданный логин" readOnly value={newAccount.username}/></label><label>Пароль<input aria-label="Созданный пароль" readOnly autoComplete="off" value={newAccount.password}/></label><button className="button secondary" onClick={()=>void navigator.clipboard.writeText(`Сотрудник: ${newAccount.name}\nЛогин: ${newAccount.username}\nПароль: ${newAccount.password}`).then(()=>setNotice('Данные скопированы')).catch(()=>setNotice('Выделите данные и скопируйте вручную.'))}>Копировать доступы</button><button className="button secondary" onClick={()=>{setNewAccount(null);setNotice('');}}>Скрыть данные</button><span role="status">{notice}</span></div>}
   {invite&&<div className="source-banner"><strong>{invite.name} · ссылка на 15 минут</strong><input aria-label="Ссылка подключения" readOnly value={invite.url} onFocus={e=>e.currentTarget.select()}/><button className="button secondary" onClick={()=>void navigator.clipboard.writeText(invite.url).then(()=>setNotice('Ссылка скопирована')).catch(()=>setNotice('Выделите ссылку и скопируйте вручную.'))}>Копировать</button><span role="status">{notice}</span></div>}
@@ -97,7 +106,7 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
    <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
     <td><strong>{p.name}</strong><br/><small>{p.branch_id}</small></td><td>{roles[p.role]}</td><td>{p.visibleTasks}</td>
     <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>{a.username}{a.enabled?'':' · отключён'}</div>):<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
-    <td>{p.paired_at?<span>Подключён · {moscowTimestamp(p.paired_at)}</span>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button></>}</td>
+    <td>{p.paired_at?<><span>Подключён · {moscowTimestamp(p.paired_at)}<br/>ID: {p.telegram_id}</span><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramConfirmed(false);setInviteError('');}}>Отключить</button></>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramId('');setTelegramConfirmed(false);setInviteError('');}}>Привязать по ID</button></>}</td>
    </tr>)}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}
  </section>;
 }

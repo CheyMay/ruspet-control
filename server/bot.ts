@@ -30,6 +30,7 @@ const home=[button('📅 Срок сегодня','day'),button('📥 Ждут �
 export async function clearBotDraft(u:User,ch:string){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch])})}
 export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<BotScreen>{
  const result=await renderView(u,ch,p);
+ if(p.op==='home'&&process.env.PUBLIC_ORIGIN)result.links=[...(result.links||[]),{text:'Войти на сайт',url:new URL('/',process.env.PUBLIC_ORIGIN).href}];
  if(p.op==='home'||p.op==='task')result.timingKind=p.op==='home'?'menu':'task';
  return result;
 }

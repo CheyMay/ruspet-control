@@ -1,3 +1,4 @@
+import {telegramLoginScreen} from './telegram-login.js';
 import {telegramRequest} from './telegram-transport.js';
 import {reportPdf} from './report-pdf.js';
 import {getReport} from './service.js';
@@ -53,7 +54,18 @@ async function reply(chat:string,s:BotScreen,started:number,message?:number){
 export async function handlePilotUpdate(update:any){
  const started=performance.now();
  const c=update.callback_query,m=update.message||c?.message;if(!m||m.chat?.type!=='private')return;const chat=String(m.chat.id);
+ const login=typeof m.text==='string'&&!c?m.text.match(/^\/start login_([A-Za-z0-9_-]{32})$/)?.[1]:null;
+ const loginCallback=typeof c?.data==='string'?c.data.match(/^ql_([ad])_([A-Za-z0-9_-]{32})$/):null;
+ if(login||loginCallback){
+  const sender=c?.from||m.from;
+  if(!sender||sender.is_bot||String(sender.id)!==chat||!(/^[1-9][0-9]{0,15}$/.test(chat)))return;
+  const acknowledged=c?call('answerCallbackQuery',{callback_query_id:c.id}).catch(()=>{}):Promise.resolve();
+  try{await reply(chat,await telegramLoginScreen(login||loginCallback![2],chat,loginCallback?(loginCallback[1]==='a'?'approve':'deny'):undefined),started,c?m.message_id:undefined);}
+  catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось обработать вход. Обновите QR-код на сайте.',buttons:[]},c?m.message_id:undefined);}
+  finally{await acknowledged;}return;
+ }
  const code=typeof m.text==='string'&&!c?m.text.match(/^\/start ([a-f0-9]{40})$/)?.[1]:null;
+ if(code&&m.from&&(m.from.is_bot||String(m.from.id)!==chat))return;
  if(code){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(431008)');const p=(await db.query('SELECT * FROM telegram_pairings WHERE token_hash=$1 AND expires_at>now() FOR UPDATE',[digest(code)])).rows[0];if(!p)return;const old=(await db.query('SELECT chat_id,user_id FROM telegram_binding WHERE chat_id=$1 OR user_id=$2',[chat,p.user_id])).rows[0];if(old&&(old.chat_id!==chat||old.user_id!==p.user_id))return;if(!old)await db.query('INSERT INTO telegram_binding(chat_id,user_id) VALUES($1,$2)',[chat,p.user_id]);await db.query('DELETE FROM telegram_pairings WHERE token_hash=$1',[digest(code)])})}
  const u=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0] as User|undefined;if(!u)return;
  const ch='telegram:'+chat;
