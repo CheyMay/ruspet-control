@@ -18,6 +18,33 @@ systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 bash /root/ruspet-prepare
 
 ## Перенос действующей системы
 
+### Код на новом сервере
+
+Владелец сообщил «подготовка завершена». Готовность GitHub deploy key пока отдельным выводом не подтверждена: если ещё не добавлен, скопировать только `/root/.ssh/ruspet_github.pub` в Deploy keys репозитория с доступом только чтения. Приватный ключ/токен не публиковать.
+
+```bash
+bash <<'SH'
+set -euo pipefail
+export GIT_SSH_COMMAND='ssh -i /root/.ssh/ruspet_github -o IdentitiesOnly=yes'
+if [[ ! -d /root/ruspet-code/.git ]]; then
+ git clone --branch ops/company-server-bootstrap git@github.com:CheyMay/ruspet-control.git /root/ruspet-code
+fi
+cd /root/ruspet-code
+git diff --quiet
+git diff --cached --quiet
+git fetch origin ops/company-server-bootstrap
+git switch ops/company-server-bootstrap
+git pull --ff-only origin ops/company-server-bootstrap
+systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 \
+ env GOMAXPROCS=1 NODE_OPTIONS=--max-old-space-size=1024 \
+ bash scripts/stage-company-app.sh
+SH
+```
+
+Скрипт предназначен только для первоначальной установки на целевом сервере без активных служб РУСПЭТ: npm ci/check/build, установка только отслеживаемого кода, свежих node_modules/dist с выводом commit. Существующие `.env`, `.secrets`, `.local` сохраняются. БД не читается/не меняется, seed/миграции/worker не запускаются. Данные переносить после успешной сборки; к этому моменту старый сервер ещё можно оставить работающим.
+
+### БД, адрес и запуск
+
 Домен: A @ → 194.226.98.113. У корня удалить прежние парковочные A/AAAA, если они уводят запросы на другие адреса. IPv6 пока не публикуется. TLS выпускать после проверки DNS и HTTP-доступности домена. Финальный PUBLIC_ORIGIN=https://ruspetdev.ru.
 
 Авторитетные данные — на прежнем VPS /opt/ruspet, а не исходная выгрузка/Git. Перед переносом сверить реально установленный commit и актуальные изменения других веток. Сохранить core dump ruspet_demo, отдельный ruspet_okb если настроен, приватные .env/.telegram-worker.env/.secrets/.access и нужные .local/Bitrix-файлы с правами 0600/0700. Секреты передавать через SSH/SFTP, не через чат/Git. Созданный локальный role ruspet не имеет пароля: для целевой конфигурации выбрать Unix peer или отдельно настроить закрытые пароли, а DATABASE_URL/OKB_DATABASE_URL адаптировать. pg_dump не переносит роли и их пароли. Восстановить снимок на целевом сервере и проверить количества задач/пользователей/согласований/справочника, не выполнять повторный seed.
