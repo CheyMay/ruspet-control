@@ -185,7 +185,7 @@ export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:strin
     const write=async(method:Parameters<BitrixRequest>[0],body:object)=>{
      if(!(await pool.query('SELECT enabled FROM bitrix_live_config WHERE id=1')).rows[0].enabled)throw new BitrixError('Запись приостановлена администратором.');
      await pool.query('UPDATE bitrix_operations SET phase=$2 WHERE event_id=$1',[op.event_id,method]);writing=true;
-     return request(method,body);
+     return request(method,body,undefined,{operationId:op.event_id});
     };
     const data=op.payload.data||{},before=data.before as Task|undefined,after=data.after as Task|undefined;
     if(after){

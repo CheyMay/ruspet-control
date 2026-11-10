@@ -1,4 +1,6 @@
-import {test} from 'node:test';
+import {mock,test} from 'node:test';
+import fsPromises from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
 import assert from 'node:assert/strict';
 import {mkdtemp,writeFile,readFile,stat,chmod,rm} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
@@ -14,8 +16,26 @@ throw new Error('MUST NEVER EXECUTE');`;
 const envKeys=['BITRIX_TRANSPORT','BITRIX_BALANCER_CONFIG_FILE','BITRIX_BALANCER_TIMEOUT_MS'] as const;
 async function fixture(run:(folder:string)=>Promise<void>){
  const folder=await mkdtemp(join(tmpdir(),'ruspet-balancer-test-')),saved=Object.fromEntries(envKeys.map(k=>[k,process.env[k]])),fetch=globalThis.fetch,now=Date.now;
- try{for(const key of envKeys)delete process.env[key];await saveBalancerFiles(folder,parseBalancerExample(source),true);process.env.BITRIX_BALANCER_CONFIG_FILE=join(folder,'bitrix-balancer.json');await run(folder);}
- finally{globalThis.fetch=fetch;Date.now=now;for(const key of envKeys){if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];}await rm(folder,{recursive:true,force:true});}
+ let restoreStat=()=>{};
+ try{
+  for(const key of envKeys)delete process.env[key];
+  const settings=parseBalancerExample(source),config=join(folder,'bitrix-balancer.json');
+  if(process.platform==='win32'){
+   // Test transport with public fixture values; Windows stat cannot report POSIX 0600.
+   await writeFile(config,JSON.stringify(settings.balancer));
+   const original=fsPromises.stat;
+   const stub=mock.method(fsPromises,'stat',async(path:string)=>{
+    const info=await original(path);
+    if(path===config)info.mode=0o100600;
+    return info;
+   });
+   syncBuiltinESMExports();
+   restoreStat=()=>{stub.mock.restore();syncBuiltinESMExports();};
+  }else await saveBalancerFiles(folder,settings,true);
+  process.env.BITRIX_BALANCER_CONFIG_FILE=config;
+  await run(folder);
+ }
+ finally{restoreStat();globalThis.fetch=fetch;Date.now=now;for(const key of envKeys){if(saved[key]===undefined)delete process.env[key];else process.env[key]=saved[key];}await rm(folder,{recursive:true,force:true});}
 }
 test('balancer signs the supplied protocol, wraps classic URLs and unwraps the original Bitrix result without exposing keys',async()=>fixture(async()=>{
  Date.now=()=>1700000000000;let calls=0;
@@ -60,7 +80,8 @@ test('gateway authentication, quota and Bitrix errors retain their distinct fail
 }));
 
 test('configuration fails closed for invalid keys, unsafe files, timeouts and foreign targets; direct mode is explicit',async()=>fixture(async(folder)=>{
- const path=join(folder,'bitrix-balancer.json');await chmod(path,0o644);await assert.rejects(()=>createBitrixTransport('https://thebest.bitrix24.ru'),/закрытый файл/);await chmod(path,0o600);
+ const path=join(folder,'bitrix-balancer.json');
+ if(process.platform!=='win32'){await chmod(path,0o644);await assert.rejects(()=>createBitrixTransport('https://thebest.bitrix24.ru'),/закрытый файл/);await chmod(path,0o600);}
  process.env.BITRIX_BALANCER_TIMEOUT_MS='NaN';await assert.rejects(()=>createBitrixTransport('https://thebest.bitrix24.ru'),/Таймаут/);delete process.env.BITRIX_BALANCER_TIMEOUT_MS;
  process.env.BITRIX_TRANSPORT='bad';await assert.rejects(()=>createBitrixTransport('https://thebest.bitrix24.ru'),/BITRIX_TRANSPORT/);delete process.env.BITRIX_TRANSPORT;
  const transport=await createBitrixTransport('https://thebest.bitrix24.ru');let calls=0;globalThis.fetch=async()=>{calls++;return new Response('{"result":true}')};
@@ -69,7 +90,7 @@ test('configuration fails closed for invalid keys, unsafe files, timeouts and fo
  process.env.BITRIX_TRANSPORT='direct';const direct=await createBitrixTransport('https://thebest.bitrix24.ru');assert.equal(direct.mode,'direct');assert.equal((await direct.send(new URL('https://thebest.bitrix24.ru/rest/1/key/tasks.task.get'),{})).body.result,true);assert.equal(calls,1);
 }));
 
-test('the example is parsed as data, saved with private permissions, and existing different settings are never overwritten',async()=>fixture(async(folder)=>{
+test('the example is parsed as data, saved with private permissions, and existing different settings are never overwritten',{skip:process.platform==='win32'},async()=>fixture(async(folder)=>{
  assert.throws(()=>parseBalancerExample(source.replace("'fixture-private'","process.exit(1)")),/строковые/);
  assert.throws(()=>parseBalancerExample(source.replace('https://thebest.bitrix24.ru/rest/1/fixture-webhook/','https://other.example/rest/1/fixture-webhook/')),/портала/);
  assert.throws(()=>parseBalancerExample(source+'\nconst BALANCER_PRIVATE = \'duplicate\';'),/однозначные/);
@@ -77,4 +98,29 @@ test('the example is parsed as data, saved with private permissions, and existin
  assert.equal((await stat(join(folder,'bitrix-balancer.json'))).mode&0o777,0o600);assert.equal((await stat(join(folder,'bitrix-webhook'))).mode&0o777,0o600);
  const original=await readFile(join(folder,'bitrix-webhook'),'utf8');await assert.rejects(()=>saveBalancerFiles(folder,{...settings,balancer:{...settings.balancer,privateKey:'different-fixture'}},true),/отличаются/);assert.equal(await readFile(join(folder,'bitrix-webhook'),'utf8'),original);
  const other=await mkdtemp(join(tmpdir(),'ruspet-balancer-plan-'));try{assert((await saveBalancerFiles(other,settings,false)).every(f=>f.action==='would-create'));await assert.rejects(()=>stat(join(other,'bitrix-balancer.json')),/ENOENT/);}finally{await rm(other,{recursive:true,force:true})}
+}));
+
+
+test('operation IDs are forwarded only upstream and the deadline covers quota wait and REST execution',async()=>fixture(async()=>{
+ const operationId='00000000-0000-4000-8000-000000000001',target=new URL('https://thebest.bitrix24.ru/rest/api/1/fixture-webhook/tasks.task.chat.message.send');
+ const delays:number[]=[];
+ const timeout=mock.method(AbortSignal,'timeout',(ms:number)=>{delays.push(ms);return new AbortController().signal;});
+ try{
+  let calls=0;
+  globalThis.fetch=async(_url,init)=>{
+   calls++;
+   assert.equal(new Headers(init?.headers).has('X-Operation-Id'),false);
+   assert.equal(typeof (init as {dispatcher?:{dispatch?:unknown}}).dispatcher?.dispatch,'function');
+   assert.deepEqual(JSON.parse(String(init?.body)).headers,{'Content-Type':'application/json','X-Operation-Id':operationId});
+   return new Response(JSON.stringify({body:{result:{result:true}}}));
+  };
+  const current=await createBitrixTransport(target.origin);
+  await current.send(target,{}, {operationId});
+  process.env.BITRIX_BALANCER_TIMEOUT_MS='60000';
+  const legacy=await createBitrixTransport(target.origin);
+  await legacy.send(target,{}, {operationId});
+  await assert.rejects(()=>legacy.send(target,{}, {operationId:'malformed'}),/идентификатор/);
+  assert.deepEqual(delays,[340000,340000]);
+  assert.equal(calls,2);
+ }finally{timeout.mock.restore();}
 }));

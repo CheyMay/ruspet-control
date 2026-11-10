@@ -1,4 +1,6 @@
-import {before,after,test} from 'node:test';
+import {before,after,mock,test} from 'node:test';
+import fsPromises from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
 import {randomBytes} from 'node:crypto';
@@ -11,7 +13,7 @@ let db:typeof import('../server/db.js'),service:typeof import('../server/service
 const database='ruspet_live_test_'+randomBytes(6).toString('hex'),savedWrite=process.env.BITRIX_WRITE_ENABLED;
 const remote=new Map<string,Record<string,any>>(),calls:{method:BitrixMethod;body:any}[]=[];let lostComment=false;
 const messages=new Map<string,{id:number;date:string;author_id:number;text:string}[]>();let lostBeforeDelivery=false;
-const transport:BitrixRequest=async<T>(method:BitrixMethod,body:any):Promise<T>=>{
+const transport:BitrixRequest=async<T>(method:BitrixMethod,body:any,_observe?:Parameters<BitrixRequest>[2],options?:Parameters<BitrixRequest>[3]):Promise<T>=>{
  calls.push({method,body});
  if(method==='tasks.task.getFields')return {fields:{TITLE:{title:'Название',type:'string'},UF_PRICE:{title:'Цена задачи',type:'double'},UF_NOTES:{title:'Дополнительные сведения',type:'string'}}} as T;
  if(method==='user.get')return [{ID:body.FILTER?.ID,ACTIVE:true,NAME:'Фикстура',LAST_NAME:body.FILTER?.ID}] as T;
@@ -28,6 +30,7 @@ const transport:BitrixRequest=async<T>(method:BitrixMethod,body:any):Promise<T>=
  if(method==='tasks.task.approve'){assert.equal(task.status,'4');task.status='5';return {task:{...task}} as T;}
  if(method==='tasks.task.disapprove'||method==='tasks.task.renew'){task.status='2';return {task:{...task}} as T;}
  if(method==='tasks.task.chat.message.send'){
+  assert(options?.operationId&&body.fields.text.includes('[ruspet:'+options.operationId+']'));
   if(!lostBeforeDelivery){const id=String(body.fields.taskId),list=messages.get(id)||[];list.push({id:list.length+1,date:new Date().toISOString(),author_id:201,text:body.fields.text});messages.set(id,list);}
   if(lostComment||lostBeforeDelivery)throw new (await import('../server/bitrix-rest.js')).BitrixError('Неизвестный результат фикстуры','uncertain');
   assert(body.fields.text.includes('[ruspet:'));return {result:true} as T;
@@ -189,6 +192,18 @@ test('readiness passes a fully prepared two-manager fixture and blocks again whe
  const {mkdtemp,writeFile,rm}=await import('node:fs/promises'),{tmpdir}=await import('node:os'),{join}=await import('node:path');
  const folder=await mkdtemp(join(tmpdir(),'ruspet-ready-fixture-')),file=join(folder,'webhook');await writeFile(file,'https://thebest.bitrix24.ru/rest/1/fixture-not-real/',{mode:0o600});
  const saved={DEMO_AUTH:process.env.DEMO_AUTH,PUBLIC_ORIGIN:process.env.PUBLIC_ORIGIN,BITRIX_PORTAL:process.env.BITRIX_PORTAL,BITRIX_WEBHOOK_FILE:process.env.BITRIX_WEBHOOK_FILE};
+ let restoreStat=()=>{};
+ if(process.platform==='win32'){
+  // Only emulate the mode of the fake webhook; the production guard stays POSIX-only.
+  const original=fsPromises.stat;
+  const stub=mock.method(fsPromises,'stat',async(path:string)=>{
+   const info=await original(path);
+   if(path===file)info.mode=0o100600;
+   return info;
+  });
+  syncBuiltinESMExports();
+  restoreStat=()=>{stub.mock.restore();syncBuiltinESMExports();};
+ }
  try{
   await db.pool.query("UPDATE bitrix_operations SET state='canceled' WHERE state NOT IN ('sent','canceled')");await db.pool.query('UPDATE bitrix_task_links SET conflict=NULL,live_enabled=false WHERE external_id<>907');
   const task=await makeLinked('908');await workflow.editTask(director,task.id,{title:task.title,description:task.description,assigneeId:ivan.id,price:10000,deadline:task.deadline,plannedStart:null,plannedEnd:null,important:task.important,customerRisk:task.customer_risk,parentId:null},task.version,'Выделяем задачу второму участнику');await live.tickLiveSync(transport);
@@ -200,5 +215,5 @@ test('readiness passes a fully prepared two-manager fixture and blocks again whe
   process.env.DEMO_AUTH='false';process.env.PUBLIC_ORIGIN='https://fixture.example';process.env.BITRIX_PORTAL='thebest.bitrix24.ru';process.env.BITRIX_WEBHOOK_FILE=file;
   const readiness=await(await import('../server/pilot-readiness.js')).pilotReadiness();assert.equal(readiness.ready,true,JSON.stringify(readiness.checks.filter(c=>c.level==='block')));
   await db.pool.query("UPDATE login_accounts SET enabled=false WHERE username='pilot-anna'");const revoked=await(await import('../server/pilot-readiness.js')).pilotReadiness();assert.equal(revoked.ready,false);assert(revoked.checks.some(c=>c.level==='block'&&c.message.includes('веб-вход')));
- }finally{for(const [key,value] of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await rm(folder,{recursive:true,force:true});}
+ }finally{restoreStat();for(const [key,value] of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await rm(folder,{recursive:true,force:true});}
 });

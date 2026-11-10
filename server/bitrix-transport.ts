@@ -1,3 +1,4 @@
+import {Agent} from 'undici';
 import {createHmac} from 'node:crypto';
 import {readFile,stat} from 'node:fs/promises';
 
@@ -5,6 +6,11 @@ export class BitrixTransportError extends Error {
  constructor(message:string,public disposition:'rejected'|'uncertain'='uncertain'){super(message);}
 }
 export type BalancerConfig={url:string;publicKey:string;privateKey:string};
+export type BitrixSendOptions={operationId?:string};
+// The gateway may wait 300 seconds for quota and another 30 for Bitrix.
+const gatewayDeadline=340000;
+// Use the request's AbortSignal as the total deadline; the built-in header timeout is shorter.
+const gatewayDispatcher=new Agent({headersTimeout:0,bodyTimeout:0});
 export type BitrixReply={status:number;ok:boolean;body:any;layer:'bitrix'|'balancer'};
 export function validateBalancerConfig(value:unknown):BalancerConfig {
  const cfg=value as BalancerConfig;
@@ -24,10 +30,16 @@ export async function createBitrixTransport(origin:string){
    cfg=validateBalancerConfig(JSON.parse(await readFile(file,'utf8')));
   }catch{throw new BitrixTransportError('Проверьте закрытый файл BITRIX_BALANCER_CONFIG_FILE (JSON, права 600).','rejected');}
  }
- const timeout=selected==='balancer'?Number(process.env.BITRIX_BALANCER_TIMEOUT_MS||60000):15000;
- if(!Number.isInteger(timeout)||timeout<1000||timeout>120000)throw new BitrixTransportError('Таймаут балансировщика должен быть от 1000 до 120000 мс.','rejected');
- return {mode:selected as 'direct'|'balancer',send:async(target:URL,params:object):Promise<BitrixReply>=>{
+ const configured=cfg?Number(process.env.BITRIX_BALANCER_TIMEOUT_MS||gatewayDeadline):15000;
+ if(!Number.isInteger(configured)||configured<1000||configured>600000)throw new BitrixTransportError('Таймаут балансировщика должен быть от 1000 до 600000 мс.','rejected');
+ const timeout=cfg?Math.max(gatewayDeadline,configured):configured;
+ return {mode:selected as 'direct'|'balancer',send:async(target:URL,params:object,options:BitrixSendOptions={}):Promise<BitrixReply>=>{
   if(target.origin!==origin||target.protocol!=='https:'||target.username||target.password||target.search||target.hash||!target.pathname.startsWith('/rest/'))throw new BitrixTransportError('Неподдерживаемый адрес REST Битрикс24.','rejected');
+  const operationId=options.operationId;
+  if(operationId!==undefined&&!/^[0-9a-f]{8}(?:-[0-9a-f]{4}){3}-[0-9a-f]{12}$/i.test(operationId)){
+   throw new BitrixTransportError('Некорректный идентификатор операции Битрикс24.','rejected');
+  }
+  const forwardedHeaders=operationId?{'Content-Type':'application/json','X-Operation-Id':operationId}:undefined;
   let response:Response;
   try{
    const headers:Record<string,string>={'Content-Type':'application/json'};
@@ -37,12 +49,15 @@ export async function createBitrixTransport(origin:string){
     const timestamp=Math.floor(Date.now()/1000).toString();
     headers['X-Timestamp']=timestamp;
     headers['X-Signature']=createHmac('sha256',cfg.privateKey).update(`${cfg.publicKey}:${timestamp}`,'utf8').digest('hex');
-    url=cfg.url;body={url:destination.toString(),method:'POST',body:params};
-   }
+    url=cfg.url;body={url:destination.toString(),method:'POST',body:params,...(forwardedHeaders?{headers:forwardedHeaders}:{})};
+   }else if(forwardedHeaders){Object.assign(headers,forwardedHeaders);}
    // Do not retry or switch transports: a write may already have reached Bitrix24.
-   response=await fetch(url,{method:'POST',redirect:'error',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(timeout)});
+   const init:RequestInit&{dispatcher?:Agent}={method:'POST',redirect:'error',headers,body:JSON.stringify(body),signal:AbortSignal.timeout(timeout)};
+   if(cfg)init.dispatcher=gatewayDispatcher;
+   response=await fetch(url,init);
   }catch{throw new BitrixTransportError(cfg?'Ответ балансировщика не получен. Проверьте результат операции перед повтором.':'Нет подтверждённого ответа REST Битрикс24.');}
   if(cfg&&!response.ok){
+   await response.body?.cancel().catch(()=>{});
    if(response.status===401||response.status===403)throw new BitrixTransportError('Балансировщик отклонил авторизацию. Проверьте ключи и время сервера.','rejected');
    return {status:response.status,ok:false,body:null,layer:'balancer'};
   }
