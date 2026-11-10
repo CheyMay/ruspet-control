@@ -3,6 +3,10 @@ set -Eeuo pipefail
 umask 022
 # Run the reviewed script from /root, outside the checkout that it updates.
 [[ $EUID == 0 ]] || { echo 'Запустите обновление от root.'; exit 1; }
+mode=${1:---apply}
+[[ $# -le 1 && ( $mode == --prepare || $mode == --apply ) ]] || {
+  echo 'Использование: update-server.sh [--prepare|--apply]'; exit 2;
+}
 exec 9>/run/lock/ruspet-update.lock
 flock -n 9 || { echo 'Другое обновление уже запущено.'; exit 1; }
 branch=${RUSPET_UPDATE_BRANCH:-feature/telegram-staff-onboarding}
@@ -34,9 +38,19 @@ fi
 git fetch origin "refs/heads/$branch:refs/remotes/origin/$branch"
 git switch "$branch"
 git pull --ff-only origin "$branch"
+revision=$(git rev-parse HEAD)
+if [[ -n ${RUSPET_UPDATE_REVISION:-} && "$revision" != "$RUSPET_UPDATE_REVISION" ]]; then
+  echo 'Ветка изменилась. Сначала проверьте и зафиксируйте новый выпуск.'; exit 1
+fi
 systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 env GOMAXPROCS=1 npm ci --no-audit --no-fund
 systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 npm run check
 systemd-run --scope --quiet -p CPUQuota=60% nice -n 10 env GOMAXPROCS=1 npm run build
+test -s "$repo/dist/index.html"
+test -s "$repo/dist/theme-init.js"
+if [[ $mode == --prepare ]]; then
+  printf 'Выпуск %s собран. Рабочие службы и БД не изменены.\n' "$revision"
+  exit 0
+fi
 services=(ruspet.service)
 for candidate in ruspet-bot-proxy.service ruspet-bitrix-import.service; do
   if systemctl is-active --quiet "$candidate"; then
@@ -91,4 +105,5 @@ cmp "$app/dist/index.html" "$backup/served-index.html"
 curl -fsS http://127.0.0.1:4310/theme-init.js -o "$backup/served-theme-init.js"
 cmp "$app/dist/theme-init.js" "$backup/served-theme-init.js"
 systemctl is-active "${services[@]}"
+git --git-dir="$repo/.git" rev-parse --short "$revision" > "$app/.release-version"
 echo "Обновлено. Резервная копия: $backup"
