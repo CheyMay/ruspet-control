@@ -1,6 +1,6 @@
 import {AppError} from './domain.js';
 
-export type TelegramMethod='getMe'|'getWebhookInfo'|'getUpdates'|'sendMessage'|'editMessageText'|'answerCallbackQuery'|'sendDocument';
+export type TelegramMethod='getMe'|'getWebhookInfo'|'getUpdates'|'getFile'|'sendMessage'|'editMessageText'|'answerCallbackQuery'|'sendDocument';
 const reasons:[RegExp,string][]=[
  [/button_url_invalid|button url|wrong http url|url host is empty/i,'Некорректная ссылка в кнопке. Проверьте PUBLIC_ORIGIN.'],
  [/button_data_invalid|callback data|callback_data/i,'Некорректные данные кнопки.'],

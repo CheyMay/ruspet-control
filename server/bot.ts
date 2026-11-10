@@ -7,18 +7,26 @@ import {linkedText,reportLink,escapeHtml,taskLink} from '../shared/report-links.
 import {randomBytes} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {acknowledgeAlert,userAlerts,listTaskReminders,saveTaskReminder,disableTaskReminder,reminderInput} from './reminders.js';
-import {assert,canRequest,canEdit} from './domain.js';
+import {assert,canRequest,canEdit,canSee} from './domain.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
 import {canDelegateTask,delegateTask,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {actionItems,canReview} from '../shared/actions.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize,queueLabels} from '../shared/analytics.js';
 import type {User,Task} from '../shared/types.js';
+import {parseVoiceIntent} from './voice-intent.js';
 export type BotScreen={replyKeyboard?:'contact'|'remove';timingKind?:'menu'|'task';format?:'HTML';document?:{reportId:string};links?:{text:string;url:string}[];text:string;buttons:{text:string;token:string}[][]};
 type Payload={op:string;id?:string;page?:number;filter?:string;query?:string;kind?:string;version?:number;target?:string;step?:number;revision?:number;values?:Record<string,string>;minutes?:number};
 type Field={key:string;label:string;min:number};
 type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};
 const date=(s:string|null)=>s?new Date(s).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'}):'Не назначен';
+function basicTaskFields(kind:string|undefined,min:number):Field[]|undefined{
+ if(kind==='deadline')return [{key:'deadline',label:'Предложите новый срок',min:1},{key:'reason',label:'Почему нужен новый срок?',min},{key:'plan',label:'Что будет сделано к новому сроку?',min}];
+ if(kind==='comment'||kind==='submit')return [{key:'comment',label:kind==='comment'?'Комментарий к задаче':'Опишите готовый результат',min:5}];
+}
+function nextMissing(d:Dialog){
+ while(d.index<d.fields.length&&Object.hasOwn(d.values,d.fields[d.index].key))d.index++;
+}
 async function screen(u:User,ch:string,text:string,rows:{text:string;payload:Payload}[][],db:Db=pool):Promise<BotScreen>{
  const records:{token:string;payload:unknown}[]=[];
  const buttons=rows.map(row=>row.map(b=>{const token=randomBytes(18).toString('base64url');records.push({token,payload:b.payload});return {text:b.text,token}}));
@@ -77,13 +85,19 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   rows.push([button('История','history',{id:t.id}),button('Меню','home')]);return screen(u,ch,text.slice(0,4000),rows);
  }
  if(p.op==='report_pdf'){const report=await getReport(u,p.id!);return {text:'PDF · '+new Date(report.created_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}),buttons:[],document:{reportId:report.id}};}
- if(p.op==='reports'){
+ if(p.op==='reports'&&!p.id&&p.page===undefined){
+  return screen(u,ch,'Отчёты\n\nСводка сейчас покажет, что требует внимания. Итоги дня покажут сделанное за день и задачи на завтра. Архив хранит снимки, которые можно открыть в PDF.',[
+   [button('Сводка сейчас',u.role==='employee'?'personal_brief':'brief'),button('Итоги дня и завтра','report_evening')],
+   [button('Сохранить снимок','report_now'),button('Архив отчётов','report_archive')],[button('Меню','home')]
+  ]);
+ }
+ if(p.op==='reports'||p.op==='report_archive'){
   const page=p.page||0,report=p.id?await getReport(u,p.id):null;
   const rows:ReturnType<typeof button>[][]=[];
-  if(report){const content=reportText(report);rows.push([button('PDF отчёта','report_pdf',{id:report.id})],[button('К архиву','reports',{page})],[button('Меню','home')]);const result=await screen(u,ch,content.text.slice(0,3900),rows);return {...result,text:linkedText(content.text.length>3500?content.text.slice(0,3400)+'\nПолная сводка — в PDF и на сайте.':content.text,content.links),format:'HTML',links:[{text:'Отчёт на сайте',url:reportLink(publicOrigin(),report.id)}]};}
+  if(report){const content=reportText(report);rows.push([button('PDF отчёта','report_pdf',{id:report.id})],[button('К архиву','report_archive',{page})],[button('Отчёты','reports')]);const result=await screen(u,ch,content.text.slice(0,3900),rows);return {...result,text:linkedText(content.text.length>3500?content.text.slice(0,3400)+'\nПолная сводка — в PDF и на сайте.':content.text,content.links),format:'HTML',links:[{text:'Отчёт на сайте',url:reportLink(publicOrigin(),report.id)}]};}
   const archive=await listReports(u,{page:Math.floor(page/2)});
   for(const r of archive.items.slice((page%2)*10,(page%2)*10+10))rows.push([button(date(r.summary?.to||r.created_at)+' · '+({snapshot:'Общий',daily:'Итоги и завтра',period:'За период',today:'Сегодня',overdue:'Просрочки',review:'Приёмка',nextday:'План'} as Record<string,string>)[r.kind||'snapshot'],'reports',{id:r.id,page})]);
-  rows.push([...(page?[button('← Назад','reports',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1})]:[])],[button('Общий отчёт сейчас','report_now')],[button('Итоги дня и завтра','report_evening')],[button('Меню','home')]);return screen(u,ch,'Отчёты · '+archive.total+'\nВыберите снимок или сформируйте новый. Каждый отчёт сохраняет время и параметры.',rows);
+  rows.push([...(page?[button('← Назад','report_archive',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','report_archive',{page:page+1})]:[])],[button('К отчётам','reports')]);return screen(u,ch,'Архив отчётов · '+archive.total+'\nВыберите снимок. Каждый отчёт сохраняет время и параметры.',rows);
  }
  if(p.op==='delegate_list'||p.op==='delegate_preview'){
   const {people,version,responsibility}=await delegationTargets(u,p.id!);
@@ -122,23 +136,70 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
  if(p.op==='alerts'){const alerts=(await userAlerts(u)).filter(a=>!a.acknowledged_at&&!a.canceled_at);return screen(u,ch,'Напоминания, ожидающие подтверждения: '+alerts.length, [...alerts.slice(0,15).map(a=>[button('ОК · '+(a.task_id?'#'+a.task_id:a.kind),'confirm',{kind:'alert_ack',target:a.id})]),[button('Меню','home')]]);}
  if(p.op==='edit'){const d=await detail(u,p.id!);assert(canEdit(u,d.task)&&d.task.status==='active',403,'Редактирование доступно постановщику или руководителю.');return screen(u,ch,'Редактирование #'+d.task.id+' · '+d.task.title,[[button('Название','form',{kind:'edit_title',id:p.id,version:d.task.version})],[button('Описание','form',{kind:'edit_description',id:p.id,version:d.task.version})],[button('Цена задачи','form',{kind:'edit_price',id:p.id,version:d.task.version})],[button('Исполнитель','assignee_list',{id:p.id,version:d.task.version})],[button('Крайний срок через согласование','form',{kind:'deadline',id:p.id,version:d.task.version})],[button('К задаче','task',{id:p.id})]]);}
  if(p.op==='assignee_list'){const d=await detail(u,p.id!);assert(canEdit(u,d.task),403,'Нет права редактировать задачу.');const people=await taskAssignees(u,p.id!);const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/8)-1));return screen(u,ch,'Выберите исполнителя · страница '+(page+1),[...people.slice(page*8,page*8+8).map(person=>[button(person.name,'assignee_prepare',{id:p.id,version:d.task.version,target:person.id})]),[...(page?[button('← Назад','assignee_list',{id:p.id,page:page-1})]:[]),...((page+1)*8<people.length?[button('Далее →','assignee_list',{id:p.id,page:page+1})]:[])],[button('К задаче','task',{id:p.id})]]);}
- if(p.op==='brief'){
-  assert(u.role!=='employee',403,'Сводка команды доступна руководителям.');
+ if(p.op==='brief'||p.op==='personal_brief'){
+  assert(p.op!=='brief'||u.role!=='employee',403,'Сводка команды доступна руководителям.');
   const s=summarize(data.tasks,now),pending=data.approvals.filter(a=>a.state==='pending').length;
   const urgent=data.tasks.filter(t=>taskQueue(t,now)==='overdue').sort((a,b)=>Number(!!b.customer_risk)-Number(!!a.customer_risk)||(a.deadline||'').localeCompare(b.deadline||'')).slice(0,3);
-  return screen(u,ch,`📊 РУСПЭТ · сводка руководителя\n${date(data.serverTime)} МСК · ваша область доступа\n\nВсего задач: ${s.total}\nПросрочены ранее: ${s.overdue}\nПоследний день сегодня: ${s.today}\nСрок впереди: ${s.upcoming}\nБез срока: ${s.no_deadline}\nНа приёмке: ${s.review}\nЗавершены: ${s.completed}\n\nОтдельно: ${pending} согласований — входят в задачи выше.\n\nВ первую очередь\n${urgent.map(t=>`• #${t.id} ${t.title.slice(0,110)}\n  ${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n')||'Просрочек с прошлых дней нет.'}\n\nЧек-листы и анализ невыполненных задач исключены. Это текущая сводка; сохранённые снимки — в архиве.`,[[button('Обновить сводку','brief')],[button('Архив отчётов','reports')],...urgent.map(t=>[button('Открыть #'+t.id,'task',{id:t.id})]),[button('В меню','home')]]);
+  return screen(u,ch,`📊 РУСПЭТ · ${u.role==='employee'?'моя сводка':'сводка руководителя'}\n${date(data.serverTime)} МСК · ваша область доступа\n\nВсего задач: ${s.total}\nПросрочены ранее: ${s.overdue}\nПоследний день сегодня: ${s.today}\nСрок впереди: ${s.upcoming}\nБез срока: ${s.no_deadline}\nНа приёмке: ${s.review}\nЗавершены: ${s.completed}\n\nОтдельно: ${pending} согласований — входят в задачи выше.\n\nВ первую очередь\n${urgent.map(t=>`• #${t.id} ${t.title.slice(0,110)}\n  ${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n')||'Просрочек с прошлых дней нет.'}\n\nЧек-листы и анализ невыполненных задач исключены. Это текущая сводка; сохранённые снимки — в архиве.`,[[button('Просрочены · '+s.overdue,'report_queue',{filter:'overdue'}),button('Сегодня · '+s.today,'report_queue',{filter:'today'})],[button('На приёмке · '+s.review,'report_queue',{filter:'review'}),button('Нужно действие','inbox')],[button('Обновить сводку',p.op),button('Архив отчётов','report_archive')],...urgent.map(t=>[button('Открыть #'+t.id,'task',{id:t.id})]),[button('В меню','home')]]);
  }
  if(p.op==='report_now'||p.op==='report_evening'){const report=await (await import('./service.js')).makeReport(u,p.op==='report_now'?'snapshot':'daily','bot:'+randomBytes(12).toString('hex'));return botView(u,ch,{op:'reports',id:report.id});}
- if(['inbox','tasks','day'].includes(p.op)){
-  const actions=actionItems(data).filter(a=>a.mine);const list=p.op==='inbox'?actions.map(a=>({id:a.taskId,label:a.label+' · '+a.title})):data.tasks.filter(t=>(t.assignee_id===u.id||u.role!=='employee')&&(p.op==='tasks'||taskQueue(t,now)==='today')).map(t=>({id:t.id,label:t.title}));
+ if(['inbox','tasks','day','report_queue'].includes(p.op)){
+  const actions=actionItems(data).filter(a=>a.mine);const list=p.op==='inbox'?actions.map(a=>({id:a.taskId,label:a.label+' · '+a.title})):data.tasks.filter(t=>(p.op==='report_queue'?taskQueue(t,now)===p.filter:(t.assignee_id===u.id||u.role!=='employee')&&(p.op==='tasks'||taskQueue(t,now)==='today'))).map(t=>({id:t.id,label:t.title}));
   const page=Math.max(0,Math.min(p.page||0,Math.max(0,Math.ceil(list.length/6)-1))),slice=list.slice(page*6,page*6+6);
-  return screen(u,ch,`${p.op==='inbox'?'Нужно ваше действие':p.op==='day'?'Последний день сегодня':'Доступные задачи'} · ${list.length}\n${slice.map((t,i)=>`${i+1}. #${t.id} ${t.label.slice(0,180)}`).join('\n\n')||'Список пуст.'}\n\nСтраница ${page+1}/${Math.max(1,Math.ceil(list.length/6))}`, [...slice.map((t,i)=>[button(`${i+1}. Открыть #${t.id}`,'task',{id:t.id})]),[...(page?[button('← Назад',p.op,{page:page-1})]:[]),...(page*6+6<list.length?[button('Далее →',p.op,{page:page+1})]:[])],home,[button('Все задачи','tasks'),button('Меню','home')]]);
+  return screen(u,ch,`${p.op==='inbox'?'Нужно ваше действие':p.op==='day'?'Последний день сегодня':p.op==='report_queue'?queueLabels[p.filter as keyof typeof queueLabels]||'Выборка':'Доступные задачи'} · ${list.length}\n${slice.map((t,i)=>`${i+1}. #${t.id} ${t.label.slice(0,180)}`).join('\n\n')||'Список пуст.'}\n\nСтраница ${page+1}/${Math.max(1,Math.ceil(list.length/6))}`, [...slice.map((t,i)=>[button(`${i+1}. Открыть #${t.id}`,'task',{id:t.id})]),[...(page?[button('← Назад',p.op,{page:page-1,filter:p.filter})]:[]),...(page*6+6<list.length?[button('Далее →',p.op,{page:page+1,filter:p.filter})]:[])],home,[button('Все задачи','tasks'),button('Меню','home')]]);
  }
  const s=summarize(data.tasks,now),actions=actionItems(data).filter(a=>a.mine).length,last=await lastUndo(u);
  return screen(u,ch,`РУСПЭТ · ${u.role==='employee'?'Мои задачи':'Пульт руководителя'}\n${u.name}\n\n📥 Ждут вашего действия: ${actions}\n\nВсего доступно: ${s.total}\nПросрочены ранее: ${s.overdue}\nСрок сегодня: ${s.today}\nНа приёмке: ${s.review}\n\nНачните с «Ждут решения» — там ответы, приёмка и согласования. Откройте задачу, чтобы увидеть историю или отправить результат.\n\nПЭТ-преформы · крышки · упаковка\nБитрикс24 пока не подключён.`,[home,...(last?[[button('Отменить последнее действие','undo_prepare',{id:last.task_id,target:last.id})]]:[]),[button('🔔 Напоминания','alerts')],[button(u.role==='employee'?'Мои задачи':'Задачи команды','tasks')],[button('📁 Отчёты','reports')],...(u.role!=='employee'?[[button('📊 Сводка команды','brief')]]:[])]);
 }
 export function parseMoscowInput(value:string){const match=value.match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2})$/);assert(match,400,'Введите дату в формате ДД.ММ.ГГГГ ЧЧ:ММ, время московское.');const [,d,m,y,h,min]=match,raw=`${y}-${m}-${d}T${h}:${min}:00+03:00`,date=new Date(raw);assert(!isNaN(date.getTime())&&new Date(date.getTime()+10800000).toISOString().slice(0,16)===`${y}-${m}-${d}T${h}:${min}`,400,'Такой даты или времени нет.');assert(date>new Date(),400,'Новый срок должен быть в будущем.');return date.toISOString();}
 async function prompt(u:User,ch:string,d:Dialog,db:Db){const f=d.fields[d.index];return screen(u,ch,`Задача #${d.payload.id}\nШаг ${d.index+1}/${d.fields.length}\n\n${f.label}\n${f.key==='deadline'?'Формат: ДД.ММ.ГГГГ ЧЧ:ММ · Москва':`Минимум ${f.min} символов. Можно указать ссылку на материалы.`}`,[[button('Отменить ввод','cancel')]],db)}
+function draftSummary(d:Dialog){
+ return (d.payload.kind==='reminder'?'Дни недели (1=Пн, 7=Вс): '+d.values.days+'\n\n':'')+
+  d.fields.filter(f=>Object.hasOwn(d.values,f.key)).map(f=>f.label+'\n'+(f.key==='deadline'?date(d.values[f.key])+' МСК':d.values[f.key]||'Без комментария')).join('\n\n');
+}
+async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading=`Проверьте перед отправкой · #${d.payload.id}`){
+ const summary=draftSummary(d);
+ const restart=d.payload.kind==='accept'&&d.fields.length===0?button('К задаче','task',{id:d.payload.id}):button('Ввести заново','form',{...d.payload,values:undefined});
+ return screen(u,ch,`${heading}\n\n${summary.length>3200?summary.slice(0,3200)+'\n… Введённые ответы сохранены полностью.':summary}`,[
+  [button('Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],[restart,button('Отмена','cancel')]
+ ],db);
+}
+
+export async function savedVoiceDraft(u:User,ch:string,inputId:string,db:Db=pool){
+ return (await db.query('SELECT screen FROM bot_inputs WHERE actor_id=$1 AND channel=$2 AND input_id=$3',[u.id,ch,'voice:'+inputId])).rows[0]?.screen as BotScreen|undefined;
+}
+export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:string,at=new Date()):Promise<BotScreen>{
+ const intent=transcript.length<=2600?parseVoiceIntent(transcript,at):null;
+ if(!intent)return screen(u,ch,`Распознал: ${transcript.slice(0,600)}\n\nНачните с действия и номера задачи. Например: «Добавь комментарий к задаче 2406: клиент подтвердил образцы».`,[[button('Мои задачи','tasks'),button('Меню','home')]]);
+ return transaction(async db=>{
+  await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
+  const cached=await savedVoiceDraft(u,ch,inputId,db);if(cached)return cached;
+  const {id,kind}=intent;
+  const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+  assert(task&&canSee(u,task),404,'Задача не найдена или недоступна. Проверьте её номер в «Мои задачи».');
+  if(kind==='submit'||kind==='deadline')assert(canRequest(u,task)&&task.status!=='completed'&&(kind!=='submit'||task.status==='active'),409,'Это действие недоступно в текущем состоянии задачи.');
+  if(kind==='accept')assert(task.status==='review'&&canReview(u,task),409,'Результат не ожидает вашей приёмки.');
+  if(kind!=='comment')assert(!(await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rowCount,409,'Сначала завершите активное согласование по этой задаче.');
+  const fields=basicTaskFields(kind,(await config(db)).config.responseMinLength)??(intent.values.comment?[{key:'comment',label:'Комментарий к приёмке',min:0}]:[]);
+  const values:Record<string,string>={};
+  for(const field of fields){
+   const value=intent.values[field.key];
+   if(!value||value.length<field.min)continue;
+   if(field.key==='deadline'){try{values.deadline=parseMoscowInput(value);}catch{/* Ask for a valid date. */}}
+   else values[field.key]=value;
+  }
+  const payload:Payload={op:'form',id,kind,version:task.version};
+  const draft={payload,fields,index:0,values};nextMissing(draft);
+  const labels={comment:'Добавить комментарий',submit:'Передать результат на приёмку',deadline:'Запросить перенос срока',accept:'Принять результат'};
+  const heading=`${labels[kind]} · #${id}\n${task.title.slice(0,200)}`;
+  const missing=fields.filter(field=>!Object.hasOwn(values,field.key));
+  const response=missing.length?await screen(u,ch,`${heading}\n\n${draftSummary(draft)}\nУточните: ${missing.map(field=>field.label).join(' · ')}`,[
+   [button('Уточнить и продолжить','form',{...payload,values})],[button('К задаче','task',{id})]
+  ],db):await confirmation(u,ch,draft,db,heading);
+  await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,'voice:'+inputId,JSON.stringify(response)]);
+  return response;
+ });
+}
 export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>{
  const b=(await pool.query('SELECT * FROM bot_buttons WHERE token=$1 AND actor_id=$2 AND channel=$3 AND expires_at>now()',[token,u.id,ch])).rows[0];assert(b,409,'Кнопка устарела. Откройте меню заново.');const p=b.payload as Payload;
  if(!['form','confirm','cancel','accept_prepare','assignee_prepare','undo_prepare'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
@@ -153,8 +214,8 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;
    if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!);assert(canEdit(u,d.task),403,'Нет права редактировать задачу.');}
-   const fields:Field[]=p.kind==='edit_price'?[{key:'price',label:'Цена задачи в рублях (обязательное поле)',min:1},{key:'reason',label:'Причина изменения цены',min:5}]:p.kind==='reminder'?[{key:'times',label:'Время напоминания: ЧЧ:ММ, можно несколько через запятую. Например: 09:00, 15:30. Не более 8 времён.',min:5},{key:'weeks',label:'Сколько недель повторять? Число от 1 до 52. Для одного недельного цикла введите 1.',min:1}]:p.kind==='edit_title'?[{key:'value',label:'Новое название задачи',min:3},{key:'reason',label:'Причина изменения',min:5}]:p.kind==='edit_description'?[{key:'value',label:'Новое описание задачи',min:1},{key:'reason',label:'Причина изменения',min:5}]:p.kind==='edit_assignee'?[{key:'reason',label:'Почему меняется исполнитель?',min:5}]:p.kind==='answer'?[{key:'reason',label:'Что помешало выполнить задачу?',min},{key:'progress',label:'Что уже сделано?',min},{key:'plan',label:'Что будете делать дальше?',min}]:p.kind==='deadline'?[{key:'deadline',label:'Предложите новый срок',min:1},{key:'reason',label:'Почему нужен новый срок?',min},{key:'plan',label:'Что будет сделано к новому сроку?',min}]:p.kind==='clarification'?[{key:'answer',label:'Ответьте на вопрос согласующего',min:5}]:[{key:'comment',label:p.kind==='comment'?'Комментарий к задаче':p.kind==='submit'?'Опишите готовый результат':p.kind==='return'?'Что конкретно нужно исправить?':p.kind==='reject'?'Почему запрос отклонён?':p.kind==='clarify'?'Что нужно уточнить?':'Комментарий к решению',min:5}];
-   const d:Dialog={payload:p,fields,index:0,values:p.values||{}};await db.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+interval '1 hour') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(d)]);return prompt(u,ch,d,db);
+   const fields:Field[]=basicTaskFields(p.kind,min)??(p.kind==='edit_price'?[{key:'price',label:'Цена задачи в рублях (обязательное поле)',min:1},{key:'reason',label:'Причина изменения цены',min:5}]:p.kind==='reminder'?[{key:'times',label:'Время напоминания: ЧЧ:ММ, можно несколько через запятую. Например: 09:00, 15:30. Не более 8 времён.',min:5},{key:'weeks',label:'Сколько недель повторять? Число от 1 до 52. Для одного недельного цикла введите 1.',min:1}]:p.kind==='edit_title'?[{key:'value',label:'Новое название задачи',min:3},{key:'reason',label:'Причина изменения',min:5}]:p.kind==='edit_description'?[{key:'value',label:'Новое описание задачи',min:1},{key:'reason',label:'Причина изменения',min:5}]:p.kind==='edit_assignee'?[{key:'reason',label:'Почему меняется исполнитель?',min:5}]:p.kind==='answer'?[{key:'reason',label:'Что помешало выполнить задачу?',min},{key:'progress',label:'Что уже сделано?',min},{key:'plan',label:'Что будете делать дальше?',min}]:p.kind==='clarification'?[{key:'answer',label:'Ответьте на вопрос согласующего',min:5}]:[{key:'comment',label:p.kind==='return'?'Что конкретно нужно исправить?':p.kind==='reject'?'Почему запрос отклонён?':p.kind==='clarify'?'Что нужно уточнить?':'Комментарий к решению',min:5}]);
+   const d:Dialog={payload:p,fields,index:0,values:p.values||{}};nextMissing(d);if(d.index===d.fields.length)return confirmation(u,ch,d,db);await db.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+interval '1 hour') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(d)]);return prompt(u,ch,d,db);
   }
   const v=p.values||{};let result='Действие сохранено.',resultTask:string|undefined;
   if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}
@@ -183,11 +244,10 @@ export async function botText(u:User,ch:string,text:string,inputId:string):Promi
   if(f.key==='price')assert(parsePrice(text)!==null,400,'Цена: неотрицательное число, не более двух знаков после запятой.');
   if(f.key==='times')assert(reminderInput.shape.times.safeParse(text.split(',').map(s=>s.trim())).success,400,'Время: ЧЧ:ММ, до 8 различных времён через запятую.');
   if(f.key==='weeks')assert(/^\d{1,2}$/.test(text.trim())&&Number(text)>=1&&Number(text)<=52,400,'Введите число недель от 1 до 52.');
-  d.values[f.key]=f.key==='deadline'?parseMoscowInput(text.trim()):text.trim();d.index++;
+  d.values[f.key]=f.key==='deadline'?parseMoscowInput(text.trim()):text.trim();d.index++;nextMissing(d);
   let response:BotScreen;if(d.index<d.fields.length){await db.query('UPDATE bot_sessions SET data=$3 WHERE actor_id=$1 AND channel=$2',[u.id,ch,JSON.stringify(d)]);response=await prompt(u,ch,d,db)}else{
    // The draft is now immutable and bound to a one-time confirmation button.
-   await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);const summary=(d.payload.kind==='reminder'?'Дни недели (1=Пн, 7=Вс): '+d.values.days+'\n\n':'')+d.fields.map(f=>f.label+'\n'+(f.key==='deadline'?date(d.values[f.key]):d.values[f.key])).join('\n\n');
-   response=await screen(u,ch,`Проверьте перед отправкой · #${d.payload.id}\n\n${summary.length>3200?summary.slice(0,3200)+'\n… Введённые ответы сохранены полностью.':summary}`,[[button('Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],[button('Ввести заново','form',d.payload),button('Отмена','cancel')]],db);
+   await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);response=await confirmation(u,ch,d,db);
   }
   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,inputId,JSON.stringify(response)]);return response;
  });

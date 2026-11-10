@@ -25,6 +25,100 @@ test('bot leadership brief enforces role and uses only the managers visible task
  assert(brief.buttons.flat().some(b=>b.text==='Архив отчётов'));
 });
 
+test('bot reports separate the current scoped queues from saved reports',async()=>{
+ const {botView,botClick}=await import('../server/bot.js');
+ const employee=users.find(u=>u.id==='ivan')!,channel='report-test';
+ const home=await botView(employee,channel,{op:'reports'});
+ assert.deepEqual(home.buttons.flat().slice(0,4).map(b=>b.text),['Сводка сейчас','Итоги дня и завтра','Сохранить снимок','Архив отчётов']);
+ const brief=await botClick(employee,channel,home.buttons[0][0].token);
+ const queue=await botClick(employee,channel,brief.buttons[0][0].token);
+ assert.match(queue.text,/Просрочены ранее/);
+ const visible=(await service.bootstrap(employee)).tasks.map(t=>t.id);
+ assert([...queue.text.matchAll(/#(\d+)/g)].every(match=>visible.includes(match[1])));
+ const archive=await botClick(employee,channel,home.buttons[1][1].token);
+ assert.match(archive.text,/Архив отчётов/);
+});
+
+test('voice understands dates and prepares only the fields present in the spoken command',async()=>{
+ const {parseVoiceIntent}=await import('../server/voice-intent.js');
+ const now=new Date('2026-11-11T22:00:00Z');
+ assert.deepEqual(parseVoiceIntent('Перенеси задачу номер 2 406 на завтра к 15:00. Причина: ожидаем ответ клиента. План: отправить новый расчёт.',now),{
+  kind:'deadline',id:'2406',values:{deadline:'13.11.2026 15:00',reason:'ожидаем ответ клиента',plan:'отправить новый расчёт.'}
+ });
+ assert.equal(parseVoiceIntent('Перенеси срок по задаче №2406 на 14 ноября в 15 часов',now)?.values.deadline,'14.11.2026 15:00');
+ assert.equal(parseVoiceIntent('Не закрывай задачу 2406.'),null);
+ assert.equal(parseVoiceIntent('Закрой задачу 2406 и задачу 2403.'),null);
+ const {botVoiceDraft,botClick,botText}=await import('../server/bot.js');
+ const employee=users.find(u=>u.id==='ivan')!,channel='voice-form-test';
+ const draft=await botVoiceDraft(employee,channel,'Перенеси задачу 2406 на завтра к 15:00. План: отправить согласованный расчёт.','1');
+ assert.match(draft.text,/Запросить перенос срока/);
+ const prompt=await botClick(employee,channel,draft.buttons[0][0].token);
+ assert.match(prompt.text,/Почему нужен новый срок/);
+ const confirmation=await botText(employee,channel,'Нужна дополнительная сверка условий.','reason');
+ assert.match(confirmation.text,/Проверьте перед отправкой/);
+ assert.match(confirmation.text,/отправить согласованный расчёт/);
+ await assert.rejects(()=>botVoiceDraft(employee,channel,'Добавь комментарий к задаче 2403: запрос получен.','2'),/недоступна/);
+});
+
+test('Telegram voice downloads through the bridge and creates one Groq draft before the user confirms',async()=>{
+ const {handlePilotUpdate}=await import('../server/telegram-pilot.js');
+ const {botClick}=await import('../server/bot.js');
+ const user=users.find(u=>u.id==='ivan')!,chat='89077',savedFetch=globalThis.fetch;
+ const settings={TELEGRAM_BOT_TOKEN:'fixture-token',TELEGRAM_PROXY_URL:'https://voice-bridge.example/forward',TELEGRAM_PROXY_SECRET:'fixture-bridge',TELEGRAM_VOICE_ENABLED:'true',TELEGRAM_VOICE_USER_IDS:user.id,GROQ_API_KEY:'fixture-groq'};
+ const keys=[...Object.keys(settings),'GROQ_HTTPS_PROXY'],saved=new Map(keys.map(key=>[key,process.env[key]]));
+ Object.assign(process.env,settings);delete process.env.GROQ_HTTPS_PROXY;
+ await db.pool.query('INSERT INTO telegram_binding(chat_id,user_id) VALUES($1,$2)',[chat,user.id]);
+ const update={update_id:89077,message:{chat:{id:Number(chat),type:'private'},from:{id:Number(chat)},voice:{file_id:'fixture-voice',duration:4,file_size:4}}};
+ let downloads=0,transcriptions=0;
+ const messages:{text:string;reply_markup:{inline_keyboard:{callback_data:string}[][]}}[]=[];
+ globalThis.fetch=async(url,init)=>{
+  const target=String(url),headers=new Headers(init?.headers);
+  if(target==='https://api.groq.com/openai/v1/audio/transcriptions'){
+   transcriptions++;
+   assert.equal(headers.get('Authorization'),'Bearer fixture-groq');
+   assert(!headers.has('X-Proxy-Secret'));
+   const form=init?.body as FormData;
+   assert.equal(form.get('language'),'ru');
+   assert.equal((form.get('file') as File).name,'voice.ogg');
+   assert.equal((form.get('file') as File).size,4);
+   return Response.json({text:'Добавь комментарий к задаче 2406: Условия проверены голосом.'});
+  }
+  assert.equal(target,settings.TELEGRAM_PROXY_URL);
+  assert.equal(headers.get('X-Proxy-Secret'),settings.TELEGRAM_PROXY_SECRET);
+  assert(!headers.has('Authorization'));
+  const envelope=JSON.parse(String(init?.body));
+  if(envelope.method==='GET'){
+   downloads++;
+   assert.equal(envelope.url,'https://api.telegram.org/file/botfixture-token/voice/file_1.oga');
+   return new Response(new Uint8Array([79,103,103,83]),{headers:{'Content-Type':'application/octet-stream'}});
+  }
+  if(envelope.url.endsWith('/getFile')){
+   assert.equal(envelope.body.file_id,'fixture-voice');
+   return Response.json({ok:true,result:{file_path:'voice/file_1.oga',file_size:4}});
+  }
+  assert(envelope.url.endsWith('/sendMessage'));
+  messages.push(envelope.body);
+  return Response.json({ok:true,result:{message_id:1}});
+ };
+ try{
+  await handlePilotUpdate(update);await handlePilotUpdate(update);
+  assert.equal(downloads,1);assert.equal(transcriptions,1);
+  assert.match(messages[0].text,/Добавить комментарий · #2406/);
+  const token=messages[0].reply_markup.inline_keyboard[0][0].callback_data;
+  assert.equal(messages[1].reply_markup.inline_keyboard[0][0].callback_data,token);
+  const count=async()=>Number((await db.pool.query("SELECT count(*) n FROM comments WHERE task_id='2406' AND body='Условия проверены голосом.'")).rows[0].n);
+  assert.equal(await count(),0);
+  await botClick(user,'telegram:'+chat,token);await botClick(user,'telegram:'+chat,token);
+  assert.equal(await count(),1);
+  process.env.TELEGRAM_VOICE_USER_IDS='another-person';
+  await handlePilotUpdate({...update,update_id:89078});assert.equal(transcriptions,1);
+ }finally{
+  globalThis.fetch=savedFetch;
+  for(const [key,value] of saved){if(value===undefined)delete process.env[key];else process.env[key]=value;}
+  await db.pool.query('DELETE FROM telegram_binding WHERE chat_id=$1',[chat]);
+ }
+});
+
 before(async()=>{
  const current=process.env.DATABASE_URL||JSON.parse(await readFile('.local/connection.json','utf8')).url;
  adminConnection=new pg.Client({connectionString:current});await adminConnection.connect();await adminConnection.query(`CREATE DATABASE ${database}`);

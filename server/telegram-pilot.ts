@@ -12,7 +12,8 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {pool,transaction} from './db.js';
 import {assert,AppError} from './domain.js';
-import {botClick,botText,botView,clearBotDraft,alertScreen,type BotScreen} from './bot.js';
+import {botClick,botText,botView,clearBotDraft,alertScreen,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
+import {transcribeTelegramVoice,voiceAvailable} from './telegram-voice.js';
 import type {User} from '../shared/types.js';
 const digest=(v:string)=>createHash('sha256').update(v).digest('hex');
 const token=async()=>process.env.TELEGRAM_BOT_TOKEN||(await readFile(process.env.TELEGRAM_BOT_TOKEN_FILE||'.local/telegram-token','utf8')).trim();
@@ -52,7 +53,24 @@ async function reply(chat:string,s:BotScreen,started:number,message?:number){
   if(kind)try{await pool.query('INSERT INTO telegram_response_times(kind,ok,duration_ms) VALUES($1,$2,$3)',[kind,ok,Math.round(performance.now()-started)]);}catch{console.error('Telegram response timing unavailable');}
  }
 }
-export async function handlePilotUpdate(update:any){
+const voiceInFlight=new Map<string,string>();
+async function handleVoice(u:User,chat:string,m:any,inputId:string,started:number){
+ const channel='telegram:'+chat;
+ try{
+  let response=await savedVoiceDraft(u,channel,inputId);
+  if(!response){
+   const text=await transcribeTelegramVoice(m.voice,id=>call('getFile',{file_id:id}),token);
+   const stillBound=(await pool.query('SELECT 1 FROM telegram_binding WHERE chat_id=$1 AND user_id=$2',[chat,u.id])).rowCount;
+   if(!stillBound||!voiceAvailable(u.id))return;
+   const at=Number.isSafeInteger(m.date)&&m.date>0?new Date(m.date*1000):new Date();
+   response=await botVoiceDraft(u,channel,text,inputId,isNaN(at.getTime())?new Date():at);
+  }
+  await reply(chat,response,started);
+ }catch(e){
+  await send(chat,{text:e instanceof AppError?e.message:'Голосовое не обработано. Повторите позже или отправьте текст.',buttons:[]}).catch(()=>{});
+ }
+}
+export async function handlePilotUpdate(update:any,deferVoice=false){
  const started=performance.now();
  const c=update.callback_query,m=update.message||c?.message;if(!m||m.chat?.type!=='private')return;const chat=String(m.chat.id);
  const login=typeof m.text==='string'&&!c?m.text.match(/^\/start login_([A-Za-z0-9_-]{32})$/)?.[1]:null;
@@ -71,6 +89,17 @@ export async function handlePilotUpdate(update:any){
  const u=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0] as User|undefined;if(!u){if(!c){try{const response=await onboardingMessage(m);if(response)await reply(chat,response,started)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось подключить сотрудника. Попробуйте /start позже.',buttons:[]})}}return;}
  const ch='telegram:'+chat;
  if(c){const acknowledged=call('answerCallbackQuery',{callback_query_id:c.id}).catch(()=>{});try{await reply(chat,await botClick(u,ch,String(c.data)),started,m.message_id)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',buttons:(await botView(u,ch)).buttons})}finally{await acknowledged;}return}
+ if(m.voice){
+  if(!m.from||m.from.is_bot||String(m.from.id)!==chat||!/^[1-9][0-9]{0,15}$/.test(chat)||!Number.isSafeInteger(update.update_id))return;
+  if(!voiceAvailable(u.id)){await send(chat,{text:'Голосовые команды пока не включены для вашего аккаунта. Откройте задачу и введите текст.',buttons:[]});return;}
+  const inputId=String(update.update_id);
+  if(voiceInFlight.get(chat)===inputId)return;
+  if(voiceInFlight.has(chat)||voiceInFlight.size>=2){await send(chat,{text:'Уже обрабатывается голосовое. Подождите немного и повторите отправку.',buttons:[]});return;}
+  voiceInFlight.set(chat,inputId);
+  const work=handleVoice(u,chat,m,inputId,started).finally(()=>voiceInFlight.delete(chat));
+  if(!deferVoice)await work;
+  return;
+ }
  try{
   const text=String(m.text||'').trim();let response:BotScreen;
   if(code||/^\/(start|menu|status|cancel|task|today|tasks|inbox|reports|search)(\s|$)/.test(text))await clearBotDraft(u,ch);
@@ -123,6 +152,6 @@ export function startPilot(){if(process.env.TELEGRAM_WORKER_DISABLED==='true')re
   const updates=await call('getUpdates',{offset,timeout:20,limit:10,allowed_updates:['message','callback_query']});
   assert(Array.isArray(updates),502,'Telegram вернул неожиданный ответ при опросе.');
   await pool.query('UPDATE telegram_runtime SET last_poll_at=now(),heartbeat_at=now() WHERE id=1');
-  for(const update of updates){if(stopped)break;const enabled=(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0].enabled;if(!enabled)break;await handlePilotUpdate(update);await pool.query('UPDATE telegram_cursor SET next_update=$1 WHERE id=1',[update.update_id+1])}
+  for(const update of updates){if(stopped)break;const enabled=(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0].enabled;if(!enabled)break;await handlePilotUpdate(update,true);await pool.query('UPDATE telegram_cursor SET next_update=$1 WHERE id=1',[update.update_id+1])}
   }finally{const result=await delivery;if(!result.ok)throw result.error;}
  }catch(e){transportChecked=false;if(!stopped){if(e instanceof TelegramRejected)console.error(e.message);try{await pool.query("INSERT INTO telegram_runtime(id,heartbeat_at,error) VALUES(1,now(),$1) ON CONFLICT(id) DO UPDATE SET heartbeat_at=now(),error=excluded.error",[e instanceof AppError?e.message:'Telegram недоступен. Повтор через 10 секунд.'])}catch{}await sleep(10000)}}finally{if(lock){try{await lock.query('SELECT pg_advisory_unlock(431009)')}finally{lock.release()}}}}};void run();return()=>{stopped=true};}
