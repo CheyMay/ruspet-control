@@ -21,6 +21,7 @@ UPDATE companies c SET created_at=COALESCE((SELECT min(e.occurred_at) FROM compa
  WHERE c.created_at IS NULL;
 ALTER TABLE companies ALTER COLUMN created_at SET DEFAULT clock_timestamp(),ALTER COLUMN created_at SET NOT NULL;
 ALTER TABLE companies ADD COLUMN IF NOT EXISTS last_contact_at timestamptz;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS xlsx_source jsonb;
 CREATE TABLE IF NOT EXISTS company_contacts (
  id uuid PRIMARY KEY,
  company_id uuid NOT NULL REFERENCES companies,

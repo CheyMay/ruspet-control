@@ -33,7 +33,8 @@ export function requireOkbAccess(actor:User){assert(globalAccess(actor),403,'ÐžÐ
 export async function listCompanies(actor:User,query:string){
  requireOkbAccess(actor);
  return (await okbPool().query(`SELECT * FROM companies
-  WHERE strpos(lower(name),lower($1))>0 OR strpos(coalesce(tax_id,''),$1)>0 OR $1=''
+  WHERE $1='' OR strpos(lower(name),lower($1))>0 OR strpos(coalesce(tax_id,''),$1)>0
+   OR EXISTS (SELECT 1 FROM jsonb_each_text(xlsx_source) AS field WHERE strpos(lower(field.value),lower($1))>0)
   ORDER BY lower(name),id LIMIT 100`,[query.slice(0,250)])).rows;
 }
 export async function saveCompany(actor:User,input:unknown,id?:string){

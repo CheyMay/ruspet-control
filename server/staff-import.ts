@@ -3,6 +3,7 @@ import readXlsxFile from 'read-excel-file/node';
 import {pool,transaction,type Db} from './db.js';
 import {assert,AppError} from './domain.js';
 import type {User} from '../shared/types.js';
+import {checkWorkbookZip} from './xlsx.js';
 
 export const nameParts=(value:string)=>value.toLocaleLowerCase('ru-RU').replace(/ё/g,'е').replace(/[,\s]+/g,' ').trim().split(' ').filter(Boolean).sort();
 export const nameKey=(value:string)=>nameParts(value).join(' ');
@@ -13,18 +14,8 @@ export function namesMatch(a:string,b:string){
 export function normalPhone(value:unknown){let digits=String(value??'').replace(/\D/g,'');if(digits.length===10)digits='7'+digits;if(digits.length===11&&digits.startsWith('8'))digits='7'+digits.slice(1);return /^\d{11,15}$/.test(digits)?digits:null;}
 type StaffRow={sourceKey:string;name:string;organisation:string;department:string;emails:string[];phones:string[];bitrixId:string|null};
 const hash=(v:string)=>createHash('sha256').update(v).digest('hex');
-function checkZip(data:Buffer){
- assert(data.length>22&&data.length<=3*1024*1024,400,'Выберите XLSX размером до 3 МБ.');
- const end=data.lastIndexOf(Buffer.from([0x50,0x4b,0x05,0x06]));assert(end>=0&&end+22<=data.length,400,'Некорректный XLSX.');
- const count=data.readUInt16LE(end+10);let cursor=data.readUInt32LE(end+16),total=0;assert(count>0&&count<=1000,400,'Слишком сложный XLSX.');
- for(let i=0;i<count;i++){
-  assert(cursor+46<=data.length&&data.readUInt32LE(cursor)===0x02014b50,400,'Некорректный архив XLSX.');
-  const size=data.readUInt32LE(cursor+24);total+=size;assert(size<=8*1024*1024&&total<=24*1024*1024,400,'Слишком большой распакованный XLSX.');
-  cursor+=46+data.readUInt16LE(cursor+28)+data.readUInt16LE(cursor+30)+data.readUInt16LE(cursor+32);
- }
-}
 export async function parseStaffFile(data:Buffer){
- checkZip(data);let sheets:Awaited<ReturnType<typeof readXlsxFile>>;
+ checkWorkbookZip(data);let sheets:Awaited<ReturnType<typeof readXlsxFile>>;
  try{sheets=await readXlsxFile(data)}catch{throw new AppError(400,'Не удалось прочитать XLSX. Проверьте формат файла.');}
  const rows=new Map<string,StaffRow>();let duplicates=0;
  for(const sheet of sheets){

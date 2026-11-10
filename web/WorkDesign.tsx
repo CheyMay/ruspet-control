@@ -10,7 +10,8 @@ import type {User} from '../shared/types.js';
 
 export const companyStates={prospect:'Потенциальный клиент',active:'В работе',former:'Бывший клиент',unclassified:'Не указан'} as const;
 type CompanyState=keyof typeof companyStates;
-type Company={manager_id:string|null;manager_source:'manual'|'bitrix'|null;bitrix_manager_id?:string|null;bitrix_synced_at?:string|null;id:string;name:string;tax_id:string|null;status:CompanyState;contact:string;notes:string;version:number;updated_at:string};
+const okbSourceFields={name1c:'Название в 1С',manager:'Менеджер в выгрузке',address:'Адрес',region:'Регион',type:'Тип компании',branch:'Филиал отгрузки'} as const;
+type Company={manager_id:string|null;manager_source:'manual'|'bitrix'|null;bitrix_manager_id?:string|null;bitrix_synced_at?:string|null;xlsx_source?:Partial<Record<keyof typeof okbSourceFields,string>>|null;id:string;name:string;tax_id:string|null;status:CompanyState;contact:string;notes:string;version:number;updated_at:string};
 export const canUseOkb=(user:User)=>['admin','director','sales_head'].includes(user.role);
 const errorText=(error:unknown)=>error instanceof Error?error.message:'Не удалось выполнить запрос.';
 
@@ -42,13 +43,13 @@ export function Okb({initialId,users,openTask,createTask}:{initialId:string|null
  }
  const company=editor&&editor!=='new'?editor:null;
  return <>
-  <section className="panel automation-settings"><div className="automation-heading"><div><h2>Реестр компаний</h2><p className="muted">До 100 карточек в текущей выборке. Поиск по названию и ИНН.</p></div><button className="button primary" onClick={()=>{setError('');setEditor('new');}}>Добавить компанию</button></div>
-   <div className="filters"><input aria-label="Поиск по ОКБ" placeholder="Название или ИНН" value={query} onChange={e=>setQuery(e.target.value)}/><button className="button secondary" onClick={()=>setReload(n=>n+1)}>Обновить</button></div>
+  <section className="panel automation-settings"><div className="automation-heading"><div><h2>Реестр компаний</h2><p className="muted">До 100 карточек в текущей выборке. Уточните поиск, чтобы найти компанию.</p></div><button className="button primary" onClick={()=>{setError('');setEditor('new');}}>Добавить компанию</button></div>
+   <div className="filters"><input aria-label="Поиск по ОКБ" placeholder="Название, ИНН, регион или менеджер" value={query} onChange={e=>setQuery(e.target.value)}/><button className="button secondary" onClick={()=>setReload(n=>n+1)}>Обновить</button></div>
    {!editor&&error&&<p className="alert error" role="alert">{error}</p>}
    {!rows&&!error&&<p role="status">Загружаем компании…</p>}
    {rows?.length===0&&<p>В выборке нет компаний.</p>}
    {!!rows?.length&&<div className="table-scroll"><table><thead><tr><th>Компания</th><th>ИНН</th><th>Статус</th><th>Ответственный менеджер</th><th>Контакт</th><th>Обновлена</th></tr></thead><tbody>{rows.map(row=><tr key={row.id}>
-    <td><button className="text-button" onClick={()=>{setError('');setEditor(row);}}>{row.name}</button></td><td>{row.tax_id||'—'}</td><td>{companyStates[row.status]}</td><td>{users.find(u=>u.id===row.manager_id)?.name||(row.manager_source==='bitrix'&&row.bitrix_manager_id?'Не сопоставлен с Битрикс24':'Не указан')}</td><td>{row.contact||'—'}</td><td>{moscowTimestamp(row.updated_at)}</td>
+    <td><button className="text-button" onClick={()=>{setError('');setEditor(row);}}>{row.name}</button>{row.xlsx_source?.region&&<small>{row.xlsx_source.region}</small>}</td><td>{row.tax_id||'—'}</td><td>{companyStates[row.status]}</td><td>{users.find(u=>u.id===row.manager_id)?.name||(row.manager_source==='bitrix'&&row.bitrix_manager_id?'Не сопоставлен с Битрикс24':row.xlsx_source?.manager?<>{row.xlsx_source.manager}<small>Из Excel</small></>:'Не указан')}</td><td>{row.contact||'—'}</td><td>{moscowTimestamp(row.updated_at)}</td>
    </tr>)}</tbody></table></div>}
   </section>
   {editor&&<div className="modal-backdrop"><div className="modal task-editor" role="dialog" aria-modal="true" aria-label="Карточка компании"><form key={company?.id||'new'} className="work-design-form" onSubmit={save}>
@@ -58,6 +59,7 @@ export function Okb({initialId,users,openTask,createTask}:{initialId:string|null
    <div className="editor-grid"><label>ИНН<input name="taxId" inputMode="numeric" pattern="[0-9]{10}|[0-9]{12}" maxLength={12} defaultValue={company?.tax_id??''}/></label><label>Статус<select name="status" defaultValue={company?.status??'prospect'}>{Object.entries(companyStates).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label></div>
    <label>Ответственный менеджер<select name="managerId" defaultValue={company?.manager_id||''}><option value="">Не указан</option>{users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
    {company?.manager_source==='bitrix'&&<p className="muted">Ответственный загружен из Битрикс24{company.bitrix_synced_at?' · '+moscowTimestamp(company.bitrix_synced_at):''}. Следующая синхронизация обновит его по данным портала.</p>}
+   {company?.xlsx_source&&<details className="source-fields"><summary>Поля из выгрузки ОКБ</summary><dl>{Object.entries(okbSourceFields).map(([field,label])=><div key={field} style={{display:'contents'}}><dt>{label}</dt><dd>{company.xlsx_source?.[field as keyof typeof okbSourceFields]||'—'}</dd></div>)}</dl></details>}
    <label>Контакт<input name="contact" maxLength={500} defaultValue={company?.contact}/></label>
    <label>Заметки<textarea name="notes" maxLength={4000} defaultValue={company?.notes}/></label>
    <button className="button primary" disabled={busy}>Сохранить компанию</button>
