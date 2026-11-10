@@ -40,9 +40,31 @@ const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true}
 const selector=z.enum(['branchManager','salesHead','director','creator']);
 const rules=z.object({requiredPrice:z.boolean().optional(),showPlanning:z.boolean().optional(),writtenRules:z.array(z.object({text:z.string().trim().min(1).max(500),severity:z.enum(['critical','warning','info'])})).max(30).optional(),overdue:z.boolean(),missingDeadline:z.boolean(),plannedOverdue:z.boolean(),requiredFields:z.boolean(),code:z.boolean(),planning:z.boolean().optional(),responseMinLength:z.number().int().min(5).max(200),reminderMinutes:z.number().int().min(1).max(1440),maxReminders:z.number().int().min(0).max(10),routes:z.object({deadline:z.array(selector).min(1).max(4),completion:z.array(selector).min(1).max(4)})});
 const reportParameters=z.object({actorId:z.string().max(100).optional(),from:date.optional(),to:date.optional(),assigneeId:z.string().max(100).optional(),creatorId:z.string().max(100).optional(),priceBand:z.enum(['low','medium','high','premium','unknown']).optional(),queue:z.enum(['all','front','overdue','today','review','completed','no_deadline']).optional()});
+const viewAsHeader='X-Ruspet-View-As';
+const viewAsReads=new Set(['/bootstrap','/journal','/management/progress','/alerts','/delegations','/reports']);
+const viewAsTaskRead=/^\/tasks\/[^/]+(?:\/(?:integration|delegation|reminders))?$/;
+const viewAsReportRead=/^\/reports\/[a-f0-9-]{36}$/i;
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
-export function createApp() {
- const app=express(); app.disable('x-powered-by'); app.use('/api/integrations/v1/companies/batch',express.json({limit:'512kb'})); app.use(express.json({limit:'32kb'}));
+export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
+ const app=express(); app.disable('x-powered-by');
+ app.use('/api',async(req,res,next)=>{
+  const target=req.get(viewAsHeader);
+  if(target===undefined)return next();
+  res.setHeader('Cache-Control','no-store');
+  const token=req.headers.cookie?.split('; ').find(value=>value.startsWith('ruspet_session='))?.slice(15);
+  const administrator=token?await sessionUser(token):null;
+  assert(administrator,401,'Войдите в систему.');
+  assert(administrator.role==='admin',403,'Просмотр от имени сотрудника доступен администратору.');
+  assert(req.method==='GET'&&(viewAsReads.has(req.path)||viewAsTaskRead.test(req.path)||viewAsReportRead.test(req.path)),403,'В режиме просмотра доступны только рабочие данные для чтения.');
+  let id:string;
+  try{id=decodeURIComponent(target);}catch{throw new AppError(400,'Некорректный ID сотрудника.');}
+  assert(id.length>0&&id.length<=100,400,'Некорректный ID сотрудника.');
+  const user=(await pool.query<User>('SELECT * FROM users WHERE id=$1',[id])).rows[0];
+  assert(user,404,'Сотрудник не найден.');
+  req.actor=user;
+  next();
+ });
+ app.use('/api/integrations/v1/companies/batch',express.json({limit:'512kb'})); app.use(express.json({limit:'32kb'}));
  app.post('/api/bitrix/events',express.urlencoded({extended:true,limit:'128kb',parameterLimit:1000}),async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await receiveBitrixEvent(req.body));});
  const loginAttempts=new Map<string,{count:number;since:number}>();
  app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'");next();});
@@ -72,8 +94,8 @@ export function createApp() {
  });
  app.get('/api/auth/me',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(!token)return res.status(401).json({error:'Войдите в систему.'});const user=await sessionUser(token);if(!user)return res.status(401).json({error:'Сессия завершена.'});res.json(user);});
  app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);await clearBrowserLogin(req,res);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
- app.use('/api',async(req,_res,next)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=await sessionUser(token);assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
- app.get('/api/bootstrap',async(req,res)=>res.json(await service.bootstrap(req.actor)));
+ app.use('/api',async(req,_res,next)=>{if(req.actor)return next();const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=await sessionUser(token);assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
+ app.get('/api/bootstrap',async(req,res)=>res.json({...await service.bootstrap(req.actor),managerPreview:managerPreview||undefined}));
  app.get('/api/undo/last',async(req,res)=>res.json(await lastUndo(req.actor)));
  app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
  app.post('/api/undo',async(req,res)=>{const input=z.object({id:z.uuid(),confirmed:z.literal(true)}).parse(req.body);res.json(await undoLastAction(req.actor,input.id));});

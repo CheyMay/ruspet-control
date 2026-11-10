@@ -9,10 +9,10 @@ type Targets=import('../shared/company-responsibility.js').DelegationTargets;
 const status:Record<Task['status'],string>={active:'В работе',review:'На приёмке',completed:'Завершено'};
 const moscowInput=(value:string|null)=>value?new Date(Date.parse(value)+10800000).toISOString().slice(0,16):'';
 
-export function TaskDelegation({task,user,users,open,onCreated}:{task:Task;user:User;users:User[];open:(id:string)=>void;onCreated:()=>void}){
+export function TaskDelegation({task,user,users,open,onCreated,readOnly=false}:{readOnly?:boolean;task:Task;user:User;users:User[];open:(id:string)=>void;onCreated:()=>void}){
 
  const [links,setLinks]=useState<Links|null>(null),[show,setShow]=useState(false),[targets,setTargets]=useState<Targets|null>(null);
- const available=links?.canDelegate??(user.role!=='employee'&&task.assignee_id===user.id&&task.status==='active');
+ const available=!readOnly&&(links?.canDelegate??(user.role!=='employee'&&task.assignee_id===user.id&&task.status==='active'));
  const [manual,setManual]=useState(false);
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[linkError,setLinkError]=useState(''),[newId,setNewId]=useState<string|null>(null);
  useEffect(()=>{

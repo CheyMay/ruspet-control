@@ -131,3 +131,5 @@ tbody tr:hover{background:var(--theme-surface-soft, #f7faf6)}
 .freshness { display:flex; flex-wrap:wrap; gap:8px 22px; margin:8px 0 0; }
 .freshness dd { margin:3px 0 0; font-weight:600; }
 .automation-settings .source-banner input { max-width:100%; width:24rem; }
+.view-as-banner{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:18px}
+.view-as-banner p{margin:4px 0 0}

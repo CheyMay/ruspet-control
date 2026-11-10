@@ -1,6 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {User} from '../shared/types.js';
-import {api} from './api.js';
+import {api,viewAsLink} from './api.js';
 
 export function moscowTimestamp(value:string|null|undefined){
  return value?new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'})+' МСК':'—';
@@ -103,10 +103,11 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
   {invite&&<div className="source-banner"><strong>{invite.name} · ссылка на 15 минут</strong><input aria-label="Ссылка подключения" readOnly value={invite.url} onFocus={e=>e.currentTarget.select()}/><button className="button secondary" onClick={()=>void navigator.clipboard.writeText(invite.url).then(()=>setNotice('Ссылка скопирована')).catch(()=>setNotice('Выделите ссылку и скопируйте вручную.'))}>Копировать</button><span role="status">{notice}</span></div>}
   {!value&&busy&&<p role="status">Загружаем список сотрудников…</p>}
   {people&&<><div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, филиал, роль или логин" value={query} onChange={e=>setQuery(e.target.value)}/></div>
-   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
+   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th><th>Просмотр</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
     <td><strong>{p.name}</strong><br/><small>{p.branch_id}</small></td><td>{roles[p.role]}</td><td>{p.visibleTasks}</td>
     <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>{a.password_login===false?'Telegram / QR':a.username}{a.enabled?'':' · отключён'}{a.password_login===false&&a.enabled&&<button className="text-button" onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setAccountError('');}}>Создать пароль</button>}</div>):<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
     <td>{p.paired_at?<><span>Подключён · {moscowTimestamp(p.paired_at)}<br/>ID: {p.telegram_id}</span><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramConfirmed(false);setInviteError('');}}>Отключить</button></>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramId('');setTelegramConfirmed(false);setInviteError('');}}>Привязать по ID</button></>}</td>
+    <td><a className="text-button" href={viewAsLink(p.id)} target="_blank" rel="noopener" aria-label={`Открыть как ${p.name}`}>Открыть как сотрудник ↗</a></td>
    </tr>)}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}
  </section>;
 }

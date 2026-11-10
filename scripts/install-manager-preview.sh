@@ -8,6 +8,19 @@ systemctl is-active --quiet ruspet.service || { echo 'Нужен старый с
 available_kb=$(awk '/^MemAvailable:/ {print $2}' /proc/meminfo)
 (( available_kb >= 393216 )) || { echo 'Для отдельного стенда нужно хотя бы 384 МБ доступной памяти.'; exit 1; }
 src=/opt/ruspet
+passwords_stdin=false
+while (( $# )); do
+ case "$1" in
+  --source) src=${2:?Укажите каталог подготовленного выпуска.}; shift 2 ;;
+  --passwords-stdin) passwords_stdin=true; shift ;;
+  *) echo 'Неизвестный параметр установки.'; exit 1 ;;
+ esac
+done
+if [[ "$src" != /opt/ruspet ]]; then
+ [[ "$src" =~ ^/root/ruspet-manager-release\.[a-zA-Z0-9]+$ && ! -L "$src" && $(stat -c '%u:%a' "$src") == 0:700 ]] || {
+  echo 'Нужен закрытый каталог подготовленного выпуска в /root.'; exit 1;
+ }
+fi
 home=/opt/ruspet-manager-preview
 [[ -f "$src/scripts/seed.ts" && -d "$src/node_modules" && -f "$src/dist/index.html" ]]
 required_bytes=$(du -sb "$src/node_modules" "$src/server" "$src/shared" "$src/scripts" "$src/dist" | awk '{sum+=$1} END{print sum}')
@@ -24,10 +37,19 @@ fi
 if id -u ruspetpreview >/dev/null 2>&1 || runuser -u postgres -- psql -XAtq -d postgres -c "SELECT 1 FROM pg_roles WHERE rolname='ruspetpreview'" | grep -qx 1; then
  echo 'Имя служебного пользователя уже занято. Установка остановлена.'; exit 1;
 fi
-IFS= read -r -s -p 'Задайте пароль для test.manager (минимум 12 символов): ' preview_password </dev/tty
-printf '\n' >/dev/tty
-IFS= read -r -s -p 'Повторите пароль: ' preview_confirm </dev/tty
-printf '\n' >/dev/tty
+if $passwords_stdin; then
+ IFS= read -r preview_password
+ IFS= read -r admin_password
+ preview_confirm=$preview_password
+ [[ ${#admin_password} -ge 12 && ${#admin_password} -le 200 && "$admin_password" != "$preview_password" ]] || {
+  echo 'Пароль учебного администратора должен отличаться от пароля менеджера и содержать 12–200 символов.'; exit 1;
+ }
+else
+ IFS= read -r -s -p 'Задайте пароль для test.manager (минимум 12 символов): ' preview_password </dev/tty
+ printf '\n' >/dev/tty
+ IFS= read -r -s -p 'Повторите пароль: ' preview_confirm </dev/tty
+ printf '\n' >/dev/tty
+fi
 [[ ${#preview_password} -ge 12 && ${#preview_password} -le 200 && "$preview_password" == "$preview_confirm" ]] || {
  echo 'Пароли различаются или длина не подходит. Данные не менялись.'; exit 1;
 }
@@ -44,6 +66,9 @@ for part in server shared scripts dist node_modules; do
  chmod -R u+rwX,g+rX,o-rwx "$home/$part"
 done
 install -o root -g ruspetpreview -m 0640 "$src/package.json" "$home/package.json"
+if [[ -f "$src/.release-version" ]]; then
+ install -o root -g ruspetpreview -m 0640 "$src/.release-version" "$home/.release-version"
+fi
 cat > "$home/.env" <<'ENV'
 DATABASE_URL=postgresql:///ruspet_manager_preview?host=/var/run/postgresql&user=ruspetpreview
 HOST=127.0.0.1
@@ -57,10 +82,14 @@ ENV
 chown root:ruspetpreview "$home/.env"
 chmod 0640 "$home/.env"
 cd "$home"
-printf '%s' "$preview_password" | runuser -u ruspetpreview -- \
+if $passwords_stdin; then
+ printf '%s\n%s' "$preview_password" "$admin_password"
+else
+ printf '%s' "$preview_password"
+fi | runuser -u ruspetpreview -- \
  env DOTENV_CONFIG_PATH="$home/.env" GOMAXPROCS=1 \
  node --import tsx "$home/scripts/setup-manager-preview.ts"
-unset preview_password preview_confirm
+unset preview_password preview_confirm admin_password
 cat > /etc/systemd/system/ruspet-manager-preview.service <<'UNIT'
 [Unit]
 Description=RUSPET isolated manager demonstration
@@ -100,5 +129,5 @@ for attempt in {1..15}; do
  sleep 1
 done
 [[ $ready == true ]]
-echo 'Стенд готов: 127.0.0.1:4320. Логин test.manager, пароль задан вами.'
+echo 'Стенд готов: 127.0.0.1:4320. Логин менеджера: test.manager.'
 echo 'Откройте порт 4320 через SSH-туннель PuTTY. Основной сайт и бот продолжают работать.'
