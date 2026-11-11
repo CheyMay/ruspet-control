@@ -1,55 +1,35 @@
-# Прокси Groq для РУСПЭТ
+# HTTPS-прокси для Groq
 
-Отдельная служба принимает HTTPS CONNECT на порту 8443. Для входа используются логин `ruspet` и случайный пароль. Единственный доступный адрес назначения — `api.groq.com:443`. Аудио и ключ Groq передаются внутри TLS-соединения между РУСПЭТ и Groq. [Контракт CONNECT в клиенте Undici](https://github.com/nodejs/undici/blob/main/docs/docs/api/ProxyAgent.md)
+`CONNECT api.groq.com:443` через TLS 1.2+. В unit указан `0.0.0.0:8443`. Basic auth с логином `ruspet`. Ключ Groq передаёт клиент внутри TLS-туннеля.
 
-## Развёртывание на эстонском сервере
+## Развёртывание
 
-Нужны Node.js 22 или новее, systemd с поддержкой `LoadCredential` и TLS-сертификат на имя, по которому будет доступен прокси. Подойдёт действующий сертификат этого сервера, если он покрывает выбранное имя. Для входящих подключений используйте TCP 8443 и разрешите доступ с адреса рабочего сервера РУСПЭТ. [Настройка LoadCredential](https://www.freedesktop.org/software/systemd/man/latest/systemd.exec.html#LoadCredential=ID:PATH)
-
-Распакуйте архив. Из каталога с `proxy.mjs` выполните от root, указав свой каталог TLS-сертификата.
+Node.js ≥22 и systemd с `LoadCredential`. Из каталога архива выполнить от root.
 
 ```bash
-(
-  set -e
-  tls_dir=/etc/letsencrypt/live/proxy.example.org
-  test -r "$tls_dir/fullchain.pem"
-  test -r "$tls_dir/privkey.pem"
-  node --version
-  install -d -m 0755 /opt/ruspet-groq-proxy
-  install -d -m 0700 /etc/ruspet-groq-proxy
-  install -m 0644 proxy.mjs /opt/ruspet-groq-proxy/proxy.mjs
-  install -m 0644 ruspet-groq-proxy.service /etc/systemd/system/ruspet-groq-proxy.service
-  for name in fullchain.pem privkey.pem; do
-    if [ ! -e "/etc/ruspet-groq-proxy/$name" ]; then
-      ln -s "$tls_dir/$name" "/etc/ruspet-groq-proxy/$name"
-    fi
-  done
-  if [ ! -s /etc/ruspet-groq-proxy/password ]; then
-    (umask 077; node -e 'console.log(require("node:crypto").randomBytes(32).toString("hex"))' > /etc/ruspet-groq-proxy/password)
-  fi
-  chmod 0600 /etc/ruspet-groq-proxy/password
-  systemctl daemon-reload
-  systemctl enable --now ruspet-groq-proxy.service
-  systemctl status ruspet-groq-proxy.service --no-pager
-)
+install -d -m 0755 /opt/ruspet-groq-proxy
+install -m 0644 proxy.mjs /opt/ruspet-groq-proxy/
+install -m 0644 ruspet-groq-proxy.service /etc/systemd/system/
+install -d -m 0700 /etc/ruspet-groq-proxy
 ```
 
-После обновления сертификата перезапустите службу, чтобы она прочитала свежие файлы.
+В `/etc/ruspet-groq-proxy/` нужны `fullchain.pem` и `privkey.pem` для имени прокси. Подойдут симлинки на действующий сертификат и ключ. Пароль создать один раз.
+
+```bash
+(umask 077; set -C; node -p 'require("node:crypto").randomBytes(32).toString("hex")' > /etc/ruspet-groq-proxy/password)
+systemctl daemon-reload
+systemctl enable --now ruspet-groq-proxy.service
+```
+
+Входящий TCP 8443 нужен с адреса сервера РУСПЭТ. После обновления сертификата перезапустить unit.
 
 ## Проверка
 
-На эстонском сервере подставьте имя прокси из сертификата. Команда проверяет CONNECT и ответ Groq, читая пароль из файла.
-
 ```bash
-(
-  proxy_host=proxy.example.org
-  printf 'proxy = "https://ruspet:%s@%s:8443"\n' \
-    "$(cat /etc/ruspet-groq-proxy/password)" "$proxy_host"
-  printf 'url = "https://api.groq.com/openai/v1/models"\n'
-) | curl --config - --noproxy '' --silent --show-error --max-time 15 --output /dev/null \
-  --write-out 'CONNECT %{http_connect}, Groq %{http_code}\n'
+proxy_host=proxy.example.org
+printf 'proxy = "https://ruspet:%s@%s:8443"\n' "$(cat /etc/ruspet-groq-proxy/password)" "$proxy_host" |
+  curl -K - --noproxy '' -sS -m 15 -o /dev/null -w 'CONNECT %{http_connect}, Groq %{http_code}\n' \
+  https://api.groq.com/openai/v1/models
 ```
 
-`CONNECT 200` подтверждает туннель. `Groq 401` ожидаем для этой команды без ключа Groq. Если Groq возвращает `403`, проверьте доступ к нему с эстонского сервера. Ошибка запуска службы видна в `journalctl -u ruspet-groq-proxy -n 30 --no-pager`.
-
-Для подключения РУСПЭТ передайте имя и порт прокси. Пароль из `/etc/ruspet-groq-proxy/password` передайте защищённым способом. В закрытом окружении Telegram-воркера используется параметр `GROQ_HTTPS_PROXY=https://ruspet:ПАРОЛЬ@ИМЯ_ПРОКСИ:8443`.
+Ожидаемый результат проверки — `CONNECT 200, Groq 401`. Для подключения передать имя, порт и пароль прокси. Параметр РУСПЭТ — `GROQ_HTTPS_PROXY=https://ruspet:ПАРОЛЬ@ИМЯ:8443`.
