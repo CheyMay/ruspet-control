@@ -1,0 +1,28 @@
+[Unit]
+Description=RUSPET Groq HTTPS CONNECT proxy
+Wants=network-online.target
+After=network-online.target
+
+[Service]
+Type=simple
+DynamicUser=yes
+Environment=GROQ_PROXY_HOST=0.0.0.0
+Environment=GROQ_PROXY_PORT=8443
+LoadCredential=password:/etc/ruspet-groq-proxy/password
+LoadCredential=fullchain.pem:/etc/ruspet-groq-proxy/fullchain.pem
+LoadCredential=privkey.pem:/etc/ruspet-groq-proxy/privkey.pem
+ExecStart=/usr/bin/env node /opt/ruspet-groq-proxy/proxy.mjs
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=10
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+LimitNOFILE=256
+MemoryMax=128M
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target
