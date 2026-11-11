@@ -23,6 +23,7 @@ export async function createUserAccount(actor:User,userId:string,username:string
   await db.query('SELECT pg_advisory_xact_lock($1)',[accountLock]);
   const user=(await db.query<User>('SELECT * FROM users WHERE id=$1 FOR UPDATE',[userId])).rows[0];
   assert(user,404,'Сотрудник не найден.');
+  assert(!user.root_access,403,'Доступ владельца настраивается отдельно.');
   const current=(await db.query('SELECT * FROM login_accounts WHERE user_id=$1',[user.id])).rows;
   if(current.length===1&&!current[0].password_login&&current[0].enabled){
    assert(validLogin(username),400,'Некорректный логин.');
@@ -39,7 +40,7 @@ async function accountPlan(db:Db,total:number){
  const active=Number((await db.query('SELECT count(DISTINCT user_id)::int n FROM login_accounts WHERE enabled')).rows[0].n),required=Math.max(0,total-active);
  // Disabled accounts stay disabled. Roles and employee records are never changed.
  const candidates=(await db.query<User>(`SELECT u.* FROM users u
- WHERE NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id)
+ WHERE NOT u.root_access AND NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id)
  AND (u.role IN ('admin','director') OR u.role='employee' AND EXISTS(SELECT 1 FROM tasks t WHERE t.assignee_id=u.id))
  ORDER BY CASE u.role WHEN 'admin' THEN 0 WHEN 'director' THEN 1 ELSE 2 END,
  (SELECT count(*) FROM tasks t WHERE t.assignee_id=u.id) DESC,u.id LIMIT $1`,[required])).rows;

@@ -14,7 +14,9 @@ const browserOptions=()=>({...sessionCookieOptions(),path:'/api/auth',maxAge:10*
 export const readCookie=(req:express.Request,name:string)=>req.headers.cookie?.split(/;\s*/).find(v=>v.startsWith(name+'='))?.slice(name.length+1);
 export async function sessionUser(token:string){
  return (await pool.query(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
-  WHERE s.token_hash=$1 AND s.expires_at>now() AND (s.auth_method<>'telegram' OR
+  WHERE s.token_hash=$1 AND s.expires_at>now()
+   AND (NOT u.root_access OR EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled))
+   AND (s.auth_method<>'telegram' OR
    (EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled)
    AND EXISTS(SELECT 1 FROM telegram_binding b WHERE b.id=s.telegram_binding_id AND b.user_id=u.id)
    AND EXISTS(SELECT 1 FROM telegram_settings WHERE id=1 AND enabled)))`,[digest(token)])).rows[0];
@@ -113,7 +115,9 @@ export async function setTelegramBinding(actor:User,userId:string,telegramId:str
  if(telegramId!==null)assert(/^[1-9][0-9]{0,15}$/.test(telegramId)&&BigInt(telegramId)<=4503599627370495n,400,'Нужен числовой Telegram ID личного аккаунта, без @.');
  await transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(431008)');
-  assert((await db.query('SELECT 1 FROM users WHERE id=$1',[userId])).rowCount,404,'Сотрудник не найден.');
+  const target=(await db.query('SELECT root_access FROM users WHERE id=$1',[userId])).rows[0];
+  assert(target,404,'Сотрудник не найден.');
+  assert(!target.root_access||(actor.id===userId&&telegramId===null),403,'Telegram владельца подключается из его личного планера.');
   const old=(await db.query('SELECT * FROM telegram_binding WHERE user_id=$1',[userId])).rows[0];
   if(telegramId!==null){
    assert(!old||old.chat_id===telegramId,409,'Сначала отключите прежнюю привязку сотрудника.');

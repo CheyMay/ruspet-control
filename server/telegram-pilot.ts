@@ -1,4 +1,5 @@
 import {onboardingMessage,ensureLinkedAccount} from './telegram-onboarding.js';
+import {ownerTimeReply,sendOwnerTimePrompt} from './owner-time.js';
 import {TelegramRejected,type TelegramMethod} from './telegram-errors.js';
 import {telegramLoginScreen} from './telegram-login.js';
 import {telegramRequest} from './telegram-transport.js';
@@ -35,7 +36,9 @@ export async function pilotStatus(user?:User){
 }
 export async function pairPilot(u:User,targetUserId=u.id){
  assert(targetUserId===u.id||u.role==='admin',403,'Другую учётную запись подключает администратор.');
- assert((await pool.query('SELECT 1 FROM users WHERE id=$1',[targetUserId])).rowCount,404,'Пользователь не найден.');
+ const target=(await pool.query('SELECT root_access FROM users WHERE id=$1',[targetUserId])).rows[0];
+ assert(target,404,'Пользователь не найден.');
+ assert(!target.root_access||targetUserId===u.id,403,'Владелец подключает свой Telegram сам.');
  const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];assert(cfg.enabled,409,'Сначала включите личный пилот.');
  const cached=(await pool.query('SELECT username FROM telegram_runtime WHERE id=1')).rows[0]?.username;
  if(cached)username=cached;else{const me=await call('getMe');username=me.username;const info=await call('getWebhookInfo');assert(!info.url,409,'У бота уже настроен webhook. Он не изменён; polling не запущен.');}
@@ -67,11 +70,31 @@ export async function handlePilotUpdate(update:any){
  }
  const code=typeof m.text==='string'&&!c?m.text.match(/^\/start ([a-f0-9]{40})$/)?.[1]:null;
  if(code&&m.from&&(m.from.is_bot||String(m.from.id)!==chat))return;
- if(code){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(431008)');const p=(await db.query('SELECT * FROM telegram_pairings WHERE token_hash=$1 AND expires_at>now() FOR UPDATE',[digest(code)])).rows[0];if(!p)return;const old=(await db.query('SELECT chat_id,user_id FROM telegram_binding WHERE chat_id=$1 OR user_id=$2',[chat,p.user_id])).rows[0];if(old&&(old.chat_id!==chat||old.user_id!==p.user_id))return;if(!old)await db.query('INSERT INTO telegram_binding(chat_id,user_id) VALUES($1,$2)',[chat,p.user_id]);await db.query('DELETE FROM telegram_registration_blocks WHERE chat_id=$1',[chat]);await db.query("UPDATE telegram_registrations SET state='cancelled' WHERE chat_id=$1 AND state IN ('name','contact','review')",[chat]);await db.query('DELETE FROM telegram_pairings WHERE token_hash=$1',[digest(code)])})}
+ if(code){
+  const error=await transaction(async db=>{
+   await db.query('SELECT pg_advisory_xact_lock(431008)');
+   const p=(await db.query(`SELECT p.*,u.root_access FROM telegram_pairings p JOIN users u ON u.id=p.user_id
+    WHERE p.token_hash=$1 AND p.expires_at>now() FOR UPDATE OF p`,[digest(code)])).rows[0];
+   if(!p)return;
+   if(p.root_access&&!m.from)return 'Откройте ссылку владельца в личном чате с ботом.';
+   const old=(await db.query('SELECT chat_id,user_id FROM telegram_binding WHERE chat_id=$1 OR user_id=$2',[chat,p.user_id])).rows[0];
+   if(old&&(old.chat_id!==chat||old.user_id!==p.user_id)){
+    if(p.root_access)return 'Этот Telegram или аккаунт владельца уже привязан. Сначала отключите прежнюю привязку в «Доступах сотрудников» и запросите новую ссылку в планере.';
+    return;
+   }
+   if(!old)await db.query('INSERT INTO telegram_binding(chat_id,user_id) VALUES($1,$2)',[chat,p.user_id]);
+   await db.query('DELETE FROM telegram_registration_blocks WHERE chat_id=$1',[chat]);
+   await db.query("UPDATE telegram_registrations SET state='cancelled' WHERE chat_id=$1 AND state IN ('name','contact','review')",[chat]);
+   await db.query('DELETE FROM telegram_pairings WHERE token_hash=$1',[digest(code)]);
+  });
+  if(error){await reply(chat,{text:error,buttons:[]},started);return;}
+ }
  const u=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0] as User|undefined;if(!u){if(!c){try{const response=await onboardingMessage(m);if(response)await reply(chat,response,started)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось подключить сотрудника. Попробуйте /start позже.',buttons:[]})}}return;}
  const ch='telegram:'+chat;
  if(c){const acknowledged=call('answerCallbackQuery',{callback_query_id:c.id}).catch(()=>{});try{await reply(chat,await botClick(u,ch,String(c.data)),started,m.message_id)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',buttons:(await botView(u,ch)).buttons})}finally{await acknowledged;}return}
  try{
+  const timeReply=await ownerTimeReply(u,m);
+  if(timeReply){await reply(chat,{text:timeReply,buttons:[]},started);return;}
   const text=String(m.text||'').trim();let response:BotScreen;
   if(code||/^\/(start|menu|status|cancel|task|today|tasks|inbox|reports|search)(\s|$)/.test(text))await clearBotDraft(u,ch);
   if(code||text==='/start')await ensureLinkedAccount(u);
@@ -117,6 +140,10 @@ export function startPilot(){if(process.env.TELEGRAM_WORKER_DISABLED==='true')re
   await pool.query("UPDATE task_alert_deliveries SET state='uncertain' WHERE state='sending'");
   await pool.query("UPDATE telegram_delivery SET state='uncertain',error='Процесс прерван во время отправки. Требуется проверка доставки.' WHERE state='sending'");
   await pool.query('INSERT INTO telegram_runtime(id,heartbeat_at,error) VALUES(1,now(),NULL) ON CONFLICT(id) DO UPDATE SET heartbeat_at=now(),error=NULL');
+  await sendOwnerTimePrompt(new Date(),async(chat,text)=>{
+   const message=await call('sendMessage',{chat_id:chat,text,reply_markup:{force_reply:true,input_field_placeholder:'7:30'}});
+   return message.message_id;
+  });
   const delivery=deliver().then(()=>({ok:true as const}),error=>({ok:false as const,error}));
   try{
   const offset=Number((await pool.query('SELECT next_update FROM telegram_cursor WHERE id=1')).rows[0].next_update);

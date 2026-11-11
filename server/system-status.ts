@@ -55,7 +55,8 @@ export async function accessDirectory(actor:User){
   pool.query(`SELECT u.*,b.paired_at,b.chat_id AS telegram_id,
    (SELECT json_agg(json_build_object('username',a.username,'enabled',a.enabled,'password_login',a.password_login) ORDER BY a.username) FROM login_accounts a WHERE a.user_id=u.id) accounts,
    (SELECT max(p.expires_at) FROM telegram_pairings p WHERE p.user_id=u.id AND p.expires_at>now()) invitation_expires
-   FROM users u LEFT JOIN telegram_binding b ON b.user_id=u.id ORDER BY u.name,u.id`),
+   FROM users u LEFT JOIN telegram_binding b ON b.user_id=u.id
+   WHERE NOT u.root_access OR u.id=$1 ORDER BY u.name,u.id`,[actor.id]),
   pool.query<Task>('SELECT * FROM tasks')
  ]);
  return people.rows.map(person=>({...person,suggestedLogin:suggestedLogin(person.id),accounts:person.accounts??[],visibleTasks:tasks.rows.filter(task=>canSee(person,task)).length}));

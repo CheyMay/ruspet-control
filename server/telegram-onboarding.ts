@@ -8,6 +8,7 @@ import type {BotScreen} from './bot.js';
 const screen=(text:string,replyKeyboard:'contact'|'remove'='remove'):BotScreen=>({text,buttons:[],replyKeyboard});
 const askContact=()=>screen('Подтвердите личность: нажмите «Поделиться своим номером». Бот сравнит номер вашего Telegram со справочником сотрудников. Вводить номер вручную не нужно. Если номер отличается от рабочего — отправьте /manual для проверки администратором.','contact');
 export async function ensureLinkedAccount(user:User){
+ if(user.root_access)return;
  await transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(431026)');
   if(!(await db.query('SELECT 1 FROM login_accounts WHERE user_id=$1',[user.id])).rowCount)
@@ -17,7 +18,7 @@ export async function ensureLinkedAccount(user:User){
 async function finish(db:Db,request:any,staff:any,actor:User|null,selectedUserId?:string,forceNew=false){
  assert(staff?.enabled,409,'Выберите действующего сотрудника справочника.');
  const selected=selectedUserId||staff.user_id;
- const users=selected?(await db.query('SELECT * FROM users WHERE id=$1',[selected])).rows:(await db.query('SELECT * FROM users')).rows.filter(u=>namesMatch(u.name,staff.name));
+ const users=selected?(await db.query('SELECT * FROM users WHERE id=$1 AND NOT root_access',[selected])).rows:(await db.query('SELECT * FROM users WHERE NOT root_access')).rows.filter(u=>namesMatch(u.name,staff.name));
  const sameNames=(await db.query('SELECT name FROM staff_directory WHERE enabled AND id<>$1',[staff.id])).rows.filter(s=>namesMatch(s.name,staff.name));
  assert(actor||(!sameNames.length||!!staff.user_id),409,'Требуется проверка администратора.');
  assert(forceNew||users.length<=1,409,'Уточните, к какому существующему сотруднику привязать заявку.');
@@ -95,7 +96,7 @@ export async function listRegistrations(actor:User){
  assert(actor.role==='admin',403,'Заявки проверяет администратор.');
  const requests=(await pool.query("SELECT id,chat_id,entered_name,state,staff_id,own_contact_verified,phone_tail,created_at FROM telegram_registrations WHERE state='review' AND expires_at>now() ORDER BY created_at LIMIT 100")).rows;
  const staff=(await pool.query('SELECT id,name,organisation,department,user_id FROM staff_directory WHERE enabled ORDER BY name')).rows;
- const users=(await pool.query('SELECT id,name,role,branch_id FROM users ORDER BY name')).rows;
+ const users=(await pool.query('SELECT id,name,role,branch_id FROM users WHERE NOT root_access ORDER BY name')).rows;
  return {requests,staff,users};
 }
 export async function reviewRegistration(actor:User,id:string,input:{action:'approve'|'reject';staffId?:string;userId?:string;forceNew?:boolean}){

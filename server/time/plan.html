@@ -3,113 +3,116 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <meta name="theme-color" content="#f5f6f2">
-  <title>13 ноября · План РУСПЭТ</title>
+  <title>Личный планер · РУСПЭТ</title>
   <link rel="stylesheet" href="/time/plan.css">
-  <script src="/time/plan.js" defer></script>
+  <script type="module" src="/time/plan.js"></script>
 </head>
 <body>
-  <main class="page" data-date="2026-11-13">
-    <header class="day-header">
-      <div class="header-line">
-        <span class="project">РУСПЭТ</span>
-        <a href="/">В панель</a>
-      </div>
-      <h1>Пятница, 13 ноября</h1>
-      <p class="day-hours">09:30–18:00 МСК · обед 13:00–14:00</p>
-      <p class="day-goal">Проверить путь менеджера до решения директора и понять, готов ли пилот к рабочему запуску.</p>
-    </header>
-
-    <section class="day-summary" aria-label="Ход дня">
+  <header class="topbar">
+    <div class="shell topbar-inner">
+      <a href="/" class="brand">РУСПЭТ</a>
+      <a href="/">Рабочая панель <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+  <main class="shell">
+    <div class="page-heading">
       <div>
-        <div class="summary-heading">
-          <label for="progress">Выполнено</label>
-          <strong id="progress-text">0 из 18</strong>
+        <h1>Личный планер</h1>
+        <p>План дня, учёт часов и отчёт за месяц.</p>
+      </div>
+      <a class="button primary" id="export" hidden>Скачать CSV</a>
+    </div>
+    <p class="notice" id="notice" role="status">Загружаем планер…</p>
+    <div class="layout" id="workspace" hidden>
+      <section class="panel month-panel" aria-labelledby="month-label">
+        <div class="section-header">
+          <h2 id="month-label">Месяц</h2>
+          <button type="button" class="quiet" id="refresh">Обновить</button>
         </div>
-        <progress id="progress" value="0" max="18"></progress>
+        <div class="month-nav">
+          <button type="button" id="prev" aria-label="Предыдущий месяц">‹</button>
+          <input type="month" id="month" aria-label="Месяц" min="1900-01" max="9998-12">
+          <button type="button" id="next" aria-label="Следующий месяц">›</button>
+        </div>
+        <div class="stats">
+          <div><span>Отработано</span><strong id="total">0 ч</strong></div>
+          <div><span>Заполнено дней</span><strong id="logged-days">0</strong></div>
+        </div>
+        <div class="calendar" aria-label="Дни месяца" id="calendar"></div>
+        <div class="calendar-actions">
+          <button type="button" id="today">Сегодня</button>
+          <button type="button" id="missing">К незаполненному дню</button>
+        </div>
+        <div class="telegram">
+          <div class="section-header">
+            <h3>Telegram</h3>
+            <span class="status-tag" id="telegram-state"></span>
+          </div>
+          <p id="telegram-info">Напоминание каждый день в 21:00 МСК.</p>
+          <label id="reminders-control" class="check-line" hidden><input type="checkbox" id="reminders"> Спрашивать часы в 21:00 МСК</label>
+          <button type="button" id="pair" hidden>Получить ссылку для подключения</button>
+          <a class="button primary" id="pair-link" rel="noopener noreferrer" target="_blank" hidden>Открыть Telegram и нажать Start ↗</a>
+        </div>
+      </section>
+      <div class="day-panels">
+        <section class="panel day" aria-labelledby="day-label">
+          <h2 id="day-label"></h2>
+          <form id="work-form">
+            <fieldset id="work-fields">
+              <div class="duration">
+                <label for="hours">Отработано</label>
+                <input type="text" id="hours" name="hours" autocomplete="off" maxlength="5" placeholder="7:30" aria-describedby="hours-help">
+                <small id="hours-help">Часы и минуты. Оставьте пустым, если запись не нужна.</small>
+              </div>
+              <label for="note">Что сделано</label>
+              <textarea id="note" name="note" rows="3" maxlength="2000" placeholder="Коротко для отчёта"></textarea>
+              <div class="save-row">
+                <button class="primary" type="submit">Сохранить часы</button>
+                <span id="work-state" class="muted"></span>
+              </div>
+            </fieldset>
+          </form>
+          <p id="future" class="muted" hidden>Часы можно записать за сегодня и прошедшие дни.</p>
+        </section>
+        <section class="panel" aria-labelledby="plan-label">
+          <div class="section-header">
+            <h2 id="plan-label">План дня</h2>
+            <span id="check-progress" class="muted"></span>
+          </div>
+          <form id="plan-form">
+            <fieldset id="plan-fields">
+              <p id="empty-plan" class="muted">Добавьте блок для встречи, задачи или перерыва.</p>
+              <div id="blocks"></div>
+              <div class="save-row">
+                <button type="button" id="add-block">Добавить блок</button>
+                <button type="submit" class="primary" id="save-plan" disabled>Сохранить план</button>
+              </div>
+            </fieldset>
+          </form>
+        </section>
       </div>
-      <div class="current-slot">
-        <div><strong id="current-title">План на 13 ноября</strong><p id="current-detail">Первый блок в 09:30 МСК</p></div>
-        <button id="jump-current" type="button" hidden>К текущему</button>
-      </div>
-    </section>
-
-    <ol class="schedule" aria-label="Расписание">
-      <li class="slot" data-start="09:30" data-end="10:00">
-        <div class="slot-time"><time datetime="09:30">09:30</time><time datetime="10:00">10:00</time></div>
-        <section class="slot-body">
-          <h2>Старт и ответы от команды</h2>
-          <label class="item"><input type="checkbox" data-task="inbox"><span>Уточнить у тестирующей время прогона и доступ к учебному стенду с её ПК.</span></label>
-          <label class="item"><input type="checkbox" data-task="dependencies"><span>Собрать статус по домену, иерархии, вебхуку Битрикса и развёртыванию прокси Groq.</span></label>
-        </section>
-      </li>
-      <li class="slot" data-start="10:00" data-end="11:00">
-        <div class="slot-time"><time datetime="10:00">10:00</time><time datetime="11:00">11:00</time></div>
-        <section class="slot-body">
-          <h2>Прогон менеджера, директора и админа</h2>
-          <label class="item"><input type="checkbox" data-task="qr"><span>Пройти привязку Telegram и QR-вход с другого ПК.</span></label>
-          <label class="item"><input type="checkbox" data-task="workflow"><span>На одной учебной задаче пройти перенос, уточнение, сдачу, возврат и приёмку. Админ сверяет роли и журнал.</span></label>
-          <label class="item"><input type="checkbox" data-task="feedback"><span>Собрать замечания по обучению, сводке и отчётам. Отметить, что мешает пройти сценарий.</span></label>
-        </section>
-      </li>
-      <li class="slot" data-start="11:00" data-end="12:00">
-        <div class="slot-time"><time datetime="11:00">11:00</time><time datetime="12:00">12:00</time></div>
-        <section class="slot-body">
-          <h2>Доступы, маршруты и домен</h2>
-          <label class="item"><input type="checkbox" data-task="roles"><span>Подтвердить участников пилота, рукфила, директора и порядок согласования. Проверить персональные входы.</span></label>
-          <label class="item"><input type="checkbox" data-task="domain"><span>Зафиксировать адрес для пилота. Если новый домен готов, проверить HTTPS, вход и ссылку из Telegram.</span></label>
-        </section>
-      </li>
-      <li class="slot" data-start="12:00" data-end="13:00">
-        <div class="slot-time"><time datetime="12:00">12:00</time><time datetime="13:00">13:00</time></div>
-        <section class="slot-body">
-          <h2>Битрикс24 · проверка чтения</h2>
-          <label class="item"><input type="checkbox" data-task="bitrix-access"><span>При наличии вебхука и настроек балансировщика проверить доступ к проекту, полям задачи и комментариям.</span></label>
-          <label class="item"><input type="checkbox" data-task="bitrix-mapping"><span>Сверить ID участников и контрольные задачи. Если доступов ещё нет, зафиксировать, чего ждём и от кого.</span></label>
-        </section>
-      </li>
-      <li class="slot pause" data-start="13:00" data-end="14:00">
-        <div class="slot-time"><time datetime="13:00">13:00</time><time datetime="14:00">14:00</time></div>
-        <section class="slot-body"><h2>Обед</h2></section>
-      </li>
-      <li class="slot" data-start="14:00" data-end="15:15">
-        <div class="slot-time"><time datetime="14:00">14:00</time><time datetime="15:15">15:15</time></div>
-        <section class="slot-body">
-          <h2>Исправления по итогам прогона</h2>
-          <label class="item"><input type="checkbox" data-task="fixes"><span>Исправить одну-две проблемы, из-за которых тестирующая не смогла продолжить.</span></label>
-          <label class="item"><input type="checkbox" data-task="retest"><span>Повторить проблемный шаг и зафиксировать выпуск для пилота.</span></label>
-        </section>
-      </li>
-      <li class="slot" data-start="15:15" data-end="16:15">
-        <div class="slot-time"><time datetime="15:15">15:15</time><time datetime="16:15">16:15</time></div>
-        <section class="slot-body">
-          <h2>Решение по запуску пилота</h2>
-          <label class="item"><input type="checkbox" data-task="gate"><span>Сверить выпуск, резервную копию, доступы участников и ответы Telegram. Зафиксировать готовность панели, бота и обмена.</span></label>
-          <label class="item"><input type="checkbox" data-task="pilot"><span>Если готовность подтверждена, пройти контрольный обмен на согласованных задачах. При блокере назначить следующий шаг и ответственного.</span></label>
-        </section>
-      </li>
-      <li class="slot pause" data-start="16:15" data-end="16:30">
-        <div class="slot-time"><time datetime="16:15">16:15</time><time datetime="16:30">16:30</time></div>
-        <section class="slot-body"><h2>Пауза и запас по времени</h2></section>
-      </li>
-      <li class="slot" data-start="16:30" data-end="17:15">
-        <div class="slot-time"><time datetime="16:30">16:30</time><time datetime="17:15">17:15</time></div>
-        <section class="slot-body">
-          <h2>Голосовые команды · Groq</h2>
-          <label class="item"><input type="checkbox" data-task="proxy"><span>Получить статус от техотдела. Если прокси развёрнут, проверить соединение с Groq с рабочего сервера.</span></label>
-          <label class="item"><input type="checkbox" data-task="voice"><span>При рабочем соединении проверить одно учебное голосовое до черновика и подтверждения действия. Иначе записать, что осталось настроить.</span></label>
-        </section>
-      </li>
-      <li class="slot" data-start="17:15" data-end="18:00">
-        <div class="slot-time"><time datetime="17:15">17:15</time><time datetime="18:00">18:00</time></div>
-        <section class="slot-body">
-          <h2>Закрытие дня</h2>
-          <label class="item"><input type="checkbox" data-task="outcome"><span>Записать, что прошло проверку и что ждёт доступа, решения или исправления.</span></label>
-          <label class="item"><input type="checkbox" data-task="data"><span>Сверить дату рабочей выгрузки задач и статус ОКБ. Отметить, если нужна новая выгрузка.</span></label>
-          <label class="item"><input type="checkbox" data-task="handoff"><span>Подготовить короткий итог для команды и выбрать первое действие на следующий рабочий день.</span></label>
-        </section>
-      </li>
-    </ol>
+    </div>
   </main>
+  <template id="block-template">
+    <article class="block">
+      <div class="block-header">
+        <input class="block-title" maxlength="200" required aria-label="Название блока" placeholder="Название блока">
+        <button class="icon" type="button" data-remove-block aria-label="Удалить блок">×</button>
+      </div>
+      <div class="block-times">
+        <label>Начало <input type="time" data-start></label>
+        <label>Конец <input type="time" data-end></label>
+      </div>
+      <div data-items></div>
+      <button class="quiet" type="button" data-add-item>Добавить пункт</button>
+    </article>
+  </template>
+  <template id="item-template">
+    <div class="plan-item">
+      <input type="checkbox" aria-label="Пункт выполнен">
+      <input type="text" maxlength="400" required aria-label="Текст пункта" placeholder="Что сделать">
+      <button class="icon" type="button" aria-label="Удалить пункт">×</button>
+    </div>
+  </template>
 </body>
 </html>

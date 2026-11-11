@@ -1,6 +1,6 @@
 import type {ReportAnalysis} from './reporting.js';
 export type Role = 'admin' | 'director' | 'branch_manager' | 'sales_head' | 'employee';
-export interface User { id: string; name: string; role: Role; branch_id: string; position: string }
+export interface User { id: string; name: string; role: Role; branch_id: string; position: string; root_access?: boolean }
 export type Status = 'active' | 'review' | 'completed';
 export interface Task { delegated_from_id?:string|null; company_id?:string|null; custom_fields?:{label:string;value:string}[]; price?:number|string|null; planned_start?:string|null; parent_id?:string|null; source_fields?: Record<string,unknown>; source_status?: string; id: string; title: string; description: string; branch_id: string; assignee_id: string; creator_id: string; deadline: string | null; original_deadline: string | null; planned_end: string | null; status: Status; priority: 'normal' | 'high'; code: string; important: boolean | null; customer_risk: boolean | null; version: number; transfer_count: number; created_at: string; updated_at: string; completed_at: string | null }
 export interface Finding { id: string; task_id: string; rule: string; severity: string; message: string; status: 'open' | 'resolved'; first_seen: string }

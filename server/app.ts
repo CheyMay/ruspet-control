@@ -32,6 +32,7 @@ import { pool } from './db.js';
 import { AppError, assert } from './domain.js';
 import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
+import {ownerTimeRouter} from './owner-time.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {createTask,delegateTask,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
 import type { User } from '../shared/types.js';
@@ -61,6 +62,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   assert(id.length>0&&id.length<=100,400,'Некорректный ID сотрудника.');
   const user=(await pool.query<User>('SELECT * FROM users WHERE id=$1',[id])).rows[0];
   assert(user,404,'Сотрудник не найден.');
+  assert(!user.root_access,403,'Для доступа владельца нужен отдельный вход.');
   req.actor=user;
   next();
  });
@@ -72,10 +74,11 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/health',async(_req,res)=>{await pool.query('SELECT 1');res.json({ok:true,database:'postgresql',taskProvider:'mock',telegram:(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0]?.enabled?'personal-pilot':'disabled'});});
  app.get('/api/auth/mode',(_req,res)=>res.json({demo:process.env.DEMO_AUTH!=='false'}));
  app.use('/api/auth/qr',telegramLoginRouter());
- app.get('/api/demo/users',async(_req,res)=>{assert(process.env.DEMO_AUTH!=='false',403,'Демонстрационный вход отключён.');res.json((await pool.query('SELECT * FROM users ORDER BY id')).rows);});
+ app.get('/api/demo/users',async(_req,res)=>{assert(process.env.DEMO_AUTH!=='false',403,'Демонстрационный вход отключён.');res.json((await pool.query('SELECT * FROM users WHERE NOT root_access ORDER BY id')).rows);});
  app.post('/api/demo/login',async(req,res)=>{
   assert(process.env.DEMO_AUTH!=='false',403,'Демонстрационный вход отключён.');
   const {userId}=z.object({userId:text}).parse(req.body);const user=(await pool.query('SELECT * FROM users WHERE id=$1',[userId])).rows[0];assert(user,400,'Пользователь не найден.');
+  assert(!user.root_access,403,'Для доступа владельца нужен отдельный вход.');
   const old=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(old)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(old)]);
   const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '8 hours')",[hash(token),userId]);
   res.cookie('ruspet_session',token,{httpOnly:true,sameSite:'strict',maxAge:8*60*60*1000,path:'/'});res.json({user});
@@ -186,12 +189,13 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/reports/:id/pdf',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const bytes=await reportPdf(report);res.setHeader('Content-Disposition',`inline; filename=ruspet-${report.day}.pdf`);res.type('application/pdf').send(bytes);});
  app.get('/api/reports/:id/print',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));res.type('html').send(printReport(report));});
  app.get('/api/reports/:id/csv',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const data={users:(await pool.query('SELECT id,name FROM users')).rows};const cell=(v:unknown)=>{let s=String(v??'');if(/^[\s]*[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};const rows=[['ID','Задача','Ответственный','Цена','Категория цены','Срок','Статус','Переносов'],...report.rows.map((t:any)=>[t.id,t.title,report.analysis?.team.find((u:{id:string;name:string})=>u.id===t.assignee_id)?.name||data.users.find(u=>u.id===t.assignee_id)?.name||t.assignee_id,formatPrice(t),priceLabels[priceBand(t)],t.deadline?new Date(t.deadline).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}):'Без срока',({active:'В работе',review:'На приёмке',completed:'Завершена'} as Record<string,string>)[t.status],t.transfer_count])];res.setHeader('Content-Disposition',`attachment; filename="ruspet-${report.day}.csv"`);res.type('text/csv').send('\uFEFF'+rows.map(row=>row.map(cell).join(';')).join('\r\n'));});
+ app.use('/api/time',ownerTimeRouter());
  app.use('/api',(_req,res)=>res.status(404).json({error:'Маршрут API не найден.'}));
  app.get('/time',async(req,res)=>{
   res.setHeader('Cache-Control','private, no-store');
   const token=req.headers.cookie?.split('; ').find(value=>value.startsWith('ruspet_session='))?.slice(15);
   const user=token?await sessionUser(token):null;
-  if(user?.role!=='admin')return res.status(user?403:401).sendFile(resolve('server/time/locked.html'));
+  if(!user?.root_access)return res.status(user?403:401).sendFile(resolve('server/time/locked.html'));
   res.sendFile(resolve('server/time/plan.html'));
  });
  app.use(express.static(resolve('dist')));app.get('/{*path}',(_req,res)=>res.sendFile(resolve('dist/index.html')));
