@@ -42,7 +42,7 @@ export function SystemHealth(){
  const currentPoll=!!tg?.lastPoll&&Date.now()-Date.parse(tg.lastPoll)<90000;
  const delivery=(state:string)=>tg?.delivery.find(row=>row.state===state)?.count??0;
  return <section className="panel automation-settings">
-  <div className="automation-heading"><div><h2>Состояние системы</h2><p className="muted">Telegram, автоматические отчёты и резервные копии.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
+  <div className="automation-heading" data-tour="system-status"><div><h2>Состояние системы</h2><p className="muted">Telegram, автоматические отчёты и резервные копии.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
   {error&&<p role="alert" className="alert error">{error}</p>}
   {!value&&busy&&<p role="status">Проверяем состояние…</p>}
   {tg&&reports&&backups&&<>
@@ -91,7 +91,7 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
  }
  const people=value?.filter(p=>[p.name,p.branch_id,roles[p.role],...p.accounts.map(a=>a.username)].some(s=>s.toLocaleLowerCase('ru-RU').includes(query.trim().toLocaleLowerCase('ru-RU'))));
  return <section className="panel automation-settings">
-  <div className="automation-heading"><div><h2>Доступы сотрудников</h2><p className="muted">Роль, вход в панель, подключение к боту и число доступных рабочих задач.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
+  <div className="automation-heading" data-tour="access-heading"><div><h2>Доступы сотрудников</h2><p className="muted">Роль, вход в панель, подключение к боту и число доступных рабочих задач.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
   {(error||inviteError)&&<p className="alert error" role="alert">{inviteError||error}</p>}
   <p className="muted">Пользователей с активным входом: <strong>{value?.filter(p=>p.accounts.some(a=>a.enabled)).length??'—'}</strong>. Количество входов не ограничено десятью. Роль и доступ к задачам сохраняются при создании логина.</p>
   {accountError&&<p className="alert error" role="alert">{accountError}</p>}
