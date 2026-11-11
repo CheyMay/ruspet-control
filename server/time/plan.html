@@ -1,0 +1,115 @@
+<!doctype html>
+<html lang="ru">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#f5f6f2">
+  <title>13 ноября · План РУСПЭТ</title>
+  <link rel="stylesheet" href="/time/plan.css">
+  <script src="/time/plan.js" defer></script>
+</head>
+<body>
+  <main class="page" data-date="2026-11-13">
+    <header class="day-header">
+      <div class="header-line">
+        <span class="project">РУСПЭТ</span>
+        <a href="/">В панель</a>
+      </div>
+      <h1>Пятница, 13 ноября</h1>
+      <p class="day-hours">09:30–18:00 МСК · обед 13:00–14:00</p>
+      <p class="day-goal">Проверить путь менеджера до решения директора и понять, готов ли пилот к рабочему запуску.</p>
+    </header>
+
+    <section class="day-summary" aria-label="Ход дня">
+      <div>
+        <div class="summary-heading">
+          <label for="progress">Выполнено</label>
+          <strong id="progress-text">0 из 18</strong>
+        </div>
+        <progress id="progress" value="0" max="18"></progress>
+      </div>
+      <div class="current-slot">
+        <div><strong id="current-title">План на 13 ноября</strong><p id="current-detail">Первый блок в 09:30 МСК</p></div>
+        <button id="jump-current" type="button" hidden>К текущему</button>
+      </div>
+    </section>
+
+    <ol class="schedule" aria-label="Расписание">
+      <li class="slot" data-start="09:30" data-end="10:00">
+        <div class="slot-time"><time datetime="09:30">09:30</time><time datetime="10:00">10:00</time></div>
+        <section class="slot-body">
+          <h2>Старт и ответы от команды</h2>
+          <label class="item"><input type="checkbox" data-task="inbox"><span>Уточнить у тестирующей время прогона и доступ к учебному стенду с её ПК.</span></label>
+          <label class="item"><input type="checkbox" data-task="dependencies"><span>Собрать статус по домену, иерархии, вебхуку Битрикса и развёртыванию прокси Groq.</span></label>
+        </section>
+      </li>
+      <li class="slot" data-start="10:00" data-end="11:00">
+        <div class="slot-time"><time datetime="10:00">10:00</time><time datetime="11:00">11:00</time></div>
+        <section class="slot-body">
+          <h2>Прогон менеджера, директора и админа</h2>
+          <label class="item"><input type="checkbox" data-task="qr"><span>Пройти привязку Telegram и QR-вход с другого ПК.</span></label>
+          <label class="item"><input type="checkbox" data-task="workflow"><span>На одной учебной задаче пройти перенос, уточнение, сдачу, возврат и приёмку. Админ сверяет роли и журнал.</span></label>
+          <label class="item"><input type="checkbox" data-task="feedback"><span>Собрать замечания по обучению, сводке и отчётам. Отметить, что мешает пройти сценарий.</span></label>
+        </section>
+      </li>
+      <li class="slot" data-start="11:00" data-end="12:00">
+        <div class="slot-time"><time datetime="11:00">11:00</time><time datetime="12:00">12:00</time></div>
+        <section class="slot-body">
+          <h2>Доступы, маршруты и домен</h2>
+          <label class="item"><input type="checkbox" data-task="roles"><span>Подтвердить участников пилота, рукфила, директора и порядок согласования. Проверить персональные входы.</span></label>
+          <label class="item"><input type="checkbox" data-task="domain"><span>Зафиксировать адрес для пилота. Если новый домен готов, проверить HTTPS, вход и ссылку из Telegram.</span></label>
+        </section>
+      </li>
+      <li class="slot" data-start="12:00" data-end="13:00">
+        <div class="slot-time"><time datetime="12:00">12:00</time><time datetime="13:00">13:00</time></div>
+        <section class="slot-body">
+          <h2>Битрикс24 · проверка чтения</h2>
+          <label class="item"><input type="checkbox" data-task="bitrix-access"><span>При наличии вебхука и настроек балансировщика проверить доступ к проекту, полям задачи и комментариям.</span></label>
+          <label class="item"><input type="checkbox" data-task="bitrix-mapping"><span>Сверить ID участников и контрольные задачи. Если доступов ещё нет, зафиксировать, чего ждём и от кого.</span></label>
+        </section>
+      </li>
+      <li class="slot pause" data-start="13:00" data-end="14:00">
+        <div class="slot-time"><time datetime="13:00">13:00</time><time datetime="14:00">14:00</time></div>
+        <section class="slot-body"><h2>Обед</h2></section>
+      </li>
+      <li class="slot" data-start="14:00" data-end="15:15">
+        <div class="slot-time"><time datetime="14:00">14:00</time><time datetime="15:15">15:15</time></div>
+        <section class="slot-body">
+          <h2>Исправления по итогам прогона</h2>
+          <label class="item"><input type="checkbox" data-task="fixes"><span>Исправить одну-две проблемы, из-за которых тестирующая не смогла продолжить.</span></label>
+          <label class="item"><input type="checkbox" data-task="retest"><span>Повторить проблемный шаг и зафиксировать выпуск для пилота.</span></label>
+        </section>
+      </li>
+      <li class="slot" data-start="15:15" data-end="16:15">
+        <div class="slot-time"><time datetime="15:15">15:15</time><time datetime="16:15">16:15</time></div>
+        <section class="slot-body">
+          <h2>Решение по запуску пилота</h2>
+          <label class="item"><input type="checkbox" data-task="gate"><span>Сверить выпуск, резервную копию, доступы участников и ответы Telegram. Зафиксировать готовность панели, бота и обмена.</span></label>
+          <label class="item"><input type="checkbox" data-task="pilot"><span>Если готовность подтверждена, пройти контрольный обмен на согласованных задачах. При блокере назначить следующий шаг и ответственного.</span></label>
+        </section>
+      </li>
+      <li class="slot pause" data-start="16:15" data-end="16:30">
+        <div class="slot-time"><time datetime="16:15">16:15</time><time datetime="16:30">16:30</time></div>
+        <section class="slot-body"><h2>Пауза и запас по времени</h2></section>
+      </li>
+      <li class="slot" data-start="16:30" data-end="17:15">
+        <div class="slot-time"><time datetime="16:30">16:30</time><time datetime="17:15">17:15</time></div>
+        <section class="slot-body">
+          <h2>Голосовые команды · Groq</h2>
+          <label class="item"><input type="checkbox" data-task="proxy"><span>Получить статус от техотдела. Если прокси развёрнут, проверить соединение с Groq с рабочего сервера.</span></label>
+          <label class="item"><input type="checkbox" data-task="voice"><span>При рабочем соединении проверить одно учебное голосовое до черновика и подтверждения действия. Иначе записать, что осталось настроить.</span></label>
+        </section>
+      </li>
+      <li class="slot" data-start="17:15" data-end="18:00">
+        <div class="slot-time"><time datetime="17:15">17:15</time><time datetime="18:00">18:00</time></div>
+        <section class="slot-body">
+          <h2>Закрытие дня</h2>
+          <label class="item"><input type="checkbox" data-task="outcome"><span>Записать, что прошло проверку и что ждёт доступа, решения или исправления.</span></label>
+          <label class="item"><input type="checkbox" data-task="data"><span>Сверить дату рабочей выгрузки задач и статус ОКБ. Отметить, если нужна новая выгрузка.</span></label>
+          <label class="item"><input type="checkbox" data-task="handoff"><span>Подготовить короткий итог для команды и выбрать первое действие на следующий рабочий день.</span></label>
+        </section>
+      </li>
+    </ol>
+  </main>
+</body>
+</html>

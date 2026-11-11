@@ -187,6 +187,13 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/reports/:id/print',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));res.type('html').send(printReport(report));});
  app.get('/api/reports/:id/csv',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const data={users:(await pool.query('SELECT id,name FROM users')).rows};const cell=(v:unknown)=>{let s=String(v??'');if(/^[\s]*[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};const rows=[['ID','Задача','Ответственный','Цена','Категория цены','Срок','Статус','Переносов'],...report.rows.map((t:any)=>[t.id,t.title,report.analysis?.team.find((u:{id:string;name:string})=>u.id===t.assignee_id)?.name||data.users.find(u=>u.id===t.assignee_id)?.name||t.assignee_id,formatPrice(t),priceLabels[priceBand(t)],t.deadline?new Date(t.deadline).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}):'Без срока',({active:'В работе',review:'На приёмке',completed:'Завершена'} as Record<string,string>)[t.status],t.transfer_count])];res.setHeader('Content-Disposition',`attachment; filename="ruspet-${report.day}.csv"`);res.type('text/csv').send('\uFEFF'+rows.map(row=>row.map(cell).join(';')).join('\r\n'));});
  app.use('/api',(_req,res)=>res.status(404).json({error:'Маршрут API не найден.'}));
+ app.get('/time',async(req,res)=>{
+  res.setHeader('Cache-Control','private, no-store');
+  const token=req.headers.cookie?.split('; ').find(value=>value.startsWith('ruspet_session='))?.slice(15);
+  const user=token?await sessionUser(token):null;
+  if(user?.role!=='admin')return res.status(user?403:401).sendFile(resolve('server/time/locked.html'));
+  res.sendFile(resolve('server/time/plan.html'));
+ });
  app.use(express.static(resolve('dist')));app.get('/{*path}',(_req,res)=>res.sendFile(resolve('dist/index.html')));
  app.use((error:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{
   if(error instanceof ZodError)return res.status(400).json({error:'Проверьте заполнение полей.',fields:error.issues.map(i=>({path:i.path,message:i.message}))});
