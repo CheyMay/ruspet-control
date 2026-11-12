@@ -81,9 +81,12 @@ export function spokenPrice(value:string){
  return String(total+group);
 }
 
-function fields(text:string,names:Record<string,string>){
- const pattern=new RegExp(String.raw`(?:^|[.;\n,]\s*)(${Object.keys(names).join('|')})\s*[:—–-]?\s+`,'giu');
- const starts=[...text.matchAll(pattern)],values:Record<string,string>={};
+function fields(text:string,names:Record<string,string>,loose?:(key:string,tail:string)=>boolean){
+ const pattern=new RegExp(String.raw`(?:^|[.;\n,]\s*|\s+)(${Object.keys(names).join('|')})(?:\s*[:—–-]\s*|\s+)`,'giu');
+ const starts=[...text.matchAll(pattern)].filter(match=>{
+  const key=names[match[1].toLocaleLowerCase('ru-RU')];
+  return match.index===0||/[.;\n,:—–-]/.test(match[0])||loose?.(key,text.slice(match.index+match[0].length));
+ }),values:Record<string,string>={};
  for(let i=0;i<starts.length;i++){
   const match=starts[i],value=clean(text.slice(match.index+match[0].length,starts[i+1]?.index));
   if(value)values[names[match[1].toLocaleLowerCase('ru-RU')]]=stripPeriod(value);
@@ -98,7 +101,11 @@ function createIntent(text:string,now:Date):VoiceIntent|null{
  const self=rest.match(/^(себе|мне)(?=$|[\s,:.])/iu);
  if(self){assignee=self[1];rest=clean(rest.slice(self[0].length));}
  const labels={'название':'title','описание':'description','исполнитель':'assignee','кому':'assignee','крайний срок':'deadline','срок':'deadline','цена задачи':'price','цена':'price','стоимость':'price'};
- const {initial,values}=fields(rest,labels);
+ const {initial,values}=fields(rest,labels,(key,tail)=>{
+  if(key==='deadline')return /^без срока(?:\s|$)/iu.test(tail)||!!spokenDeadline(tail,now)?.day;
+  if(key==='price')return /^(?:\d|(?:тысяча|миллион|одна|две|полторы)(?=\s|$))/iu.test(tail)||words.includes(tail.split(/\s/u,1)[0].toLocaleLowerCase('ru-RU'));
+  return key==='assignee';
+ });
  const separated=initial.match(/^([^:]{2,70}):\s*(.+)$/su);
  if(!assignee&&!values.assignee&&separated&&!/\d/.test(separated[1]))assignee=separated[1].trim();
  if(!values.title&&initial)values.title=assignee&&separated?separated[2]:initial;
@@ -170,7 +177,9 @@ export function parseVoiceIntent(transcript:string,now=new Date(),currentTaskId?
    if(due?.stamp)values.deadline=due.stamp;
    tail=due?.rest??tail;
   }
-  const labeled=fields(tail,{причина:'reason',план:'plan',сделано:'progress',комментарий:'comment',результат:'comment',вопрос:'comment',поручение:'instruction'});
+  const structured=kind==='deadline'||kind==='answer';
+  const labeled=fields(tail,{причина:'reason',план:'plan',сделано:'progress',комментарий:'comment',результат:'comment',вопрос:'comment',поручение:'instruction'},
+   key=>structured&&['reason','plan','progress'].includes(key));
   Object.assign(values,labeled.values);
   if(kind==='comment'||['submit','accept','return','approve','reject','clarify'].includes(kind)){
    if(labeled.initial&&!values.comment)values.comment=Object.keys(labeled.values).length?labeled.initial:tail;

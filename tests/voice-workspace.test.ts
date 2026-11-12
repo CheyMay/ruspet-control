@@ -87,7 +87,7 @@ test('voice creates a personal task once and carries a partial deadline into the
  const buttons=(view:Awaited<ReturnType<typeof bot.botView>>)=>view.buttons.flat();
  const confirm=async(view:Awaited<ReturnType<typeof bot.botView>>,user=actor)=>bot.botClick(user,channel,buttons(view).find(b=>b.text==='Подтвердить и отправить')!.token);
  const title='Сверить цены по голосовой команде';
- const draft=await bot.botVoiceDraft(actor,channel,`Поставь себе задачу: ${title}. Цена пять тысяч. Срок завтра в 15:00.`,'create-voice');
+ const draft=await bot.botVoiceDraft(actor,channel,`Поставь себе задачу ${title} Цена пять тысяч Срок завтра в 15 часов`,'create-voice');
  assert.match(draft.text,/Исполнитель:/);
  assert.match(draft.text,/5000/);
  assert.equal((await db.pool.query('SELECT count(*)::int n FROM tasks WHERE title=$1',[title])).rows[0].n,0);
