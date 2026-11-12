@@ -1,0 +1,18 @@
+[Unit]
+Description=RUSPET private TLS route to Groq
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+User=ruspet-tunnel
+EnvironmentFile=/etc/ruspet-groq-tunnel/remote.env
+ExecStart=/usr/bin/ssh -4 -NT -i /var/lib/ruspet-groq-tunnel/id_ed25519 -o IdentitiesOnly=yes -o BatchMode=yes -o StrictHostKeyChecking=yes -o UserKnownHostsFile=/etc/ruspet-groq-tunnel/known_hosts -o ExitOnForwardFailure=yes -o ServerAliveInterval=20 -o ServerAliveCountMax=2 -o ConnectTimeout=10 -L 127.0.0.1:4356:api.groq.com:443 ruspet-groq@${GROQ_SSH_HOST}
+Restart=always
+RestartSec=4
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+ProtectSystem=strict
+
+[Install]
+WantedBy=multi-user.target

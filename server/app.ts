@@ -23,7 +23,9 @@ import {listJournal} from './journal.js';
 import {reportPdf} from './report-pdf.js';
 import {taskSyncStatus} from './task-sync.js';
 import {reminderInput,listTaskReminders,saveTaskReminder,disableTaskReminder,acknowledgeAlert,userAlerts} from './reminders.js';
-import {botView,botClick,botText,clearBotDraft} from './bot.js';
+import {botView,botClick,botText,clearBotDraft,botVoiceDraft,savedVoiceDraft} from './bot.js';
+import {browserAudioFormat,transcribeAudio,voiceEnabled} from './transcription.js';
+import {voiceMaxBytes} from '../shared/voice.js';
 import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
 import {printReport} from './report-print.js';
 import express from 'express';
@@ -49,6 +51,7 @@ const viewAsReads=new Set(['/bootstrap','/journal','/management/progress','/aler
 const viewAsTaskRead=/^\/tasks\/[^/]+(?:\/(?:integration|delegation|reminders))?$/;
 const viewAsReportRead=/^\/reports\/[a-f0-9-]{36}$/i;
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
+const webBotChannel=(req:express.Request)=>req.query.channel==='mobile'?'mobile':'preview';
 export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  const app=express(); app.disable('x-powered-by');
  app.use('/api',async(req,res,next)=>{
@@ -72,7 +75,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.use('/api/integrations/v1/companies/batch',express.json({limit:'512kb'})); app.use(express.json({limit:'32kb'}));
  app.post('/api/bitrix/events',express.urlencoded({extended:true,limit:'128kb',parameterLimit:1000}),async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await receiveBitrixEvent(req.body));});
  const loginAttempts=new Map<string,{count:number;since:number}>();
- app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'");next();});
+ app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'");next();});
  app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.get('origin')){const allowed=[`http://${req.get('host')}`,'http://127.0.0.1:5173','http://localhost:5173'];if(process.env.PUBLIC_ORIGIN)allowed.push(new URL(process.env.PUBLIC_ORIGIN).origin);if(!allowed.includes(req.get('origin')!))return res.status(403).json({error:'Запрос с другого сайта запрещён.'});}next();});
  app.get('/api/health',async(_req,res)=>{await pool.query('SELECT 1');res.json({ok:true,database:'postgresql',taskProvider:'mock',telegram:(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0]?.enabled?'personal-pilot':'disabled'});});
  app.get('/api/auth/mode',(_req,res)=>res.json({demo:process.env.DEMO_AUTH!=='false'}));
@@ -166,9 +169,24 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/telegram/status',async(req,res)=>{res.json(await pilotStatus(req.actor));});
  app.post('/api/telegram/pairing',async(req,res)=>res.json(await pairPilot(req.actor,z.object({userId:z.string().max(100).optional()}).parse(req.body||{}).userId)));
  app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean()}).parse(req.body));res.json({ok:true})});
- app.post('/api/bot/screen',async(req,res)=>{await clearBotDraft(req.actor,'preview');res.json(await botView(req.actor,'preview'))});
- app.post('/api/bot/click',async(req,res)=>res.json(await botClick(req.actor,'preview',z.object({token:z.string().max(64)}).parse(req.body).token)));
- app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,'preview',input.text,input.inputId))});
+ app.post('/api/bot/screen',async(req,res)=>{
+  const {screen}=z.object({screen:z.enum(['home','tasks','notices','inbox','search_prompt']).default('home')}).parse(req.body||{});
+  const channel=webBotChannel(req);
+  await clearBotDraft(req.actor,channel);
+  res.json(await botView(req.actor,channel,{op:screen}));
+ });
+ app.post('/api/bot/click',async(req,res)=>res.json(await botClick(req.actor,webBotChannel(req),z.object({token:z.string().max(64)}).parse(req.body).token)));
+ app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,webBotChannel(req),input.text,input.inputId));});
+ app.get('/api/bot/voice',async(req,res)=>res.json({enabled:voiceEnabled('web',req.actor.id)}));
+ app.post('/api/bot/voice',express.raw({type:['audio/*','video/mp4'],limit:voiceMaxBytes,inflate:false}),async(req,res)=>{
+  assert(voiceEnabled('web',req.actor.id),409,'Голосовые команды пока недоступны. Можно написать ответ текстом.');
+  const inputId=z.uuid().parse(req.get('X-Voice-Input-Id')),channel=webBotChannel(req);
+  const cached=await savedVoiceDraft(req.actor,channel,inputId);if(cached){res.json(cached);return;}
+  assert(Buffer.isBuffer(req.body)&&req.body.length>0,415,'Запишите голосовое или выберите аудиофайл.');
+  const format=browserAudioFormat(req.get('Content-Type')||'',req.body);
+  const transcript=await transcribeAudio(new Blob([new Uint8Array(req.body)]),format,req.actor.id);
+  res.json(await botVoiceDraft(req.actor,channel,transcript,inputId));
+ });
  app.post('/api/integrations/v1/companies/batch',async(req,res)=>res.json(await syncCompanySnapshots(req.actor,req.body)));
  app.get('/api/okb/companies/:id/responsibility',async(req,res)=>res.json(await companyResponsibility(req.actor,z.uuid().parse(req.params.id))));
  app.get('/api/okb/companies',async(req,res)=>res.json(await listCompanies(req.actor,typeof req.query.q==='string'?req.query.q:'')));
@@ -226,6 +244,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   if(error instanceof AppError)return res.status(error.status).json({error:error.message});
   const code=(error as {code?:string}).code;if(code==='23505'||code==='40001'||code==='40P01')return res.status(409).json({error:'Данные уже изменены другим действием. Обновите страницу.'});
   if((error as {status?:number}).status===400)return res.status(400).json({error:'Некорректный запрос.'});
+  if((error as {status?:number}).status===413)return res.status(413).json({error:'Файл превышает допустимый размер.'});
   console.error('Request failed',error instanceof Error?error.message:'unknown');res.status(500).json({error:'Не удалось выполнить действие. Попробуйте ещё раз.'});
  });return app;
 }

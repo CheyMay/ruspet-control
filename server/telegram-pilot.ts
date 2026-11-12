@@ -14,7 +14,9 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {pool,transaction} from './db.js';
 import {assert,AppError} from './domain.js';
-import {botClick,botText,botView,clearBotDraft,alertScreen,type BotScreen} from './bot.js';
+import {botClick,botText,botView,clearBotDraft,alertScreen,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
+import {voiceEnabled} from './transcription.js';
+import {transcribeTelegramVoice} from './telegram-voice.js';
 import type {User} from '../shared/types.js';
 const digest=(v:string)=>createHash('sha256').update(v).digest('hex');
 const token=async()=>process.env.TELEGRAM_BOT_TOKEN||(await readFile(process.env.TELEGRAM_BOT_TOKEN_FILE||'.local/telegram-token','utf8')).trim();
@@ -98,6 +100,22 @@ export async function handlePilotUpdate(update:any){
  const ch='telegram:'+chat;
  if(c){const acknowledged=call('answerCallbackQuery',{callback_query_id:c.id}).catch(()=>{});try{await reply(chat,await botClick(u,ch,String(c.data)),started,m.message_id)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',buttons:(await botView(u,ch)).buttons})}finally{await acknowledged;}return}
  try{
+  if(m.voice){
+   assert(m.from&&!m.from.is_bot&&String(m.from.id)===chat,403,'Голосовое можно прислать из своего личного чата.');
+   assert(voiceEnabled('telegram',u.id),409,'Голосовые команды пока недоступны. Можно написать боту текстом.');
+   const key=String(update.update_id);
+   const cached=await savedVoiceDraft(u,ch,key);
+   if(cached){await reply(chat,cached,started);return;}
+   const progress=await send(chat,{text:'Распознаю голосовое…',buttons:[]});
+   try{
+    const transcript=await transcribeTelegramVoice(u.id,m.voice,id=>call('getFile',{file_id:id}),token);
+    await reply(chat,await botVoiceDraft(u,ch,transcript,key),started,progress.message_id);
+   }catch(error){
+    const text=error instanceof AppError?error.message:'Голосовое не обработано. Можно написать боту текстом.';
+    await reply(chat,{text,buttons:[]},started,progress.message_id);
+   }
+   return;
+  }
   const timeReply=await ownerTimeReply(u,m);
   if(timeReply){await reply(chat,{text:timeReply,buttons:[]},started);return;}
   const text=String(m.text||'').trim();let response:BotScreen;

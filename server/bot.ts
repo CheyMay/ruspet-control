@@ -2,6 +2,8 @@ import {button,date,screen,type BotScreen,type Payload} from './bot-ui.js';
 import {renderBotTask} from './bot-task.js';
 import {renderBotNavigation} from './bot-navigation.js';
 import {readNotifications} from './notifications.js';
+import {parseVoiceIntent,type VoiceIntent} from './voice-intent.js';
+import {voiceExample} from '../shared/voice.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 export type {BotScreen} from './bot-ui.js';
 import {lastUndo,undoLastAction} from './undo.js';
@@ -11,14 +13,24 @@ import {linkedText,reportLink,escapeHtml,taskLink} from '../shared/report-links.
 import {randomBytes} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {acknowledgeAlert,userAlerts,listTaskReminders,saveTaskReminder,disableTaskReminder,reminderInput} from './reminders.js';
-import {assert,canRequest,canEdit} from './domain.js';
+import {assert,canRequest,canEdit,canSee} from './domain.js';
+import {canReview} from '../shared/actions.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
 import {canDelegateTask,delegateTask,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
-import type {User} from '../shared/types.js';
+import type {User,Task} from '../shared/types.js';
 type Field={key:string;label:string;min:number};
 type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};
+const voiceLabels={comment:'Добавить комментарий',submit:'Передать результат на приёмку',deadline:'Запросить перенос срока',accept:'Принять результат'};
+function voiceFields(kind:VoiceIntent['kind'],min:number):Field[]{
+ if(kind==='deadline')return [{key:'deadline',label:'Предложите новый срок',min:1},{key:'reason',label:'Почему нужен новый срок?',min},{key:'plan',label:'Что будет сделано к новому сроку?',min}];
+ const label=kind==='comment'?'Комментарий к задаче':kind==='submit'?'Опишите готовый результат':'Комментарий к приёмке';
+ return [{key:'comment',label,min:5}];
+}
+function nextMissing(dialog:Dialog){
+ while(dialog.index<dialog.fields.length&&Object.hasOwn(dialog.values,dialog.fields[dialog.index].key))dialog.index++;
+}
 export async function clearBotDraft(u:User,ch:string){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch])})}
 export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<BotScreen>{
  const result=await renderView(u,ch,p);
@@ -81,6 +93,60 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
 }
 export function parseMoscowInput(value:string){const match=value.match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2})$/);assert(match,400,'Введите дату в формате ДД.ММ.ГГГГ ЧЧ:ММ, время московское.');const [,d,m,y,h,min]=match,raw=`${y}-${m}-${d}T${h}:${min}:00+03:00`,date=new Date(raw);assert(!isNaN(date.getTime())&&new Date(date.getTime()+10800000).toISOString().slice(0,16)===`${y}-${m}-${d}T${h}:${min}`,400,'Такой даты или времени нет.');assert(date>new Date(),400,'Новый срок должен быть в будущем.');return date.toISOString();}
 async function prompt(u:User,ch:string,d:Dialog,db:Db){const f=d.fields[d.index];return screen(u,ch,`Задача #${d.payload.id}\nШаг ${d.index+1}/${d.fields.length}\n\n${f.label}\n${f.key==='deadline'?'Формат: ДД.ММ.ГГГГ ЧЧ:ММ · Москва':`Минимум ${f.min} символов. Можно указать ссылку на материалы.`}`,[[button('Отменить ввод','cancel',{id:d.payload.id,list:d.payload.list})]],db)}
+function draftSummary(d:Dialog){
+ return (d.payload.kind==='reminder'?'Дни недели (1=Пн, 7=Вс): '+d.values.days+'\n\n':'')+
+  d.fields.filter(field=>Object.hasOwn(d.values,field.key)).map(field=>field.label+'\n'+(field.key==='deadline'?date(d.values[field.key]):d.values[field.key])).join('\n\n');
+}
+async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading='Проверьте перед отправкой · #'+d.payload.id){
+ const summary=draftSummary(d);
+ const redo={...d.payload,values:d.payload.kind==='reminder'?{days:d.values.days}:undefined};
+ return screen(u,ch,`${heading}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
+  [button('Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],
+  [button('Ввести заново','form',redo),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]
+ ],db);
+}
+export async function savedVoiceDraft(u:User,ch:string,inputId:string,db:Db=pool){
+ return (await db.query('SELECT screen FROM bot_inputs WHERE actor_id=$1 AND channel=$2 AND input_id=$3',[u.id,ch,'voice:'+inputId])).rows[0]?.screen as BotScreen|undefined;
+}
+export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:string,at=new Date()):Promise<BotScreen>{
+ return transaction(async db=>{
+  await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
+  const cached=await savedVoiceDraft(u,ch,inputId,db);if(cached)return cached;
+  const intent=parseVoiceIntent(transcript,at);
+  const existing=(await db.query('SELECT data FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now()',[u.id,ch])).rows[0]?.data as Dialog|undefined;
+  if(!intent&&existing&&existing.payload.op!=='search')return botText(u,ch,transcript,'voice:'+inputId);
+  let response:BotScreen;
+  if(!intent){
+   response=await screen(u,ch,`Распознал: ${transcript.slice(0,600)}\n\nНазовите действие и номер задачи. Например: «${voiceExample}»`,[[button('Мои задачи','tasks'),button('Меню','home')]],db);
+  }else{
+   const {id,kind}=intent;
+   const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+   assert(task&&canSee(u,task),404,'Задача не найдена или недоступна. Проверьте её номер в «Мои задачи».');
+   if(kind==='submit'||kind==='deadline')assert(canRequest(u,task)&&task.status!=='completed'&&(kind!=='submit'||task.status==='active'),409,'Это действие недоступно в текущем состоянии задачи.');
+   if(kind==='accept')assert(task.status==='review'&&canReview(u,task),409,'Результат не ожидает вашей приёмки.');
+   if(kind!=='comment')assert(!(await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rowCount,409,'Сначала завершите активное согласование по этой задаче.');
+   const fields=kind==='accept'&&!intent.values.comment?[]:voiceFields(kind,(await config(db)).config.responseMinLength);
+   const payload:Payload={op:'form',id,kind,version:task.version};
+   const draft:Dialog={payload,fields,index:0,values:{}};
+   for(const field of fields){
+    const value=intent.values[field.key];
+    if(!value||value.length<field.min)continue;
+    if(field.key==='deadline'){try{draft.values.deadline=parseMoscowInput(value);}catch{/* Prompt for a valid date. */}}
+    else draft.values[field.key]=value;
+   }
+   await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);
+   await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch]);
+   const heading=voiceLabels[kind]+' · #'+id+'\n'+task.title.slice(0,180);
+   nextMissing(draft);
+   if(draft.index===fields.length)response=await confirmation(u,ch,draft,db,heading);
+   else response=await screen(u,ch,heading+'\n\n'+draftSummary(draft).slice(0,3000)+'\n\nУточните: '+fields.filter(f=>!Object.hasOwn(draft.values,f.key)).map(f=>f.label).join(' · '),[
+    [button('Уточнить и продолжить','form',{...payload,values:draft.values})],[button('Отмена','cancel',{id})]
+   ],db);
+  }
+  await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,'voice:'+inputId,JSON.stringify(response)]);
+  return response;
+ });
+}
 export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>{
  const b=(await pool.query('SELECT * FROM bot_buttons WHERE token=$1 AND actor_id=$2 AND channel=$3 AND expires_at>now()',[token,u.id,ch])).rows[0];assert(b,409,'Кнопка устарела. Откройте меню заново.');const p=b.payload as Payload;
  if(p.op==='notices_read'){
@@ -103,7 +169,9 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    const min=(await config(db)).config.responseMinLength;
    if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!);assert(canEdit(u,d.task),403,'Нет права редактировать задачу.');}
    const fields:Field[]=p.kind==='edit_price'?[{key:'price',label:'Цена задачи в рублях (обязательное поле)',min:1},{key:'reason',label:'Причина изменения цены',min:5}]:p.kind==='reminder'?[{key:'times',label:'Время напоминания: ЧЧ:ММ, можно несколько через запятую. Например: 09:00, 15:30. Не более 8 времён.',min:5},{key:'weeks',label:'Сколько недель повторять? Число от 1 до 52. Для одного недельного цикла введите 1.',min:1}]:p.kind==='edit_title'?[{key:'value',label:'Новое название задачи',min:3},{key:'reason',label:'Причина изменения',min:5}]:p.kind==='edit_description'?[{key:'value',label:'Новое описание задачи',min:1},{key:'reason',label:'Причина изменения',min:5}]:p.kind==='edit_assignee'?[{key:'reason',label:'Почему меняется исполнитель?',min:5}]:p.kind==='answer'?[{key:'reason',label:'Что помешало выполнить задачу?',min},{key:'progress',label:'Что уже сделано?',min},{key:'plan',label:'Что будете делать дальше?',min}]:p.kind==='deadline'?[{key:'deadline',label:'Предложите новый срок',min:1},{key:'reason',label:'Почему нужен новый срок?',min},{key:'plan',label:'Что будет сделано к новому сроку?',min}]:p.kind==='clarification'?[{key:'answer',label:'Ответьте на вопрос согласующего',min:5}]:[{key:'comment',label:p.kind==='comment'?'Комментарий к задаче':p.kind==='submit'?'Опишите готовый результат':p.kind==='return'?'Что конкретно нужно исправить?':p.kind==='reject'?'Почему запрос отклонён?':p.kind==='clarify'?'Что нужно уточнить?':'Комментарий к решению',min:5}];
-   const d:Dialog={payload:p,fields,index:0,values:p.values||{}};await db.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+interval '1 hour') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(d)]);return prompt(u,ch,d,db);
+   const d:Dialog={payload:p,fields,index:0,values:p.values||{}};nextMissing(d);
+   if(d.index===fields.length)return confirmation(u,ch,d,db);
+   await db.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+interval '1 hour') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(d)]);return prompt(u,ch,d,db);
   }
   const v=p.values||{};let result='Действие сохранено.',resultTask:string|undefined;
   if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}
@@ -140,11 +208,10 @@ export async function botText(u:User,ch:string,text:string,inputId:string):Promi
   if(f.key==='price')assert(parsePrice(text)!==null,400,'Цена: неотрицательное число, не более двух знаков после запятой.');
   if(f.key==='times')assert(reminderInput.shape.times.safeParse(text.split(',').map(s=>s.trim())).success,400,'Время: ЧЧ:ММ, до 8 различных времён через запятую.');
   if(f.key==='weeks')assert(/^\d{1,2}$/.test(text.trim())&&Number(text)>=1&&Number(text)<=52,400,'Введите число недель от 1 до 52.');
-  d.values[f.key]=f.key==='deadline'?parseMoscowInput(text.trim()):text.trim();d.index++;
+  d.values[f.key]=f.key==='deadline'?parseMoscowInput(text.trim()):text.trim();d.index++;nextMissing(d);
   let response:BotScreen;if(d.index<d.fields.length){await db.query('UPDATE bot_sessions SET data=$3 WHERE actor_id=$1 AND channel=$2',[u.id,ch,JSON.stringify(d)]);response=await prompt(u,ch,d,db)}else{
    // The draft is now immutable and bound to a one-time confirmation button.
-   await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);const summary=(d.payload.kind==='reminder'?'Дни недели (1=Пн, 7=Вс): '+d.values.days+'\n\n':'')+d.fields.map(f=>f.label+'\n'+(f.key==='deadline'?date(d.values[f.key]):d.values[f.key])).join('\n\n');
-   response=await screen(u,ch,`Проверьте перед отправкой · #${d.payload.id}\n\n${summary.length>3200?summary.slice(0,3200)+'\n… Введённые ответы сохранены полностью.':summary}`,[[button('Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],[button('Ввести заново','form',d.payload),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]],db);
+   await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);response=await confirmation(u,ch,d,db);
   }
   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,inputId,JSON.stringify(response)]);return response;
  });
