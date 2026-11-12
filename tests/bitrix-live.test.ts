@@ -170,7 +170,9 @@ test('initial baseline does not invent deadline transfers; a proposed deadline w
  await service.decide(director,request.id,{decision:'approve',comment:'Срок подтверждён руководителем',expectedStep:0});await live.tickLiveSync(transport);assert.equal(remote.get('907')!.deadline,'2035-02-01T09:00:00.000Z');
  await assert.rejects(()=>service.decide(director,request.id,{decision:'approve',comment:'Повтор',expectedStep:0}),/принято|устарел/);
  const {botView,botClick,botText}=await import('../server/bot.js'),channel='fixture-pilot';
- const view=await botView(anna,channel,{op:'task',id:task.id});await botClick(anna,channel,view.buttons.flat().find(b=>b.text==='Написать комментарий')!.token);
+ const view=await botView(anna,channel,{op:'task',id:task.id});
+ const discussion=await botClick(anna,channel,view.buttons.flat().find(b=>b.text==='Обсуждение')!.token);
+ await botClick(anna,channel,discussion.buttons.flat().find(b=>b.text==='Написать комментарий')!.token);
  const ready=await botText(anna,channel,'Комментарий из Telegram для портала','fixture-comment-unique');const token=ready.buttons.flat().find(b=>b.text==='Подтвердить и отправить')!.token;
  const first=await botClick(anna,channel,token),second=await botClick(anna,channel,token);assert.equal(first.text,second.text);assert(first.text.includes('Обмен с Битрикс24 выполняется по очереди'));
  await live.tickLiveSync(transport);assert.equal(messages.get('907')!.filter(m=>m.text.includes('Комментарий из Telegram для портала')).length,1);
