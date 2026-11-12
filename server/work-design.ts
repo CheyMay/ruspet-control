@@ -59,11 +59,6 @@ export function nextOccurrence(startsAt:string,unit:Frequency,every:number,after
 function withDue(input:TaskInput,at:Date,hours:number|null):TaskInput{
  return {...input,deadline:hours===null?null:new Date(at.getTime()+hours*3600000).toISOString()};
 }
-async function makeTask(db:Db,actor:User,input:TaskInput,key:string){
- const {id}=await createTask(actor,input);
- if(actor.id!==input.assigneeId)await notify(db,id,input.assigneeId,'Новая задача #'+id+' · '+input.title,key);
- return id;
-}
 export async function saveSchedule(actor:User,input:unknown){
  const value=scheduleInput.parse(input);
  assert(Date.parse(value.startsAt)>=Date.now()-60000,400,'Укажите ближайшее или будущее время запуска.');
@@ -97,7 +92,7 @@ export async function runSchedules(now=new Date()){
     selectedId=item.id;
     const actor=(await db.query<User>('SELECT * FROM users WHERE id=$1',[item.actor_id])).rows[0];
     const input=withDue(taskInput.parse(item.template),now,item.deadline_hours);
-    const id=await makeTask(db,actor,input,'schedule:'+item.id+':'+item.next_at);
+    const {id}=await createTask(actor,input);
     await db.query('UPDATE task_schedules SET next_at=$2,last_task_id=$3,retry_at=NULL,last_error=NULL WHERE id=$1',
      [item.id,nextOccurrence(item.starts_at,item.frequency,item.every,now).toISOString(),id]);
     return true;
@@ -241,7 +236,7 @@ async function executeProcess(db:Db,row:ProcessRow,definition:Definition,eventId
      assert(target,400,'Получатель не найден.');
      assert(prepared.matched.every(task=>canSee(target,task)),403,'Получатель не видит все задачи из выборки.');
     }
-    if(action.type==='task')taskIds.push(await makeTask(db,actor,processTask(definition,action.context,now,{...action.config,assigneeId:id}),key));
+    if(action.type==='task')taskIds.push((await createTask(actor,processTask(definition,action.context,now,{...action.config,assigneeId:id}))).id);
     else{
      const message=renderTemplate(action.config.message,action.context).trim();
      assert(message.length>0&&message.length<=220,400,'Текст уведомления после подстановки должен содержать до 220 символов.');

@@ -18,6 +18,7 @@ import {ReminderInbox} from './ReminderInbox.js';
 import {ManagerHome} from './ManagerHome.js';
 import {MobileWorkspace} from './MobileWorkspace.js';
 import {NotificationCenter,NotificationSettings,TelegramDeliverySettings} from './NotificationCenter.js';
+import {syncDeviceNotifications} from './DeviceNotifications.js';
 import {SettingsSections} from './SettingsSections.js';
 import {canOpenWorkspacePage,type WorkspacePage as Page} from '../shared/workspace-access.js';
 import {TaskReminders} from './TaskReminders.js';
@@ -67,6 +68,7 @@ export function App(){
  const [editor,setEditor]=useState<{task:Task|null;copyOf?:Task;companyId?:string}|null>(null);
  const [okbCompany,setOkbCompany]=useState<string|null>(null);
  const refreshGeneration=useRef(0),detailGeneration=useRef(0),toastTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+ const lastNoticeCheck=useRef<{userId:string;at:string}|null>(null);
  const showToast=(message:string)=>{setToast(message);if(toastTimer.current)clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(''),5000);};
  async function refresh(){const generation=++refreshGeneration.current;const d=await api<Bootstrap>('/bootstrap');if(generation===refreshGeneration.current)setData(d);return d;}
  async function refreshDetail(id:string){
@@ -94,6 +96,20 @@ export function App(){
  useEffect(()=>{let live=true;(async()=>{try{if(viewingEmployee){setDemo(false);const d=await api<Bootstrap>('/bootstrap');if(live){setData(d);const task=new URLSearchParams(location.hash.slice(1)).get('task');if(task)void openTask(task);}return;}const mode=await api<{demo:boolean}>('/auth/mode');if(!live)return;setDemo(mode.demo);if(mode.demo){const list=await api<User[]>('/demo/users');if(!live)return;setUsers(list);try{const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}catch{await api('/demo/login','POST',{userId:'director'});const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}}else{try{await api('/auth/me');const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}catch{if(live)setData(null);}}const task=new URLSearchParams(window.location.hash.slice(1)).get('task');if(task&&live&&window.location.hash)void openTask(task);}catch(e){if(live)setError((e as Error).message);}finally{if(live)setLoading(false);}})();return()=>{live=false;};},[]);
  useEffect(()=>{setTablePage(0);},[filter,search,owner,branch,sort,priceFilter,fromDate,toDate]);
  useEffect(()=>{if(editor)setError('');},[editor]);
+ useEffect(()=>{
+  if(!data||!('serviceWorker' in navigator))return;
+  if(!viewingEmployee)void syncDeviceNotifications(data.user.id).catch(()=>{});
+  const received=(event:MessageEvent)=>{if(event.data?.type==='ruspet-task-notice')void refresh().catch(()=>{});};
+  navigator.serviceWorker.addEventListener('message',received);
+  return()=>navigator.serviceWorker.removeEventListener('message',received);
+ },[data?.user.id]);
+ useEffect(()=>{
+  if(!data||viewingEmployee)return;
+  const previous=lastNoticeCheck.current;
+  lastNoticeCheck.current={userId:data.user.id,at:data.serverTime};
+  if(previous?.userId===data.user.id&&data.notifications.some(notice=>notice.task_notice&&!notice.read_at&&notice.created_at>previous.at))
+   showToast('Новые рабочие уведомления');
+ },[data]);
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'){if(editor)setEditor(null);else if(requestType)setRequestType(null);else closeTask();}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[requestType,editor]);
  function go(next:Page,taskFilter?:string){if((viewingEmployee&&!previewSections.has(next))||(data&&!canOpenWorkspacePage(data.user,next)))return;if(next!=='okb')setOkbCompany(null);if(next!=='processes')setProcessDraft(null);setTablePage(0);setPage(next);setMobileMenu(false);if(next!=='tasks'){setLinkedIds(null);setWorkDay(null);}if(taskFilter){setSearch('');setFromDate('');setToDate('');setWorkDay(null);setLinkedIds(null);setPriceFilter('all');setFilter(taskFilter);setOwner('all');setBranch('all');}}
  const userById=(id:string)=>data?.users.find(u=>u.id===id);
@@ -113,7 +129,7 @@ export function App(){
  const requestedView=new URLSearchParams(location.search).get('view');
  const mobilePath=location.pathname==='/mobile'||location.pathname==='/mobile/';
  if(!viewingEmployee&&(mobilePath||compact&&data.user.role==='employee'&&location.pathname==='/'&&!location.hash&&(!requestedView||requestedView==='notifications'))){
-  return <MobileWorkspace key={data.user.id} user={data.user} refresh={refresh}/>;
+  return <MobileWorkspace key={data.user.id} user={data.user} refresh={refresh} unread={data.notifications.some(item=>!item.read_at)}/>;
  }
  const visible=filterTasks(data.tasks).filter(t=>(priceFilter==='all'||priceBand(t)===priceFilter)&&(!linkedIds||linkedIds.includes(t.id))&&(branch==='all'||t.branch_id===branch)&&(owner==='all'||t.assignee_id===owner)&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.toLowerCase())).sort((a,b)=>sort==='price_desc'?(taskPrice(b)??-1)-(taskPrice(a)??-1):sort==='work_priority'?Number(!(a.deadline&&businessDay(a.deadline)<(workDay||businessDay(now))))-Number(!(b.deadline&&businessDay(b.deadline)<(workDay||businessDay(now))))||((taskPrice(b)??-1)-(taskPrice(a)??-1))||(a.deadline||'9999').localeCompare(b.deadline||'9999'):sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='transfers'?b.transfer_count-a.transfer_count:(a.deadline||'9999').localeCompare(b.deadline||'9999'));
  const pending=data.approvals.filter(a=>a.state==='pending'), mine=pending.filter(a=>a.route[a.current_step]?.userId===data.user.id), focus=data.tasks.filter(t=>overdue(t)).slice(0,5);
@@ -147,7 +163,7 @@ export function App(){
   {page==='settings'&&<SettingsSections key={data.user.id} userId={data.user.id} initial={data.user.role==='admin'?'staff':'notices'} items={[
    ...(data.user.role==='admin'?[{id:'staff',label:'Сотрудники',content:<><AccessDirectory roles={roles} currentUserId={data.user.id}/><StaffOnboarding roles={roles}/></>}]:[]),
    ...(managed(data.user)?[{id:'rules',label:'Правила и согласования',content:<Settings key={data.rulesVersion} data={data} busy={busy} act={act}/>}]:[]),
-   {id:'notices',label:'Уведомления',content:<><NotificationSettings/>{data.user.role==='admin'&&<TelegramDeliverySettings/>}{managed(data.user)&&<ManagementPreference/>}</>},
+   {id:'notices',label:'Уведомления',content:<><NotificationSettings userId={data.user.id}/>{data.user.role==='admin'&&<TelegramDeliverySettings/>}{managed(data.user)&&<ManagementPreference/>}</>},
    {id:'appearance',label:'Оформление',content:<Appearance/>},
    ...(data.user.role==='admin'?[
     {id:'automation',label:'Автоматизация',content:<Operations showPlanning={!!data.rules.showPlanning} onChange={refresh}/>},

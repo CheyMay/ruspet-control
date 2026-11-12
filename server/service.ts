@@ -30,8 +30,12 @@ export async function event(db:Db,taskId:string|null,actor:string|null,kind:stri
  if(taskId&&kind==='task_completed')await delegatedTaskAccepted(db,taskId);
  return id;
 }
-export async function notify(db:Db,taskId:string|null,recipient:string,body:string,key:string) {
- await db.query('INSERT INTO outbox(id,task_id,recipient_id,body,dedupe_key) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),taskId,recipient,body,key]);
+export async function notify(db:Db,taskId:string|null,recipient:string,body:string,key:string,taskAssignment=false) {
+ await db.query('INSERT INTO outbox(id,task_id,recipient_id,body,dedupe_key,task_assignment) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),taskId,recipient,body,key,taskAssignment]);
+}
+export async function notifyTaskAssignment(db:Db,task:Task,actorId:string|null,label='Вам поставили задачу'){
+ if(task.assignee_id===actorId)return;
+ await notify(db,task.id,task.assignee_id,label+' #'+task.id+' · '+task.title,`task-assignment:${task.id}:${task.version}`,true);
 }
 export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{requiredPrice:true,showPlanning:false,writtenRules:[],...row.config}}; }
 export async function visibleTasksForCompany(user:User,id:string):Promise<Task[]>{
@@ -59,7 +63,7 @@ export async function bootstrap(user:User,light=false) {
  return {lastTaskChange,selection,user,users,tasks,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
  events:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
- notifications:(await db.query('SELECT id,task_id,recipient_id,body,state,created_at,read_at FROM outbox WHERE withdrawn_at IS NULL AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY created_at DESC LIMIT 150',[user.id,ids])).rows,
+ notifications:(await db.query('SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice FROM outbox WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY created_at DESC LIMIT 150',[user.id,ids])).rows,
  reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=$1 AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[scopeFor(user),!!cfg.config.showPlanning])).rows};
  });
 }

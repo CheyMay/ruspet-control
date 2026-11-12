@@ -74,7 +74,9 @@ async function applyInbound(db:Db,task:Task,next:Values,raw:Record<string,unknow
    await delegatedTaskAccepted(db,task.id);
   }else if(updated.status==='active')await db.query("UPDATE task_submissions SET state='returned',remark='Возврат зафиксирован в Битрикс24',decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[task.id]);
  }
- const {refreshTaskFindings}=await import('./service.js');const actor=(await db.query('SELECT * FROM users WHERE id=$1',[next.creator_id])).rows[0];await refreshTaskFindings(db,updated,actor);
+ const {refreshTaskFindings,notifyTaskAssignment}=await import('./service.js');
+ if(!initial&&updated.status==='active'&&task.assignee_id!==updated.assignee_id)await notifyTaskAssignment(db,updated,null,'Вам назначили задачу');
+ const actor=(await db.query('SELECT * FROM users WHERE id=$1',[next.creator_id])).rows[0];await refreshTaskFindings(db,updated,actor);
 }
 export async function activateLiveTask(request:BitrixRequest,id:string,acceptBitrix=false){
  const cfg=await config(),link=(await pool.query('SELECT * FROM bitrix_task_links WHERE task_id=$1',[id])).rows[0];assert(link,404,'Сначала свяжите локальную задачу с ID Битрикс24.');

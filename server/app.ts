@@ -27,6 +27,7 @@ import {botView,botClick,botText,clearBotDraft,botVoiceDraft,savedVoiceDraft} fr
 import {browserAudioFormat,transcribeAudio,voiceEnabled} from './transcription.js';
 import {voiceMaxBytes} from '../shared/voice.js';
 import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
+import {removeWebPush,saveWebPush,webPushEndpoint,webPushStatus,webPushSubscription} from './web-push.js';
 import {printReport} from './report-print.js';
 import express from 'express';
 import {verifyPassword} from './passwords.js';
@@ -123,6 +124,14 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   res.json(await readNotifications(req.actor,ids));
  });
  app.get('/api/notifications/preferences',async(req,res)=>res.json(await notificationPreference(req.actor)));
+ const pushSession=(req:express.Request)=>{
+  const token=req.headers.cookie?.split('; ').find(value=>value.startsWith('ruspet_session='))?.slice(15);
+  assert(token,401,'Войдите в систему.');
+  return hash(token);
+ };
+ app.get('/api/notifications/push',async(req,res)=>res.json(await webPushStatus(req.actor,pushSession(req))));
+ app.post('/api/notifications/push',async(req,res)=>res.json(await saveWebPush(req.actor,pushSession(req),webPushSubscription.parse(req.body))));
+ app.delete('/api/notifications/push',async(req,res)=>res.json(await removeWebPush(req.actor,webPushEndpoint.parse(req.body).endpoint)));
  app.put('/api/notifications/preferences',async(req,res)=>{
   const {telegramDigest}=z.object({telegramDigest:z.boolean()}).parse(req.body);
   res.json(await saveNotificationPreference(req.actor,telegramDigest));
@@ -170,7 +179,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/operations/retry',async(req,res)=>{await retryJob(req.actor,z.object({key:text}).parse(req.body).key);await tick();res.json({ok:true});});
  app.get('/api/telegram/status',async(req,res)=>{res.json(await pilotStatus(req.actor));});
  app.post('/api/telegram/pairing',async(req,res)=>res.json(await pairPilot(req.actor,z.object({userId:z.string().max(100).optional()}).parse(req.body||{}).userId)));
- app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean()}).parse(req.body));res.json({ok:true})});
+ app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean(),taskDelivery:z.boolean().optional()}).parse(req.body));res.json({ok:true})});
  app.post('/api/bot/screen',async(req,res)=>{
   const {screen}=z.object({screen:z.enum(['home','tasks','notices','inbox','search_prompt']).default('home')}).parse(req.body||{});
   const channel=webBotChannel(req);

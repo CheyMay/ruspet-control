@@ -6,7 +6,7 @@ import {recordTaskAction,recordTaskBarrier} from './undo-record.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {assert,canRequest,canSee,canManage,globalAccess} from './domain.js';
-import {event,notify,refreshTaskFindings} from './service.js';
+import {event,notify,notifyTaskAssignment,refreshTaskFindings} from './service.js';
 import {getCompany} from './okb.js';
 import {MockTaskProvider} from './providers.js';
 import type {Task,User} from '../shared/types.js';
@@ -47,7 +47,7 @@ async function insertTask(db:Db,u:User,input:TaskInput,origin?:{kind:'delegation
  const message=delegated?'Создано поручение из задачи #'+delegated.id:copy?'Создана копия задачи #'+copy.id:'Создана локальная задача';
  await db.query('INSERT INTO mock_provider_tasks(id,snapshot,revision) VALUES($1,$2,1)',[id,JSON.stringify(task)]);await refreshTaskFindings(db,task,u);
  await event(db,id,performer.id,'created',message,{after:task,delegatedFrom:delegated?.id,copiedFrom:copy?.id});
- if(copy&&owner.id!==u.id)await notify(db,id,owner.id,'Новая задача #'+id+' · '+task.title,'task-created:'+id);
+ await notifyTaskAssignment(db,task,performer.id,delegated?'Вам делегировали задачу':'Вам поставили задачу');
  await recordTaskBarrier(db,performer,id,delegated?'Делегирование задачи':'Создание задачи');return {id};
 }
 
@@ -113,7 +113,6 @@ export async function delegateTask(actor:User,id:string,input:{assigneeId?:strin
    {kind:'delegation',task:source},actor);
   await event(db,source.id,actor.id,'task_delegated','Создано поручение #'+copy.id+' для '+target.name,
    {delegatedTaskId:copy.id,assigneeId:target.id,instruction,onBehalfOf:manager.id,responsibility});
-  await notify(db,copy.id,target.id,actor.name+' делегировал задачу #'+copy.id+' · '+source.title,'delegation:'+copy.id);
   return copy;
  });
 }
@@ -131,7 +130,11 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
  }
  const after=(await db.query('UPDATE tasks SET title=$2,description=$3,assignee_id=$4,branch_id=$5,planned_start=$6,planned_end=$7,important=$8,customer_risk=$9,parent_id=$10,code=$11,price=COALESCE($12,price),custom_fields=COALESCE($13,custom_fields),company_id=$14,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.title,input.description,owner.id,owner.branch_id,input.plannedStart,input.plannedEnd,input.important,input.customerRisk,input.parentId,input.title.split(/\s/)[0],input.price??null,input.customFields===undefined?null:JSON.stringify(input.customFields),companyId])).rows[0];
  await provider.applyApprovedChange(db,after,before.version);await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[id]);
- if(before.assignee_id!==after.assignee_id)await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);await refreshTaskFindings(db,after,u);
+ if(before.assignee_id!==after.assignee_id){
+  await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);
+  await notifyTaskAssignment(db,after,u.id,'Вам назначили задачу');
+ }
+ await refreshTaskFindings(db,after,u);
  await event(db,id,u.id,'task_edited','Изменены параметры задачи, проверки обновлены.',{before,after,reason,editPermissionId});return {id};
 });}
 async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return',comment:string,version:number){return transaction(async db=>{

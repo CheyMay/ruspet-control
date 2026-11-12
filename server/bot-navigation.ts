@@ -41,10 +41,14 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   const groups=groupNotifications(await personalNotifications(u,true)).slice(0,5);
   const lines=groups.map(group=>{
    const item=group[0];
-   return h(item.body.slice(0,190))+(group.length>1?' · ещё '+(group.length-1):'');
+   const text=item.task_notice?item.body.split('\n\n').map(section=>section.split('\n')[0]).join(' · '):item.body.slice(0,190);
+   return h(text)+(group.length>1?' · ещё '+(group.length-1):'');
   });
+  const taskNotices=groups.map(group=>group[0].task_notice);
   return htmlScreen(u,ch,'<b>Новые уведомления</b>\n\n'+(lines.join('\n\n')||'Все уведомления прочитаны.'),[
    ...groups.filter(group=>group[0].task_id).map(group=>[button('Открыть #'+group[0].task_id,'task',{id:group[0].task_id!,list:{op:'notices'}})]),
+   [...(taskNotices.some(notice=>notice?.hasDeadlines)?[button('Мои сроки','tasks',{filter:'my_due'})]:[]),
+    ...(taskNotices.some(notice=>notice?.hasAssignments)?[button('Мои задачи','tasks',{filter:'mine'})]:[])],
    ...(groups.length?[[button('Отметить показанные прочитанными','notices_read',{noticeIds:groups.flat().map(item=>item.id)})]]:[]),
    [button('Меню','home')]
   ]);
@@ -84,8 +88,9 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    const tasks=new Map(data.tasks.map(t=>[t.id,t]));
    return taskList(u,ch,p,[...grouped].flatMap(([id,labels])=>tasks.has(id)?[{task:tasks.get(id)!,hint:labels[0]+(labels.length>1?' +'+(labels.length-1):'')}]:[]),'Нужно ваше действие',now,name);
   }
-  const filter=p.op==='day'?'today':p.filter||(u.role==='employee'?'mine':'open'),labels:Record<string,string>={open:'Все незавершённые',active:'В работе',today:'Срок сегодня',overdue:'Просрочены',review:'На приёмке',completed:'Завершены',no_deadline:'Без срока',mine:'Мои задачи',created:'Я постановщик'};
-  const tasks=sortBotTasks(data.tasks.filter(t=>filter==='open'?t.status!=='completed':filter==='active'?t.status==='active':filter==='mine'?t.status!=='completed'&&t.assignee_id===u.id:filter==='created'?t.status!=='completed'&&t.creator_id===u.id:taskQueue(t,now)===filter),now);
+  const filter=p.op==='day'?'today':p.filter||(u.role==='employee'?'mine':'open'),labels:Record<string,string>={open:'Все незавершённые',active:'В работе',today:'Срок сегодня',overdue:'Просрочены',review:'На приёмке',completed:'Завершены',no_deadline:'Без срока',mine:'Мои задачи',my_due:'Мои сроки',created:'Я постановщик'};
+  const tasks=sortBotTasks(data.tasks.filter(t=>filter==='my_due'?t.assignee_id===u.id&&['today','overdue'].includes(taskQueue(t,now)):
+   filter==='open'?t.status!=='completed':filter==='active'?t.status==='active':filter==='mine'?t.status!=='completed'&&t.assignee_id===u.id:filter==='created'?t.status!=='completed'&&t.creator_id===u.id:taskQueue(t,now)===filter),now);
   const pending=new Set(data.approvals.filter(a=>a.state==='pending').map(a=>a.task_id));
   return taskList(u,ch,p,tasks.map(task=>({task,pending:pending.has(task.id)})),labels[filter]||'Задачи',now,name);
  }

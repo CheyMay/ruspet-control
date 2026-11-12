@@ -56,3 +56,10 @@
  .voice-overlay { align-items: center; padding: 20px; }
  .voice-sheet { border-radius: 14px; }
 }
+.mobile-workspace-links { display:flex; align-items:center; gap:8px; }
+.mobile-device-notifications { border:1px solid var(--line); border-radius:8px; margin:0 0 10px; padding:9px 12px; background:var(--theme-surface); }
+.mobile-device-notifications summary { cursor:pointer; font-size:13px; font-weight:600; }
+.device-notifications { margin-top:12px; }
+.device-notification-row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
+.device-notification-row small { display:block; margin-top:4px; line-height:1.45; }
+.notice-group p { white-space:pre-wrap; }

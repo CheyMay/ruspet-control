@@ -16,7 +16,7 @@ import {randomBytes} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {acknowledgeAlert,userAlerts,listTaskReminders,saveTaskReminder,disableTaskReminder,saveOneTimeReminder,cancelOneTimeReminder} from './reminders.js';
 import {assert,AppError} from './domain.js';
-import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports,notify} from './service.js';
+import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
 import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
@@ -236,7 +236,6 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    const input=taskInput.parse({title:v.title,description:v.description||'',assigneeId:v.assignee,price:Number(v.price),deadline:v.deadline==='none'?null:v.deadline,
     plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null});
    const created=await createTask(u,input);resultTask=created.id;
-   if(u.id!==input.assigneeId)await notify(db,created.id,input.assigneeId,'Новая задача #'+created.id+' · '+input.title,'task-created:'+created.id);
    result='Задача #'+created.id+' поставлена.';
   }
   else if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}
