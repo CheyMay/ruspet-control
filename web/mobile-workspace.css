@@ -45,6 +45,8 @@
 .voice-heading,.voice-actions,.voice-live { display: flex; flex-wrap: wrap; align-items: center; gap: 9px; }
 .voice-heading { justify-content: space-between; }
 .voice-sheet blockquote { margin: 0; padding: 9px 12px; background: var(--theme-surface-soft); border-radius: 7px; }
+.voice-examples summary { cursor: pointer; color: var(--theme-text-secondary); }
+.voice-examples blockquote { margin-top: 6px; }
 .voice-sheet audio { width: 100%; max-width: 100%; }
 .voice-live { font-variant-numeric: tabular-nums; color: var(--theme-danger); }
 .voice-file { display: inline-flex; position: relative; align-items: center; gap: 6px; min-height: 44px; cursor: pointer; padding: 7px; }

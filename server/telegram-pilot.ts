@@ -140,8 +140,12 @@ export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:str
   ORDER BY o.created_at LIMIT $5`,[user.id,enabledAt,pairedAt,included,limit,now.toISOString()])).rows;
 }
 export async function deliver(now=new Date()){
- const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled||!cfg.delivery)return;
- await tickTaskReminders(now);
+ const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled)return;
+ const personal=cfg.delivery?null:(await pool.query(`SELECT
+  EXISTS(SELECT 1 FROM task_reminders WHERE enabled AND personal_delivery) AS schedules,
+  EXISTS(SELECT 1 FROM task_alerts WHERE dedupe_key LIKE 'task-once:%' AND due_at<=$1 AND expires_at>$1 AND acknowledged_at IS NULL AND canceled_at IS NULL) AS due`,[now.toISOString()])).rows[0];
+ if(!cfg.delivery&&!personal?.schedules&&!personal?.due)return;
+ if(cfg.delivery||personal?.schedules)await tickTaskReminders(now);
  const bindings=(await pool.query(`SELECT b.*,u.name,u.role,u.branch_id,u.position,COALESCE(p.telegram_digest,true) AS telegram_digest
   FROM telegram_binding b JOIN users u ON u.id=b.user_id LEFT JOIN notification_preferences p ON p.user_id=u.id
   WHERE NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id)
@@ -149,7 +153,7 @@ export async function deliver(now=new Date()){
   ORDER BY b.id`)).rows;
  for(const binding of bindings){
  const user={...binding,id:binding.user_id} as User;
- for(const alert of await pendingAlerts(user,now)){
+ for(const alert of await pendingAlerts(user,now,5,cfg.delivery)){
   const slot=Math.floor((now.getTime()-Date.parse(alert.due_at))/1800000);
   const claimed=await pool.query("INSERT INTO task_alert_deliveries(alert_id,slot,state,created_at) VALUES($1,$2,'sending',$3) ON CONFLICT DO NOTHING",[alert.id,slot,now.toISOString()]);if(!claimed.rowCount)continue;
   try{const result=await send(binding.chat_id,await alertScreen(user,'telegram:'+binding.chat_id,alert));await pool.query("UPDATE task_alert_deliveries SET state='sent',message_id=$3 WHERE alert_id=$1 AND slot=$2",[alert.id,slot,result.message_id]);}
@@ -157,7 +161,7 @@ export async function deliver(now=new Date()){
  }
 
  const hour=new Date(now.getTime()+10800000).getUTCHours();
- if(!binding.telegram_digest||hour<9||hour>=19)continue;
+ if(!cfg.delivery||!binding.telegram_digest||hour<9||hour>=19)continue;
  const rows=await pendingOutbox(user,cfg.enabled_at,binding.paired_at,60,now);if(!rows.length)continue;
  const id=randomUUID(),slot=Math.floor(now.getTime()/1800000);
  const claim=await pool.query(`INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state,batch_slot,created_at)

@@ -92,6 +92,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   [button(`📥 Нужно действие · ${actionTasks.size}`,'inbox')],
   [button(`Сегодня · ${s.today}`,'day'),button(`Просрочены · ${s.overdue}`,'tasks',{filter:'overdue'})],
   [button(u.role==='employee'?'Мои задачи':'Задачи команды','tasks'),button('Поиск','search_prompt')],
-  [button('Уведомления','notices'),button('Ещё разделы','menu_more')]
+  [button('Новая задача','form',{kind:'create_task'}),button('Уведомления','notices')],
+  [button('Ещё разделы','menu_more')]
  ]);
 }

@@ -79,3 +79,75 @@ test('Telegram voice uses the same transcription adapter after a bounded binary 
  await assert.rejects(()=>transcribeTelegramVoice('anna',{file_id:'fixture',duration:91},async()=>({}),async()=>'FIXTURE'),/90 секунд/);
  assert.equal(requests.length,2);
 });
+
+test('voice creates a personal task once and carries a partial deadline into the next answer',async()=>{
+ const bot=await import('../server/bot.js'),channel='mobile-creation';
+ const actor=(await db.pool.query("SELECT * FROM users WHERE id='anna'")).rows[0];
+ const admin=(await db.pool.query("SELECT * FROM users WHERE id='admin'")).rows[0];
+ const buttons=(view:Awaited<ReturnType<typeof bot.botView>>)=>view.buttons.flat();
+ const confirm=async(view:Awaited<ReturnType<typeof bot.botView>>,user=actor)=>bot.botClick(user,channel,buttons(view).find(b=>b.text==='Подтвердить и отправить')!.token);
+ const title='Сверить цены по голосовой команде';
+ const draft=await bot.botVoiceDraft(actor,channel,`Поставь себе задачу: ${title}. Цена пять тысяч. Срок завтра в 15:00.`,'create-voice');
+ assert.match(draft.text,/Исполнитель:/);
+ assert.match(draft.text,/5000/);
+ assert.equal((await db.pool.query('SELECT count(*)::int n FROM tasks WHERE title=$1',[title])).rows[0].n,0);
+ const result=await confirm(draft);
+ assert.deepEqual(await confirm(draft),result);
+ const rows=(await db.pool.query('SELECT * FROM tasks WHERE title=$1',[title])).rows;
+ assert.equal(rows.length,1);
+ const task=rows[0];assert.equal(task.assignee_id,actor.id);assert.equal(Number(task.price),5000);
+ assert.match(result.text,/поставлена/);
+ const denied=await bot.botVoiceDraft(actor,channel,'Поставь задачу: Проверить договор. Исполнитель admin. Цена 100.','outside-scope');
+ assert.match(denied.text,/Имя и фамилия исполнителя/);
+ assert.equal(buttons(denied).some(b=>b.text==='Подтвердить и отправить'),false);
+ const assigned=await bot.botVoiceDraft(admin,channel,'Поставь задачу: Проверить договор. Исполнитель anna. Цена 100.','inside-scope');
+ assert.match(assigned.text,new RegExp(actor.name));
+ assert.ok(buttons(assigned).some(b=>b.text==='Подтвердить и отправить'));
+ await bot.clearBotDraft(actor,channel);
+ await bot.botView(actor,channel,{op:'task',id:task.id});
+ const partial=await bot.botVoiceDraft(actor,channel,'Перенеси эту задачу на послезавтра. Причина: поставка задержалась. План: сверю остатки и пришлю итог.','transfer-voice');
+ assert.match(partial.text,/Дата уже указана/);
+ assert.match(partial.text,/сверю остатки/);
+ const ready=await bot.botVoiceDraft(actor,channel,'в четыре дня','transfer-time');
+ assert.match(ready.text,/16:00/);
+ assert.ok(buttons(ready).some(b=>b.text==='Подтвердить и отправить'));
+ assert.equal((await db.pool.query('SELECT deadline FROM tasks WHERE id=$1',[task.id])).rows[0].deadline,task.deadline);
+});
+
+test('explicit personal reminders work with general Telegram delivery disabled',async()=>{
+ const bot=await import('../server/bot.js'),reminders=await import('../server/reminders.js'),channel='mobile-reminders';
+ const actor=(await db.pool.query("SELECT * FROM users WHERE id='anna'")).rows[0];
+ const task=(await db.pool.query("SELECT id FROM tasks WHERE creator_id='anna' AND id LIKE 'L-%' ORDER BY created_at DESC LIMIT 1")).rows[0];
+ const buttons=(view:Awaited<ReturnType<typeof bot.botView>>)=>view.buttons.flat();
+ const confirm=(view:Awaited<ReturnType<typeof bot.botView>>)=>bot.botClick(actor,channel,buttons(view).find(b=>b.text==='Подтвердить и отправить')!.token);
+ const draft=await bot.botVoiceDraft(actor,channel,`Напомни по задаче ${task.id} завтра в 10:00.`,'single-reminder');
+ assert.match(draft.text,/Разовое напоминание|разовое напоминание/);
+ await confirm(draft);await confirm(draft);
+ const once=(await db.pool.query("SELECT * FROM task_alerts WHERE task_id=$1 AND dedupe_key LIKE 'task-once:%'",[task.id])).rows;
+ assert.equal(once.length,1);
+ await db.pool.query('UPDATE telegram_settings SET enabled=true,delivery=false');
+ assert.equal((await reminders.pendingAlerts(actor,new Date(once[0].due_at),5,false))[0].id,once[0].id);
+ const pilot=await import('../server/telegram-pilot.js');
+ await db.pool.query("INSERT INTO telegram_binding(chat_id,user_id) VALUES('85001','anna')");
+ process.env.TELEGRAM_BOT_TOKEN='FIXTURE_ONLY';delete process.env.TELEGRAM_PROXY_URL;
+ const sent:string[]=[];
+ globalThis.fetch=async(url,options)=>{
+  assert.equal(String(url),'https://api.telegram.org/botFIXTURE_ONLY/sendMessage');
+  const body=JSON.parse(String(options?.body));assert.equal(body.chat_id,'85001');sent.push(body.text);
+  return Response.json({ok:true,result:{message_id:101}});
+ };
+ try{
+  await pilot.deliver(new Date(once[0].due_at));
+  await pilot.deliver(new Date(once[0].due_at));
+  assert.equal(sent.length,1);assert.match(sent[0],/Напоминание по задаче/);
+ }finally{globalThis.fetch=realFetch;}
+ const recurring=await bot.botVoiceDraft(actor,channel,`Напомни по задаче ${task.id} каждый понедельник и среду в девять на две недели.`,'weekly-reminder');
+ await confirm(recurring);
+ const schedule=(await db.pool.query('SELECT days,times,weeks,personal_delivery FROM task_reminders WHERE task_id=$1',[task.id])).rows[0];
+ assert.deepEqual(schedule,{days:[1,3],times:['09:00'],weeks:2,personal_delivery:true});
+ const cancellation=await bot.botVoiceDraft(actor,channel,`Отмени напоминание по задаче ${task.id}.`,'cancel-reminder');
+ const cancel=buttons(cancellation).find(b=>b.text.startsWith('Отменить '))!;
+ await bot.botClick(actor,channel,cancel.token);
+ assert.ok((await db.pool.query('SELECT canceled_at FROM task_alerts WHERE id=$1',[once[0].id])).rows[0].canceled_at);
+ assert.equal((await reminders.pendingAlerts(actor,new Date(once[0].due_at),5,false)).length,0);
+});

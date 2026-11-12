@@ -98,7 +98,13 @@ export function VoiceRecorder({onSend,disabled,mobile=false}:{onSend:(audio:Blob
    <section className="voice-sheet" role="dialog" aria-modal="true" aria-labelledby="voice-title">
     <div className="voice-heading"><h2 id="voice-title">Голосовое сообщение</h2><button type="button" className="icon-button" aria-label="Закрыть запись" disabled={state==='sending'} onClick={close}><X size={21}/></button></div>
     <p className="muted">Назовите действие и номер задачи. Если бот уже задал вопрос, ответьте на него голосом.</p>
-    <blockquote>«{voiceExample}»</blockquote>
+    <details className="voice-examples">
+     <summary>Что можно сказать</summary>
+     <blockquote>«{voiceExample}»</blockquote>
+     <blockquote>«Поставь себе задачу: сверить цены. Цена 5 тысяч. Срок завтра в 15:00»</blockquote>
+     <blockquote>«Напомни по этой задаче завтра в 10:00»</blockquote>
+     <blockquote>«Сдай эту задачу: цены сверены, расхождений нет»</blockquote>
+    </details>
     {state==='permission'&&<p role="status">Разрешите доступ к микрофону.</p>}
     {state==='recording'&&<div className="voice-live" role="status"><AudioLines size={24}/> Запись идёт <strong>{clock}</strong></div>}
     {state==='sending'&&<p role="status">Распознаём запись…</p>}
