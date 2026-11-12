@@ -1,3 +1,8 @@
+import {updateEmployeeProfile} from './employee-profiles.js';
+import {downloadBitrixFile} from './bitrix-download.js';
+import {contentInput,queueBitrixOperation,queueBitrixUpload} from './bitrix-operations.js';
+import {editComment} from './comment-edit.js';
+import {mountBitrixEvents} from './bitrix-events.js';
 import {myDelegations,orgDirectory,setManager,saveSubstitution,revokeSubstitution} from './org.js';
 import {companyWork,listTaskTemplates,saveTaskTemplate,removeTaskTemplate} from './task-workspace.js';
 import {listCompanies,saveCompany,getCompany,companyContacts,recordCompanyContact} from './okb.js';
@@ -33,6 +38,7 @@ const reportParameters=z.object({actorId:z.string().max(100).optional(),from:dat
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 export function createApp() {
  const app=express(); app.disable('x-powered-by'); app.use(express.json({limit:'32kb'}));
+ mountBitrixEvents(app);
  const loginAttempts=new Map<string,{count:number;since:number}>();
  app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'self'");next();});
  app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.get('origin')){const allowed=[`http://${req.get('host')}`,'http://127.0.0.1:5173','http://localhost:5173'];if(process.env.PUBLIC_ORIGIN)allowed.push(new URL(process.env.PUBLIC_ORIGIN).origin);if(!allowed.includes(req.get('origin')!))return res.status(403).json({error:'Запрос с другого сайта запрещён.'});}next();});
@@ -60,6 +66,32 @@ export function createApp() {
  app.get('/api/auth/me',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(!token)return res.status(401).json({error:'Войдите в систему.'});const user=(await pool.query('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()',[hash(token)])).rows[0];if(!user)return res.status(401).json({error:'Сессия завершена.'});res.json(user);});
  app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
  app.use('/api',async(req,_res,next)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=(await pool.query('SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id WHERE s.token_hash=$1 AND s.expires_at>now()',[hash(token)])).rows[0];assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
+ app.get('/api/integrations/bitrix/deleted',async(req,res)=>{
+  assert(req.actor.role==='admin',403,'Архив интеграции доступен администратору.');
+  res.json((await pool.query('SELECT id,title,bitrix_deleted_at FROM tasks WHERE bitrix_deleted_at IS NOT NULL ORDER BY bitrix_deleted_at DESC LIMIT 200')).rows);
+ });
+ app.get('/api/integrations/bitrix/deleted/:id',async(req,res)=>{
+  assert(req.actor.role==='admin',403,'Архив интеграции доступен администратору.');
+  const task=(await pool.query('SELECT * FROM tasks WHERE id=$1 AND bitrix_deleted_at IS NOT NULL',[req.params.id])).rows[0];assert(task,404,'Архивная задача не найдена.');
+  res.json({task,comments:(await pool.query('SELECT * FROM comments WHERE task_id=$1 ORDER BY created_at',[req.params.id])).rows,events:(await pool.query('SELECT * FROM task_events WHERE task_id=$1 ORDER BY created_at',[req.params.id])).rows});
+ });
+ app.get('/api/integrations/bitrix/events',async(req,res)=>{
+  assert(req.actor.role==='admin',403,'Интеграция доступна администратору.');
+  const counts=(await pool.query(`SELECT count(*) FILTER(WHERE processed_at IS NULL AND NOT blocked)::int AS pending,
+   count(*) FILTER(WHERE blocked)::int AS blocked,count(*) FILTER(WHERE last_error IS NOT NULL)::int AS errors,
+   max(received_at) AS "lastEvent",max(processed_at) AS "lastProcessed" FROM bitrix_event_queue`)).rows[0];
+  const recent=(await pool.query('SELECT external_id,event,received_at,processed_at,blocked,attempts,last_error FROM bitrix_event_queue ORDER BY received_at DESC LIMIT 50')).rows;
+  const outbound=(await pool.query('SELECT task_id,outbound_error,outbound_retry_at,outbound_attempts FROM bitrix_task_links WHERE outbound_error IS NOT NULL ORDER BY outbound_retry_at LIMIT 50')).rows;
+  const creations=(await pool.query("SELECT task_id,external_id,state,attempted_at,last_error FROM bitrix_task_creations WHERE state<>'linked' ORDER BY attempted_at LIMIT 50")).rows;
+  const blockedTasks=(await pool.query("SELECT q.task_id,q.last_error,q.retry_at FROM task_sync_queue q WHERE q.last_error IS NOT NULL AND q.state='failed' ORDER BY q.created_at DESC LIMIT 50")).rows;
+  const reconcile=(await pool.query('SELECT since,cursor,next_at,last_error,finished_at FROM bitrix_reconcile_state WHERE id=1')).rows[0];
+  const im=(await pool.query('SELECT checked_at,subscribed_at,last_error FROM bitrix_im_state WHERE id=1')).rows[0];
+  const commentQueue=(await pool.query('SELECT state,count(*)::int count FROM bitrix_comment_outbox GROUP BY state')).rows;
+  const contentQueue=(await pool.query('SELECT state,count(*)::int count FROM bitrix_content_ops GROUP BY state')).rows;
+  const commentEvents=(await pool.query('SELECT count(*)::int pending FROM bitrix_comment_events WHERE processed_at IS NULL')).rows[0];
+  const runtime=(await pool.query('SELECT heartbeat_at,write_enabled,create_enabled,import_enabled FROM bitrix_runtime WHERE id=1')).rows[0]??null;
+  res.json({enabled:process.env.BITRIX_EVENTS_ENABLED==='true',workerActive:!!runtime&&Date.now()-Date.parse(runtime.heartbeat_at)<45000,runtime,...counts,recent,outbound,creations,commentQueue,contentQueue,commentEvents,blockedTasks,reconcile,im});
+ });
  app.get('/api/bootstrap',async(req,res)=>res.json(await service.bootstrap(req.actor)));
  app.get('/api/undo/last',async(req,res)=>res.json(await lastUndo(req.actor)));
  app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
@@ -68,6 +100,29 @@ export function createApp() {
  app.post('/api/management/observation',async(req,res)=>{const input=z.object({confirmed:z.literal(true),expected:z.iso.datetime({offset:true}).nullable()}).parse(req.body);res.json(await resetObservation(req.actor,input.expected));});
  app.put('/api/management/preferences',async(req,res)=>res.json(await setNudgePreference(req.actor,z.object({enabled:z.boolean()}).parse(req.body).enabled)));
  app.post('/api/management/nudge',async(req,res)=>res.json(await nudgeTeam(req.actor,z.object({confirmed:z.literal(true)}).parse(req.body).confirmed)));
+ app.get('/api/tasks/:id/bitrix-content',async(req,res)=>{
+  await service.assertTaskVisible(req.actor,String(req.params.id));
+  const sections=(await pool.query('SELECT kind,snapshot,revision,fetched_at FROM bitrix_task_content WHERE task_id=$1',[req.params.id])).rows;
+  const operations=(await pool.query('SELECT id,kind,state,last_error,created_at FROM bitrix_content_ops WHERE task_id=$1 ORDER BY created_at DESC LIMIT 30',[req.params.id])).rows;
+  const commentOperations=(await pool.query("SELECT q.comment_id AS id,'comment' AS kind,q.state,q.last_error,q.created_at FROM bitrix_comment_outbox q JOIN comments c ON c.id=q.comment_id WHERE c.task_id=$1 AND q.state<>'sent' ORDER BY q.created_at DESC LIMIT 30",[req.params.id])).rows;
+  operations.push(...commentOperations);
+  const metadata=(await pool.query('SELECT fields FROM bitrix_metadata WHERE id=1')).rows[0]?.fields??{};
+  const status=(await pool.query('SELECT checked_at,last_error,errors FROM bitrix_content_state WHERE task_id=$1',[req.params.id])).rows[0]??null;
+  const linked=!!(await pool.query('SELECT 1 FROM bitrix_task_links WHERE task_id=$1',[req.params.id])).rowCount;
+  res.json({linked,sections,operations,metadata,status});
+ });
+ app.post('/api/tasks/:id/bitrix-content/refresh',async(req,res)=>{
+  await service.assertTaskVisible(req.actor,String(req.params.id));
+  await pool.query('INSERT INTO bitrix_content_state(task_id,requested_at) VALUES($1,now()) ON CONFLICT(task_id) DO UPDATE SET requested_at=coalesce(bitrix_content_state.requested_at,now()),retry_at=NULL,phase=0',[req.params.id]);
+  res.status(202).json({queued:true});
+ });
+ app.post('/api/tasks/:id/bitrix-content',async(req,res)=>res.status(202).json(await queueBitrixOperation(req.actor,String(req.params.id),contentInput.parse(req.body))));
+ app.get('/api/tasks/:id/bitrix-comment-files/:commentId/:fileId',async(req,res)=>downloadBitrixFile(req.actor,String(req.params.id),String(req.params.fileId),res,z.uuid().parse(req.params.commentId)));
+ app.get('/api/tasks/:id/bitrix-files/:fileId',async(req,res)=>downloadBitrixFile(req.actor,String(req.params.id),String(req.params.fileId),res));
+ app.post('/api/tasks/:id/bitrix-files',express.raw({type:'application/octet-stream',limit:'10mb'}),async(req,res)=>{
+  assert(Buffer.isBuffer(req.body),400,'Отправьте содержимое файла.');
+  res.status(202).json(await queueBitrixUpload(req.actor,String(req.params.id),z.string().min(1).max(255).parse(req.query.name),req.body));
+ });
  app.get('/api/tasks/:id/bitrix-activity',async(req,res)=>{assert(req.actor.role==='admin',403,'История интеграции доступна администратору.');res.json((await pool.query('SELECT kind,external_id,occurred_at,author,body FROM bitrix_task_activity WHERE task_id=$1 AND kind=$2 ORDER BY occurred_at DESC,external_id DESC LIMIT 100',[req.params.id,req.query.kind==='history'?'history':'comment'])).rows);});
  app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
  app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));
@@ -88,6 +143,7 @@ export function createApp() {
  app.post('/api/tasks/:id/reminders',async(req,res)=>res.status(201).json(await saveTaskReminder(req.actor,String(req.params.id),reminderInput.parse(req.body))));
  app.delete('/api/reminders/:id',async(req,res)=>res.json(await disableTaskReminder(req.actor,String(req.params.id))));
  app.get('/api/system/status',async(req,res)=>res.json(await systemStatus(req.actor)));
+ app.patch('/api/system/access/:id',async(req,res)=>res.json(await updateEmployeeProfile(req.actor,String(req.params.id),req.body)));
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
  app.get('/api/operations',async(req,res)=>{assert(req.actor.role!=='employee',403,'Расписание доступно руководителю.');res.json(await operationsStatus());});
  app.put('/api/operations',async(req,res)=>{const time=z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);await saveAutomation(req.actor,z.object({enabled:z.boolean(),morning:time,evening:time}).parse(req.body));await tick();res.json({ok:true});});
@@ -123,6 +179,10 @@ export function createApp() {
  app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));});
  app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});
  app.get('/api/tasks/:id',async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));
+ app.patch('/api/tasks/:id/comments/:commentId',async(req,res)=>{
+  const input=z.object({body:text.nullable(),expectedRevision:z.number().int().positive()}).parse(req.body);
+  res.json(await editComment(req.actor,String(req.params.id),z.uuid().parse(req.params.commentId),input.expectedRevision,input.body));
+ });
  app.post('/api/tasks/:id/comments',async(req,res)=>{const input=z.object({body:text,approvalId:z.uuid().optional()}).parse(req.body);await service.addComment(req.actor,String(req.params.id),input.body,input.approvalId);res.json({ok:true});});
  app.post('/api/tasks/:id/approvals',async(req,res)=>res.status(201).json(await service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:text,proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
  app.post('/api/approvals/:id/decision',async(req,res)=>res.json(await service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));

@@ -3,7 +3,7 @@ import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import {businessDay} from '../shared/queues.js';
 
-type Person={id:string;name:string;role:string;branch_id:string;manager_id:string|null};
+type Person={position?:string;id:string;name:string;role:string;branch_id:string;manager_id:string|null};
 type Substitution={id:string;manager_id:string;deputy_id:string;starts_at:string;ends_at:string};
 type Directory={people:Person[];substitutions:Substitution[]};
 type Entry={id:string;title:string;sourceId:string|null;sourceTitle:string|null;status:'active'|'review'|'completed';deadline:string|null;assignee:string;manager:string;substitution:boolean};
@@ -37,7 +37,7 @@ export function OrgWorkspace({roles}:{roles:Record<string,string>}){
    <div className="filters"><input aria-label="Найти сотрудника" placeholder="Имя или филиал" value={query} onChange={e=>setQuery(e.target.value)}/></div>
    {!data&&!error&&<p>Загружаем сотрудников…</p>}
    <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль и филиал</th><th>Прямой руководитель</th></tr></thead><tbody>
-    {visible.map(p=><tr key={p.id}><td>{p.name}</td><td>{roles[p.role]} · {p.branch_id}</td><td><select aria-label={'Руководитель для '+p.name} value={p.manager_id??''} disabled={busy}
+    {visible.map(p=><tr key={p.id}><td><strong>{p.name}</strong><br/><small>{p.position||'Должность не указана'}</small></td><td>{roles[p.role]} · {p.branch_id}</td><td><select aria-label={'Руководитель для '+p.name} value={p.manager_id??''} disabled={busy}
      onChange={e=>void save('/org/reporting/'+encodeURIComponent(p.id),'PUT',{managerId:e.target.value||null})}>
       <option value="">Не назначен</option>{managers.filter(m=>m.id!==p.id).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
      </select></td></tr>)}

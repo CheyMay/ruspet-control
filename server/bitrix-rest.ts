@@ -1,8 +1,12 @@
 import {readFile} from 'node:fs/promises';
 import {setTimeout as delay} from 'node:timers/promises';
-import {pool} from './db.js';
+import pg from 'pg';
+import {connectionString} from './db.js';
+// Keep REST gates and durable attempt markers independent of task transactions.
+export const bitrixControl=new pg.Pool({connectionString,max:1,allowExitOnIdle:true});
+export const closeBitrixRest=()=>bitrixControl.end();
 
-export type BitrixMethod='tasks.task.list'|'tasks.task.get'|'tasks.task.update'|'tasks.task.history.list'|'im.dialog.messages.get'|'task.commentitem.getlist';
+export type BitrixMethod='im.v2.Event.subscribe'|'im.v2.Event.get'|'tasks.task.result.addfromchatmessage'|'im.message.add'|'im.message.update'|'im.message.delete'|'task.commentitem.add'|'task.commentitem.get'|'task.commentitem.update'|'task.commentitem.delete'|'task.checklistitem.getlist'|'task.checklistitem.add'|'task.checklistitem.update'|'task.checklistitem.delete'|'tasks.task.result.list'|'tasks.task.result.addFromComment'|'tasks.task.getFields'|'disk.file.get'|'disk.folder.uploadfile'|'disk.attachedObject.get'|'tasks.task.add'|'user.get'|'tasks.task.list'|'tasks.task.get'|'tasks.task.update'|'tasks.task.history.list'|'im.dialog.messages.get'|'task.commentitem.getlist';
 const knownErrors=new Set(['QUERY_LIMIT_EXCEEDED','OPERATION_TIME_LIMIT','NO_AUTH_FOUND','ACCESS_DENIED','OVERLOAD_LIMIT','ERROR_TASK_NOT_FOUND']);
 export class BitrixError extends Error {}
 
@@ -20,8 +24,8 @@ export async function bitrixClient(){
  let base:URL;
  try{base=webhookBase((await readFile(file,'utf8')).trim(),portal);}
  catch{throw new BitrixError('Не удалось прочитать настройки вебхука. Проверьте домен и файл.');}
- return async function request<T>(method:BitrixMethod,params:object):Promise<T>{
-  const db=await pool.connect();
+ return async function request<T>(method:BitrixMethod,params:object,options?:{version?:3;operationKey?:string}):Promise<T>{
+  const db=await bitrixControl.connect();
   try{
    await db.query('SELECT pg_advisory_lock(431024)');
    const pinned=(await db.query('UPDATE bitrix_rest_gate SET portal=$1 WHERE id=1 AND (portal IS NULL OR portal=$1) RETURNING id',[base.hostname])).rowCount;
@@ -32,7 +36,9 @@ export async function bitrixClient(){
    await db.query("UPDATE bitrix_rest_gate SET next_at=clock_timestamp()+interval '1100 milliseconds' WHERE id=1");
    let response:Response;
    try{
-    response=await fetch(new URL(method,base),{method:'POST',redirect:'error',headers:{'Content-Type':'application/json'},body:JSON.stringify(params),signal:AbortSignal.timeout(15000)});
+    const endpoint=new URL(method,base);
+    if(options?.version===3)endpoint.pathname=endpoint.pathname.replace('/rest/','/rest/api/');
+    response=await fetch(endpoint,{method:'POST',redirect:'error',headers:{'Content-Type':'application/json',...(options?.version===3&&options.operationKey?{'Idempotency-Key':options.operationKey}:{})},body:JSON.stringify(params),signal:AbortSignal.timeout(15000)});
    }catch{throw new BitrixError('Нет подтверждённого ответа REST Битрикс24.');}
    const body=await response.json().catch(()=>null);
    if(response.status===429||body?.error==='OPERATION_TIME_LIMIT'){

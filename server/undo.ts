@@ -31,6 +31,8 @@ export async function undoLastAction(u:User,id:string){return transaction(async 
  }
  assert(sameState(live,after),409,'По задаче уже были другие действия или изменились правила. Автоматическая отмена недоступна.');
  assert(!(await db.query("SELECT 1 FROM task_sync_queue WHERE task_id=$1 AND task_version>$2 AND (state='sent' OR attempts>0)",[current.id,before.task.version])).rowCount,409,'Изменение уже передавалось внешнему обработчику. Требуется отдельное исправление.');
+ const newCommentIds=after.comments.filter(c=>!before.comments.some(old=>old.id===c.id)).map(c=>c.id);
+ assert(!(await db.query("SELECT 1 FROM bitrix_comment_outbox WHERE comment_id=ANY($1) AND (attempts>0 OR state IN ('sending','uncertain'))",[newCommentIds])).rowCount,409,'Комментарий уже передавался в Битрикс24. Используйте удаление комментария.');
  // Resolve newly opened records before restoring the original active route/control.
  const beforeApprovals=new Set(before.approvals.map(a=>a.id));
  for(const a of after.approvals)if(!beforeApprovals.has(a.id))await db.query("UPDATE approvals SET state='stale',canceled_at=now(),deferred_until=NULL WHERE id=$1",[a.id]);

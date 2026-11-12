@@ -1,8 +1,9 @@
+import {canEditTaskData} from '../shared/task-permissions.js';
 import {actingManager,delegatesFor} from './org.js';
 import {recordTaskAction,recordTaskBarrier} from './undo-record.js';
 import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
-import {assert,canRequest,canEdit,canSee,canManage,globalAccess} from './domain.js';
+import {assert,canRequest,canSee,canManage,globalAccess} from './domain.js';
 import {event,notify,refreshTaskFindings} from './service.js';
 import {getCompany} from './okb.js';
 import {MockTaskProvider} from './providers.js';
@@ -77,7 +78,7 @@ export async function delegateTask(actor:User,id:string,input:{assigneeId:string
 async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reason:string){return transaction(async db=>{
  await db.query('SELECT pg_advisory_xact_lock(431011)');
  const before=(await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0] as Task;
- assert(before&&canSee(u,before),404,'Задача недоступна.');assert(canEdit(u,before),403,'Редактировать может постановщик или руководитель.');assert(reason?.trim().length>=5&&reason.length<=4000,400,'Укажите причину изменения, минимум 5 символов.');assert(before.status==='active',409,'Редактировать можно только задачу в работе.');assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
+ assert(before&&canSee(u,before),404,'Задача недоступна.');assert(canEditTaskData(u,before),403,'Редактировать может администратор, постановщик или руководитель задачи в работе.');assert(reason?.trim().length>=5&&reason.length<=4000,400,'Укажите причину изменения, минимум 5 символов.');assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
  assert(input.deadline===before.deadline,400,'Крайний срок меняется через запрос согласования.');
  const owner=await validateTaskAssignment(db,u,input,id,before.assignee_id,before.creator_id);
  const companyId=input.companyId===undefined?before.company_id??null:input.companyId;
@@ -110,7 +111,7 @@ async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return'
  await notify(db,id,action==='submit'?before.creator_id:before.assignee_id,`${labels[action]} · #${id}${comment.trim()?': '+comment:''}`,`review:${id}:${after.version}`);return {state:status};
 });}
 
-export async function taskAssignees(u:User,id:string){return transaction(async db=>{const t=(await db.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0] as Task;assert(t&&canEdit(u,t),403,'Редактировать может постановщик или руководитель.');return (await db.query('SELECT id,name,role,branch_id,position FROM users ORDER BY name')).rows.filter((person:User)=>u.id===t.creator_id||globalAccess(u)||person.id===t.assignee_id||person.id===u.id||u.role==='branch_manager'&&person.branch_id===u.branch_id);});}
+export async function taskAssignees(u:User,id:string){return transaction(async db=>{const t=(await db.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0] as Task;assert(t&&canSee(u,t)&&canEditTaskData(u,t),403,'Недостаточно прав для редактирования задачи.');return (await db.query('SELECT id,name,role,branch_id,position FROM users ORDER BY name')).rows.filter((person:User)=>u.id===t.creator_id||globalAccess(u)||person.id===t.assignee_id||person.id===u.id||u.role==='branch_manager'&&person.branch_id===u.branch_id);});}
 
 export async function editTask(...args:Parameters<typeof editTaskCore>){return recordTaskAction(args[0],args[1],'Изменение параметров задачи',()=>editTaskCore(...args));}
 

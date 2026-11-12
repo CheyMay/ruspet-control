@@ -1,3 +1,4 @@
+import {EmployeeProfileEditor} from './EmployeeProfileEditor.js';
 import {useEffect,useState} from 'react';
 import type {User} from '../shared/types.js';
 import {api} from './api.js';
@@ -67,8 +68,9 @@ export function SystemHealth(){
 }
 
 type AccessPerson=User&{accounts:{username:string;enabled:boolean}[];visibleTasks:number;paired_at:string|null;invitation_expires:string|null};
-export function AccessDirectory({roles}:{roles:Record<string,string>}){
+export function AccessDirectory({roles,onChanged}:{roles:Record<string,string>;onChanged?:()=>void|Promise<void>}){
  const {value,error,busy,refresh}=usePanelData<AccessPerson[]>('/system/access');
+ const [editing,setEditing]=useState<AccessPerson|null>(null);
  const [query,setQuery]=useState(''),[invite,setInvite]=useState<{name:string;url:string}|null>(null),[creating,setCreating]=useState(false),[notice,setNotice]=useState(''),[inviteError,setInviteError]=useState('');
  async function createInvite(person:AccessPerson){
   setCreating(true);setInvite(null);setInviteError('');setNotice('');
@@ -77,17 +79,18 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
    setInvite({name:person.name,url:result.url});refresh();
   }catch(e){setInviteError((e as Error).message);}finally{setCreating(false);}
  }
- const people=value?.filter(p=>[p.name,p.branch_id,roles[p.role],...p.accounts.map(a=>a.username)].some(s=>s.toLocaleLowerCase('ru-RU').includes(query.trim().toLocaleLowerCase('ru-RU'))));
+ const people=value?.filter(p=>[p.name,p.position,p.branch_id,roles[p.role],...p.accounts.map(a=>a.username)].some(s=>s.toLocaleLowerCase('ru-RU').includes(query.trim().toLocaleLowerCase('ru-RU'))));
  return <section className="panel automation-settings">
-  <div className="automation-heading"><div><h2>Доступы сотрудников</h2><p className="muted">Роль, вход в панель, подключение к боту и число доступных рабочих задач.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
+  <div className="automation-heading"><div><h2>Доступы сотрудников</h2><p className="muted">Должность, роль и права, филиал, вход в панель и подключение к боту.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
   {(error||inviteError)&&<p className="alert error" role="alert">{inviteError||error}</p>}
   {invite&&<div className="source-banner"><strong>{invite.name} · ссылка на 15 минут</strong><input aria-label="Ссылка подключения" readOnly value={invite.url} onFocus={e=>e.currentTarget.select()}/><button className="button secondary" onClick={()=>void navigator.clipboard.writeText(invite.url).then(()=>setNotice('Ссылка скопирована')).catch(()=>setNotice('Выделите ссылку и скопируйте вручную.'))}>Копировать</button><span role="status">{notice}</span></div>}
   {!value&&busy&&<p role="status">Загружаем список сотрудников…</p>}
-  {people&&<><div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, филиал, роль или логин" value={query} onChange={e=>setQuery(e.target.value)}/></div>
-   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
-    <td><strong>{p.name}</strong><br/><small>{p.branch_id}</small></td><td>{roles[p.role]}</td><td>{p.visibleTasks}</td>
+  {people&&<><div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, должность, филиал, роль или логин" value={query} onChange={e=>setQuery(e.target.value)}/></div>
+   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th><th>Управление</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
+    <td><strong>{p.name}</strong><br/><small>{p.position||'Должность не указана'}</small><br/><small>{p.branch_id}</small></td><td>{roles[p.role]}</td><td>{p.visibleTasks}</td>
     <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>{a.username}{a.enabled?'':' · отключён'}</div>):'Нет учётной записи'}</td>
-    <td>{p.paired_at?<span>Подключён · {moscowTimestamp(p.paired_at)}</span>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button></>}</td>
+    <td>{p.paired_at?<span>Подключён · {moscowTimestamp(p.paired_at)}</span>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button></>}</td><td><button className="text-button" onClick={()=>setEditing(p)}>Изменить данные</button></td>
    </tr>)}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}
+ {editing&&<EmployeeProfileEditor key={editing.id} person={editing} roles={roles} close={()=>setEditing(null)} saved={async()=>{refresh();await onChanged?.();}}/>}
  </section>;
 }

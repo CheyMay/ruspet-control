@@ -107,3 +107,10 @@ main select:disabled { opacity:.6; }
 
 .metric-filter { display:grid; gap:7px; border:1px solid var(--line); border-radius:6px; margin:0; padding:8px; min-width:0; }
 .metric-filter legend { padding:0 4px; }
+
+.settings-tabs { flex-wrap:wrap; gap:4px; overflow:visible; margin-bottom:20px; }
+.settings-tabs button { white-space:normal; }
+.settings-section[hidden] { display:none; }
+.settings-section > .settings-form { max-width:1080px; }
+.employee-editor label { display:grid; gap:8px; margin-top:16px; }
+.employee-editor input,.employee-editor select { width:100%; min-width:0; }

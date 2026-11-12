@@ -11,7 +11,7 @@ function requireOrgAdmin(actor:User){
 export async function orgDirectory(actor:User){
  requireOrgAdmin(actor);
  const [people,substitutions]=await Promise.all([
-  pool.query('SELECT u.id,u.name,u.role,u.branch_id,r.manager_id FROM users u LEFT JOIN org_reporting r ON r.employee_id=u.id ORDER BY u.name,u.id'),
+  pool.query('SELECT u.id,u.name,u.role,u.branch_id,u.position,u.version,r.manager_id FROM users u LEFT JOIN org_reporting r ON r.employee_id=u.id ORDER BY u.name,u.id'),
   pool.query('SELECT * FROM org_substitutions WHERE revoked_at IS NULL AND ends_at>now() ORDER BY starts_at,id LIMIT 100')
  ]);
  return {people:people.rows,substitutions:substitutions.rows};

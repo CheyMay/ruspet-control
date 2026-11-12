@@ -34,7 +34,7 @@ before(async()=>{
  const {createApp}=await import('../server/app.js');server=createApp().listen(0,'127.0.0.1');await new Promise<void>(resolve=>server.once('listening',resolve));base=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
  for(const user of users){const r=await fetch(base+'/api/demo/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:user.id})});assert.equal(r.status,200);cookies.set(user.id,r.headers.get('set-cookie')!.split(';')[0]);}
 });
-after(async()=>{if(server)await new Promise<void>(resolve=>server.close(()=>resolve()));await db?.pool.end();if(adminConnection){await adminConnection.query(`DROP DATABASE IF EXISTS ${database}`);await adminConnection.end();}});
+after(async()=>{if(server)await new Promise<void>(resolve=>server.close(()=>resolve()));await (await import('../server/bitrix-rest.js')).closeBitrixRest();await db?.pool.end();if(adminConnection){await adminConnection.query(`DROP DATABASE IF EXISTS ${database}`);await adminConnection.end();}});
 async function request(user:string,path:string,body?:unknown,method=body===undefined?'GET':'POST'){
  const r=await fetch(base+'/api'+path,{method,headers:{Cookie:cookies.get(user)||'',...(body===undefined?{}:{'Content-Type':'application/json'})},body:body===undefined?undefined:JSON.stringify(body)});
  return {status:r.status,data:await r.json()};
@@ -962,4 +962,530 @@ test('scheduled metric rules count both presets, notify the actual manager and r
  await runProcesses(new Date(now.getTime()+1800000));
  assert.equal((await messages()).length,2);
  assert.equal((await generated()).length,1);
+});
+
+test('Bitrix hooks authenticate, coalesce and preserve events arriving during reconciliation',async()=>{
+ const {mkdtemp,writeFile,rm}=await import('node:fs/promises');
+ const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const {processBitrixEvent}=await import('../server/bitrix-events.js');
+ const folder=await mkdtemp(join(tmpdir(),'ruspet-events-'));
+ const saved={enabled:process.env.BITRIX_EVENTS_ENABLED,portal:process.env.BITRIX_PORTAL,token:process.env.BITRIX_EVENT_TOKEN_FILE};
+ const file=join(folder,'token');await writeFile(file,'test-event-token\nsecond-event-token\n',{mode:0o600});
+ process.env.BITRIX_EVENTS_ENABLED='true';process.env.BITRIX_PORTAL='portal.example';process.env.BITRIX_EVENT_TOKEN_FILE=file;
+ const send=async(id:string,token='test-event-token',event='ONTASKUPDATE')=>fetch(base+'/integrations/bitrix/events',{
+  method:'POST',body:new URLSearchParams({event,'auth[domain]':'portal.example','auth[application_token]':token,'data[FIELDS_AFTER][ID]':id})});
+ try{
+  assert.equal((await send('987654','wrong')).status,403);
+  assert.equal((await send('987654')).status,202);assert.equal((await send('987654','second-event-token')).status,202);
+  assert.equal((await request('anna','/integrations/bitrix/events')).status,403);
+  assert.equal((await request('admin','/integrations/bitrix/events')).data.pending,1);
+  assert.equal((await db.pool.query('SELECT count(*)::int n FROM bitrix_event_queue')).rows[0].n,1);
+  let calls=0;
+  const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod):Promise<T>=>{
+   assert.equal(method,'tasks.task.get');calls++;
+   if(calls===1)assert.equal((await send('987654')).status,202);
+   const task=(await db.pool.query("SELECT * FROM tasks WHERE id='2401'")).rows[0];
+   return {task:{id:'987654',title:task.title,description:task.description,deadline:task.deadline}} as T;
+  };
+  await db.pool.query("UPDATE bitrix_event_queue SET available_at=now()-interval '1 second'");
+  await processBitrixEvent(transport);
+  assert.equal((await db.pool.query('SELECT processed_at FROM bitrix_event_queue')).rows[0].processed_at,null);
+  await processBitrixEvent(transport);assert.equal(calls,2);
+  assert.equal(await processBitrixEvent(transport),false);
+  await send('987654');await db.pool.query("UPDATE bitrix_event_queue SET available_at=now()-interval '1 second'");
+  await processBitrixEvent(async()=>{throw new Error('transport details must not be saved');});
+  const failed=(await db.pool.query('SELECT * FROM bitrix_event_queue')).rows[0];
+  assert.equal(failed.attempts,1);assert.equal(failed.last_error,'Ошибка сверки задачи.');
+  assert.equal(await processBitrixEvent(transport),false);
+  await send('123456');await db.pool.query("UPDATE bitrix_event_queue SET available_at=now()-interval '1 second' WHERE external_id=123456");
+  await processBitrixEvent(transport);assert.equal(calls,2);
+  assert.equal((await db.pool.query('SELECT blocked FROM bitrix_event_queue WHERE external_id=123456')).rows[0].blocked,true);
+  await send('987654','test-event-token','ONTASKDELETE');
+  await db.pool.query("UPDATE bitrix_event_queue SET available_at=now()-interval '1 second' WHERE external_id=987654");
+  const {BitrixError}=await import('../server/bitrix-rest.js');let deletedReads=0;
+  await processBitrixEvent(async(method)=>{assert.equal(method,'tasks.task.get');deletedReads++;throw new BitrixError('ERROR_TASK_NOT_FOUND');});assert.equal(calls,2);assert.equal(deletedReads,1);
+  assert.match((await db.pool.query("SELECT conflict FROM bitrix_task_links WHERE task_id='2401'")).rows[0].conflict,/удалена/);
+ }finally{
+  for(const [key,value] of Object.entries({BITRIX_EVENTS_ENABLED:saved.enabled,BITRIX_PORTAL:saved.portal,BITRIX_EVENT_TOKEN_FILE:saved.token})){
+   if(value===undefined)delete process.env[key];else process.env[key]=value;
+  }
+  await rm(folder,{recursive:true,force:true});
+ }
+});
+
+test('Bidirectional Bitrix sync reconciles statuses and assignees and drains the real task outbox',async()=>{
+ const {linkTask,syncLinkedTask}=await import('../server/bitrix-sync.js');
+ const {processBitrixOutbound}=await import('../server/bitrix-outbound.js');
+ const employee=users.find(u=>u.id==='anna')!,other=users.find(u=>u.id==='pavel')??users.find(u=>u.role==='employee'&&u.id!==employee.id)!;
+ await db.pool.query('INSERT INTO bitrix_user_links(user_id,external_id) VALUES($1,111),($2,112),($3,113)',[employee.id,other.id,'admin']);
+ const id=(await request('admin','/tasks',{title:'Bitrix lifecycle fixture',description:'Original',price:0,assigneeId:employee.id,deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null})).data.id;
+ const remote={id:'888001',title:'Bitrix lifecycle fixture',description:'Original',deadline:null,status:'2',responsibleId:'111',createdBy:'113',closedDate:null as string|null};
+ let writes=0;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.get')return {task:{...remote}} as T;
+  assert.equal(method,'tasks.task.update');writes++;
+  for(const [field,key] of Object.entries({TITLE:'title',DESCRIPTION:'description',DEADLINE:'deadline',STATUS:'status',RESPONSIBLE_ID:'responsibleId',CREATED_BY:'createdBy'})){
+   if(Object.hasOwn(params.fields,field))(remote as any)[key]=params.fields[field]===''?null:String(params.fields[field]);
+  }
+  return {task:{...remote}} as T;
+ };
+ assert.equal((await linkTask(transport,id,remote.id)).linked,true);
+ remote.status='4';remote.responsibleId='112';
+ await syncLinkedTask(transport,id,false);
+ let local=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+ assert.equal(local.status,'review');assert.equal(local.assignee_id,other.id);
+ assert.equal((await request('admin','/tasks/'+id+'/review',{action:'accept',comment:'',expectedVersion:local.version})).status,200);
+ const saved=process.env.BITRIX_WRITE_ENABLED;process.env.BITRIX_WRITE_ENABLED='true';
+ try{
+  assert.equal(await processBitrixOutbound(transport),true);
+  assert.equal(remote.status,'5');assert.equal(writes,1);
+  assert.equal(await processBitrixOutbound(transport),false);assert.equal(writes,1);
+  local=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+  await db.pool.query("UPDATE tasks SET title='Local race',version=version+1 WHERE id=$1",[id]);
+  let reads=0;
+  const race:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+   if(method==='tasks.task.get'&&++reads===2)remote.title='Concurrent portal edit';
+   return transport<T>(method,params);
+  };
+  await assert.rejects(()=>syncLinkedTask(race,id,true),/изменилась перед записью/);
+  assert.equal(writes,1);
+ }finally{if(saved===undefined)delete process.env.BITRIX_WRITE_ENABLED;else process.env.BITRIX_WRITE_ENABLED=saved;}
+});
+
+test('New Bitrix tasks import with mapped employees, and ambiguous outbound creates never repeat',async()=>{
+ const {processBitrixCreation}=await import('../server/bitrix-create.js');
+ const {importBitrixTask}=await import('../server/bitrix-import.js');
+ const external={id:'888002',title:'Imported fixture',description:'From source',deadline:null,status:'2',responsibleId:'111',createdBy:'113'};
+ const reader:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod):Promise<T>=>{
+  assert.equal(method,'tasks.task.get');return {task:external} as T;
+ };
+ assert.equal(await importBitrixTask(reader,external.id),'B-888002');
+ assert.equal(await importBitrixTask(reader,external.id),'B-888002');
+ assert.equal((await db.pool.query("SELECT count(*)::int n FROM tasks WHERE id='B-888002'")).rows[0].n,1);
+ const saved={write:process.env.BITRIX_WRITE_ENABLED,create:process.env.BITRIX_CREATE_ENABLED};
+ process.env.BITRIX_WRITE_ENABLED='true';process.env.BITRIX_CREATE_ENABLED='true';
+ let creates=0;
+ try{
+  // Isolate this creation from the older disposable fixtures.
+  await db.pool.query("UPDATE task_sync_queue q SET state='canceled' WHERE q.payload->>'kind'='created' AND NOT EXISTS(SELECT 1 FROM bitrix_task_links l WHERE l.task_id=q.task_id)");
+  const id=(await request('admin','/tasks',{title:'Ambiguous fixture',description:'Original',price:0,assigneeId:'anna',deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null})).data.id;
+  const transport:import('../server/bitrix-rest.js').BitrixRequest=async()=>{creates++;throw new Error('Ambiguous external response');};
+  assert.equal(await processBitrixCreation(transport),true);
+  assert.equal(await processBitrixCreation(transport),false);assert.equal(creates,1);
+  assert.equal((await db.pool.query('SELECT state FROM bitrix_task_creations WHERE task_id=$1',[id])).rows[0].state,'uncertain');
+ }finally{
+  for(const [key,value] of Object.entries({BITRIX_WRITE_ENABLED:saved.write,BITRIX_CREATE_ENABLED:saved.create}))if(value===undefined)delete process.env[key];else process.env[key]=value;
+ }
+});
+
+test('Confirmed Bitrix creation preserves a local edit made while the portal creates the task',async()=>{
+ const {processBitrixCreation}=await import('../server/bitrix-create.js');
+ const {processBitrixOutbound}=await import('../server/bitrix-outbound.js');
+ const input={title:'Creation race fixture',description:'Before',price:0,assigneeId:'anna',deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null};
+ const id=(await request('admin','/tasks',input)).data.id;
+ let created:any,adds=0,updates=0;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.add'){
+   adds++;created={id:'888003',title:params.fields.TITLE,description:params.fields.DESCRIPTION,deadline:null,status:'2',responsibleId:'111',createdBy:'113'};
+   assert.equal((await request('admin','/tasks/'+id,{...input,description:'Edited while creating',expectedVersion:1,reason:'Concurrent local edit'},'PUT')).status,200);
+   return {task:{...created}} as T;
+  }
+  if(method==='tasks.task.update'){updates++;created.description=params.fields.DESCRIPTION;return {task:{...created}} as T;}
+  assert.equal(method,'tasks.task.get');return {task:{...created}} as T;
+ };
+ const saved={write:process.env.BITRIX_WRITE_ENABLED,create:process.env.BITRIX_CREATE_ENABLED};
+ process.env.BITRIX_WRITE_ENABLED='true';process.env.BITRIX_CREATE_ENABLED='true';
+ try{
+  assert.equal(await processBitrixCreation(transport),true);
+  assert.equal((await db.pool.query('SELECT linked_version FROM bitrix_task_links WHERE task_id=$1',[id])).rows[0].linked_version,1);
+  assert.equal((await db.pool.query('SELECT state FROM task_sync_queue WHERE task_id=$1 AND task_version=2',[id])).rows[0].state,'pending');
+  assert.equal(await processBitrixOutbound(transport),true);
+  assert.equal(created.description,'Edited while creating');assert.equal(adds,1);assert.equal(updates,1);
+  assert.equal(await processBitrixCreation(transport),false);
+ }finally{
+  for(const [key,value] of Object.entries({BITRIX_WRITE_ENABLED:saved.write,BITRIX_CREATE_ENABLED:saved.create}))if(value===undefined)delete process.env[key];else process.env[key]=value;
+ }
+});
+
+test('Export bootstrap uses no task REST calls, preserves local conflicts and catches up changed tasks by pages',async()=>{
+ const {bootstrapBitrixExport,catchupBitrix}=await import('../server/bitrix-bootstrap.js');
+ const {mkdtemp,writeFile,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const folder=await mkdtemp(join(tmpdir(),'ruspet-bootstrap-')),file=join(folder,'export.json');
+ for(const id of ['999001','999003']){
+  const task=(await db.pool.query(`INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,status,priority,code,source_fields)
+   VALUES($1,'Original title','Original description','Москва','anna','admin','active','normal','Original',$2) RETURNING *`,[id,JSON.stringify({ID:id})])).rows[0];
+  await db.pool.query('INSERT INTO mock_provider_tasks(id,snapshot,revision) VALUES($1,$2,1)',[id,JSON.stringify(task)]);
+  await db.pool.query("INSERT INTO task_events(id,task_id,kind,message,data) VALUES($1,$2,'imported','Synthetic import fixture',$3)",[randomBytes(16).toString('hex'),id,JSON.stringify({initialSnapshot:task})]);
+ }
+ const conflicting=(await db.pool.query("UPDATE tasks SET title='Local title',version=2 WHERE id='999003' RETURNING *")).rows[0];
+ await db.pool.query("UPDATE mock_provider_tasks SET snapshot=$1,revision=2 WHERE id='999003'",[JSON.stringify(conflicting)]);
+ const employee=(await db.pool.query("SELECT name FROM users WHERE id='anna'")).rows[0],admin=(await db.pool.query("SELECT name FROM users WHERE id='admin'")).rows[0];
+ await writeFile(file,JSON.stringify({rows:[['ID','Название','Описание','Крайний срок','Статус','Исполнитель','Постановщик'],
+  ...['999001','999002','999003'].map(id=>[id,'Portal title','Original description','12.11.2026 18:00:00','Ждёт выполнения',employee.name,admin.name])]}),{mode:0o600});
+ const saved=process.env.BITRIX_PORTAL;process.env.BITRIX_PORTAL='portal.example';
+ try{
+  assert.equal((await bootstrapBitrixExport(file)).total,3);
+  assert.equal((await db.pool.query("SELECT count(*)::int n FROM bitrix_task_links WHERE external_id IN (999001,999002,999003)")).rows[0].n,0);
+  const applied=await bootstrapBitrixExport(file,true);assert.equal(applied.applied,2);assert.equal(applied.conflicts,1);
+  assert.equal((await db.pool.query("SELECT deadline FROM tasks WHERE id='999001'")).rows[0].deadline,'2026-11-12T15:00:00.000Z');
+  assert.equal((await db.pool.query("SELECT title FROM tasks WHERE id='999003'")).rows[0].title,'Local title');
+  assert.equal((await bootstrapBitrixExport(file,true)).alreadyLinked,3);
+  let pages=0;
+  const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+   assert.equal(method,'tasks.task.list');assert.equal(params.filter['>=CHANGED_DATE'],'2026-11-12T10:22:35+03:00');pages++;
+   return {tasks:pages===1?[{id:'999001',title:'Portal title',description:'Changed after export',deadline:'2026-11-12T18:00:00+03:00',status:'2',responsibleId:'111',createdBy:'113'}]:[]} as T;
+  };
+  assert.deepEqual(await catchupBitrix(transport,'2026-11-12T10:22:35+03:00'),{total:1,conflicts:0,cursor:'999001',complete:true});
+  assert.equal(pages,2);
+  assert.equal((await db.pool.query("SELECT description FROM tasks WHERE id='999001'")).rows[0].description,'Changed after export');
+ }finally{if(saved===undefined)delete process.env.BITRIX_PORTAL;else process.env.BITRIX_PORTAL=saved;await rm(folder,{recursive:true,force:true});}
+});
+
+test('Bitrix comment hooks use TASK_ID and MESSAGE_ID, mirror edits, preserve conflicts and never echo or duplicate sends',async()=>{
+ const {linkTask}=await import('../server/bitrix-sync.js');
+ const {mirrorBitrixComment,processBitrixCommentOutbound,processBitrixCommentEvent}=await import('../server/bitrix-comments.js');
+ const {mkdtemp,writeFile,rm}=await import('node:fs/promises');const {join}=await import('node:path');const {tmpdir}=await import('node:os');
+ const folder=await mkdtemp(join(tmpdir(),'comment-hooks-'));await writeFile(join(folder,'token'),'fixture-token',{mode:0o600});
+ const saved={write:process.env.BITRIX_WRITE_ENABLED,events:process.env.BITRIX_EVENTS_ENABLED,portal:process.env.BITRIX_PORTAL,token:process.env.BITRIX_EVENT_TOKEN_FILE};
+ process.env.BITRIX_WRITE_ENABLED='true';process.env.BITRIX_EVENTS_ENABLED='true';process.env.BITRIX_PORTAL='portal.example';process.env.BITRIX_EVENT_TOKEN_FILE=join(folder,'token');
+ const input={title:'Discussion fixture',description:'Task',price:0,assigneeId:'anna',deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null};
+ const taskId=(await request('admin','/tasks',input)).data.id;
+ const task={id:'889100',title:input.title,description:input.description,deadline:null,status:'2',responsibleId:'111',createdBy:'113',chatId:'99'};
+ const messages=new Map<string,any>([['777',{id:777,date:'2026-11-12T10:00:00+03:00',text:'Portal message',author_id:111,params:{}}]]);
+ let adds=0,updates=0,deletes=0,fail=false;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.get')return {task:{...task}} as T;
+  if(method==='im.dialog.messages.get'){const id=String(BigInt(params.LAST_ID)-1n);return {chat_id:99,messages:messages.has(id)?[messages.get(id)]:[]} as T;}
+  if(method==='im.message.add'){adds++;if(fail)throw new Error('Unknown send outcome');messages.set('778',{id:778,date:'2026-11-12T10:01:00+03:00',author_id:113,text:params.MESSAGE,params:{}});return 778 as T;}
+  if(method==='im.message.update'){updates++;messages.get(String(params.MESSAGE_ID)).text=params.MESSAGE;return true as T;}
+  if(method==='im.message.delete'){deletes++;messages.get(String(params.MESSAGE_ID)).params={IS_DELETED:'Y'};messages.get(String(params.MESSAGE_ID)).text='Это сообщение было удалено';return true as T;}
+  throw new Error('Unexpected method '+method);
+ };
+ try{
+  assert.equal((await linkTask(transport,taskId,task.id)).linked,true);
+  const r=await fetch(base+'/integrations/bitrix/events',{method:'POST',body:new URLSearchParams({event:'ONTASKCOMMENTADD','auth[domain]':'portal.example','auth[application_token]':'fixture-token','data[FIELDS_AFTER][ID]':'0','data[FIELDS_AFTER][TASK_ID]':task.id,'data[FIELDS_AFTER][MESSAGE_ID]':'777'})});
+  assert.equal(r.status,202);assert.equal((await db.pool.query('SELECT task_external_id::text,external_id::text FROM bitrix_comment_events')).rows[0].task_external_id,task.id);
+  await db.pool.query("UPDATE bitrix_comment_events SET available_at=now()-interval '1 second'");
+  assert.equal(await processBitrixCommentEvent(transport),true);
+  let incoming=(await db.pool.query('SELECT c.* FROM comments c JOIN bitrix_comment_links l ON l.comment_id=c.id WHERE c.task_id=$1 AND l.external_id=777',[taskId])).rows[0];
+  assert.equal(incoming.body,'Portal message');assert.equal((await db.pool.query('SELECT count(*)::int n FROM bitrix_comment_outbox WHERE comment_id=$1',[incoming.id])).rows[0].n,0);
+  messages.get('777').text='Portal edited';
+  await mirrorBitrixComment(transport,taskId,'chat','777',{id:'777',body:'Portal edited',author:'111',date:'2026-11-12T07:00:00Z',files:{}});
+  incoming=(await db.pool.query('SELECT * FROM comments WHERE id=$1',[incoming.id])).rows[0];assert.equal(incoming.body,'Portal edited');
+  assert.equal((await request('anna',`/tasks/${taskId}/comments/${incoming.id}`,{body:'Local edit',expectedRevision:incoming.revision},'PATCH')).status,200);
+  assert.equal((await mirrorBitrixComment(transport,taskId,'chat','777',{id:'777',body:'Concurrent portal edit',author:'111',date:'2026-11-12T07:00:00Z',files:{}})).conflict,true);
+  assert.equal((await db.pool.query('SELECT body FROM comments WHERE id=$1',[incoming.id])).rows[0].body,'Local edit');
+  await db.pool.query("UPDATE bitrix_comment_outbox SET state='sent'");
+  await request('admin',`/tasks/${taskId}/comments`,{body:'Local outgoing'});
+  const local=(await db.pool.query("SELECT * FROM comments WHERE task_id=$1 AND body='Local outgoing'",[taskId])).rows[0];
+  assert.equal(await processBitrixCommentOutbound(transport),true);assert.equal(adds,1);
+  await mirrorBitrixComment(transport,taskId,'chat','778',{id:'778',body:messages.get('778').text,author:'113',date:'2026-11-12T07:01:00Z',files:{}});
+  assert.equal(await processBitrixCommentOutbound(transport),false);
+  let current=(await db.pool.query('SELECT * FROM comments WHERE id=$1',[local.id])).rows[0];
+  assert.equal((await request('admin',`/tasks/${taskId}/comments/${local.id}`,{body:'Edited locally',expectedRevision:current.revision},'PATCH')).status,200);
+  await processBitrixCommentOutbound(transport);assert.equal(updates,1);assert.equal(adds,1);
+  current=(await db.pool.query('SELECT * FROM comments WHERE id=$1',[local.id])).rows[0];
+  assert.equal((await request('admin',`/tasks/${taskId}/comments/${local.id}`,{body:null,expectedRevision:current.revision},'PATCH')).status,200);
+  await processBitrixCommentOutbound(transport);assert.equal(deletes,1);
+  await request('admin',`/tasks/${taskId}/comments`,{body:'Uncertain send'});fail=true;
+  await processBitrixCommentOutbound(transport);assert.equal(adds,2);
+  assert.equal(await processBitrixCommentOutbound(transport),false);assert.equal(adds,2);
+  const discussion=await request('anna',`/tasks/${taskId}`);assert(discussion.data.comments.some((c:any)=>c.body==='Local edit'));assert(!discussion.data.comments.some((c:any)=>c.id===local.id));
+ }finally{
+  for(const [key,value] of Object.entries({BITRIX_WRITE_ENABLED:saved.write,BITRIX_EVENTS_ENABLED:saved.events,BITRIX_PORTAL:saved.portal,BITRIX_EVENT_TOKEN_FILE:saved.token}))if(value===undefined)delete process.env[key];else process.env[key]=value;
+  await rm(folder,{recursive:true,force:true});
+ }
+});
+
+test('Bitrix checklist mutations verify the item and reject a concurrent portal change',async()=>{
+ const {saveBitrixContent}=await import('../server/bitrix-content.js');const {processBitrixContentOperation}=await import('../server/bitrix-operations.js');
+ const taskId=(await db.pool.query('SELECT task_id FROM bitrix_task_links WHERE external_id=889100')).rows[0].task_id;
+ let list=[{ID:'1',TITLE:'Checklist',PARENT_ID:'0',IS_COMPLETE:'N'}],writes=0;
+ await saveBitrixContent(taskId,'checklist',list);
+ const revision=(await db.pool.query("SELECT revision FROM bitrix_task_content WHERE task_id=$1 AND kind='checklist'",[taskId])).rows[0].revision;
+ assert.equal((await request('anna',`/tasks/${taskId}/bitrix-content`,{kind:'checklist.update',itemId:'1',fields:{IS_COMPLETE:'Y'},expectedRevision:revision})).status,202);
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.get')return {task:{id:'889100',title:'Discussion fixture',description:'Task',deadline:null}} as T;
+  if(method==='task.checklistitem.getlist')return list.map(row=>({...row})) as T;
+  assert.equal(method,'task.checklistitem.update');writes++;Object.assign(list[0],params.FIELDS);return true as T;
+ };
+ const saved=process.env.BITRIX_WRITE_ENABLED;process.env.BITRIX_WRITE_ENABLED='true';
+ try{
+  await processBitrixContentOperation(transport);assert.equal(writes,1);assert.equal(list[0].IS_COMPLETE,'Y');
+  const next=(await db.pool.query("SELECT revision FROM bitrix_task_content WHERE task_id=$1 AND kind='checklist'",[taskId])).rows[0].revision;
+  assert.equal((await request('anna',`/tasks/${taskId}/bitrix-content`,{kind:'checklist.update',itemId:'1',fields:{IS_COMPLETE:'N'},expectedRevision:revision})).status,409);
+  assert.equal((await request('anna',`/tasks/${taskId}/bitrix-content`,{kind:'checklist.update',itemId:'1',fields:{IS_COMPLETE:'N'},expectedRevision:next})).status,202);
+  list[0].TITLE='Concurrent portal title';await processBitrixContentOperation(transport);assert.equal(writes,1);
+  assert.equal((await db.pool.query("SELECT count(*)::int n FROM bitrix_content_ops WHERE task_id=$1 AND state='conflict'",[taskId])).rows[0].n,1);
+ }finally{if(saved===undefined)delete process.env.BITRIX_WRITE_ENABLED;else process.env.BITRIX_WRITE_ENABLED=saved;}
+});
+
+test('Bitrix file upload attaches once, verifies the file and never persists signed download URLs',async()=>{
+ const {processBitrixContentOperation}=await import('../server/bitrix-operations.js');
+ const taskId=(await db.pool.query('SELECT task_id FROM bitrix_task_links WHERE external_id=889100')).rows[0].task_id;
+ const saved={write:process.env.BITRIX_WRITE_ENABLED,folder:process.env.BITRIX_UPLOAD_FOLDER_ID};process.env.BITRIX_WRITE_ENABLED='true';process.env.BITRIX_UPLOAD_FOLDER_ID='99';
+ let attached:string[]=[],uploads=0;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.get')return {task:{id:'889100',title:'Discussion fixture',description:'Task',deadline:null,ufTaskWebdavFiles:[...attached],fileData:{urlPreview:'https://portal.example/preview?signature=not-persisted'}}} as T;
+  if(method==='disk.folder.uploadfile'){uploads++;assert.equal(params.fileContent[1],Buffer.from('file fixture').toString('base64'));return {ID:500} as T;}
+  if(method==='tasks.task.update'){assert.deepEqual(params.fields.UF_TASK_WEBDAV_FILES,['n500']);attached=['501'];return true as T;}
+  if(method==='disk.attachedObject.get')return {ID:501,OBJECT_ID:500} as T;
+  assert.equal(method,'disk.file.get');return {ID:500,NAME:'fixture.txt',DOWNLOAD_URL:'https://portal.example/private?token=not-persisted'} as T;
+ };
+ try{
+  const uploaded=await fetch(`${base}/api/tasks/${taskId}/bitrix-files?name=fixture.txt`,{method:'POST',headers:{Cookie:cookies.get('admin')!,'Content-Type':'application/octet-stream'},body:Buffer.from('file fixture')});assert.equal(uploaded.status,202);
+  await processBitrixContentOperation(transport);assert.equal(uploads,1);
+  assert.equal(await processBitrixContentOperation(transport),false);
+  const files=(await request('anna',`/tasks/${taskId}/bitrix-content`)).data.sections.find((s:any)=>s.kind==='files').snapshot;
+  assert.equal(files[0].fileId,'500');assert(!JSON.stringify(files).includes('not-persisted'));
+  const staged=(await db.pool.query('SELECT snapshot,raw_snapshot FROM bitrix_task_snapshots WHERE external_id=889100')).rows[0];assert(!JSON.stringify(staged).includes('not-persisted'));
+  assert.equal((await db.pool.query('SELECT count(*)::int n FROM bitrix_uploads')).rows[0].n,0);
+ }finally{for(const [key,value] of Object.entries({BITRIX_WRITE_ENABLED:saved.write,BITRIX_UPLOAD_FOLDER_ID:saved.folder}))if(value===undefined)delete process.env[key];else process.env[key]=value;}
+});
+
+test('Mapped price, planning and participant changes reach local tasks without losing permission boundaries',async()=>{
+ const {linkTask,syncLinkedTask}=await import('../server/bitrix-sync.js');
+ const input={title:'Extended fields fixture',description:'Fields',price:0,assigneeId:'anna',deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null};
+ const id=(await request('admin','/tasks',input)).data.id;
+ await db.pool.query("INSERT INTO bitrix_field_map(local_key,external_code) VALUES('price','UF_PRICE_FIXTURE')");
+ const remote={id:'889200',title:input.title,description:input.description,deadline:null,status:'2',responsibleId:'111',createdBy:'113',ufPriceFixture:'0',startDatePlan:null as string|null,endDatePlan:null as string|null,priority:'1',accomplices:[] as string[],auditors:[] as string[]};
+ const reader:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any)=>{if(method==='tasks.task.update'){assert.deepEqual(Object.keys(params.fields),['UF_PRICE_FIXTURE']);remote.ufPriceFixture=String(params.fields.UF_PRICE_FIXTURE);}return {task:{...remote}} as T;};
+ assert.equal((await linkTask(reader,id,remote.id)).linked,true);
+ remote.ufPriceFixture='1250.50';remote.startDatePlan='2026-11-13T09:00:00+03:00';remote.endDatePlan='2026-11-13T18:00:00+03:00';remote.auditors=['112'];remote.priority='2';
+ await syncLinkedTask(reader,id,false);
+ const local=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];assert.equal(Number(local.price),1250.5);assert.equal(local.priority,'high');assert.equal(local.planned_start,'2026-11-13T06:00:00.000Z');
+ const observer=(await db.pool.query('SELECT user_id FROM bitrix_user_links WHERE external_id=112')).rows[0].user_id;
+ assert.equal((await request(observer,`/tasks/${id}`)).status,200);
+ assert.equal((await request(observer,`/tasks/${id}/bitrix-content`,{kind:'fields',fields:{TITLE:'Unauthorized'},expectedRevision:1})).status,403);
+ assert.equal((await request('admin',`/tasks/${id}`,{...input,price:1300,plannedStart:local.planned_start,plannedEnd:local.planned_end,expectedVersion:local.version,reason:'Mapped price change'},'PUT')).status,200);
+ await syncLinkedTask(reader,id,true);assert.equal(Number(remote.ufPriceFixture),1300);
+ await db.pool.query("DELETE FROM bitrix_field_map WHERE local_key='price'");
+});
+
+test('IM events require an exclusive account and acknowledge only a committed local cursor',async()=>{
+ const {processBitrixImEvents}=await import('../server/bitrix-im-events.js');
+ const saved=process.env.BITRIX_IM_EVENTS_EXCLUSIVE;delete process.env.BITRIX_IM_EVENTS_EXCLUSIVE;
+ let calls=0;
+ const off:import('../server/bitrix-rest.js').BitrixRequest=async()=>{calls++;throw new Error('Must stay off');};
+ assert.equal(await processBitrixImEvents(off),false);assert.equal(calls,0);
+ process.env.BITRIX_IM_EVENTS_EXCLUSIVE='true';
+ await db.pool.query("UPDATE bitrix_task_snapshots SET raw_snapshot=raw_snapshot||'{\"chatId\":\"99\"}'::jsonb WHERE external_id=889100");
+ let page=0;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='im.v2.Event.subscribe')return true as T;
+  assert.equal(method,'im.v2.Event.get');page++;
+  if(page===1){assert.equal(params.offset,0);return {events:[{eventId:100,type:'ONIMV2MESSAGEUPDATE',data:{chat:{id:99},message:{id:777,text:'Not copied from event'}}},{eventId:101,type:'ONIMV2MESSAGEADD',data:{chat:{id:99999},message:{id:999,text:'Private chat must not be mirrored'}}}],nextOffset:102,hasMore:true} as T;}
+  assert.equal(params.offset,102);return {events:[{eventId:102,type:'ONIMV2MESSAGEDELETE',data:{chat:{id:99},messageId:777}}],nextOffset:103,hasMore:false} as T;
+ };
+ try{
+  assert.equal(await processBitrixImEvents(transport),true);
+  assert.equal(Number((await db.pool.query('SELECT next_offset FROM bitrix_im_state')).rows[0].next_offset),102);
+  assert.equal((await db.pool.query('SELECT count(*)::int n FROM bitrix_comment_events WHERE task_external_id=99999')).rows[0].n,0);
+  const before=(await db.pool.query("SELECT revision::text FROM bitrix_comment_events WHERE task_external_id=889100 AND external_id=777 AND transport='chat'")).rows[0].revision;
+  await db.pool.query(`CREATE FUNCTION reject_im_cursor() RETURNS trigger LANGUAGE plpgsql AS $$ BEGIN IF NEW.next_offset<>OLD.next_offset THEN RAISE EXCEPTION 'fixture cursor failure'; END IF; RETURN NEW; END $$;
+   CREATE TRIGGER reject_im_cursor BEFORE UPDATE ON bitrix_im_state FOR EACH ROW EXECUTE FUNCTION reject_im_cursor()`);
+  await processBitrixImEvents(transport);
+  assert.equal(Number((await db.pool.query('SELECT next_offset FROM bitrix_im_state')).rows[0].next_offset),102);
+  assert.equal((await db.pool.query("SELECT revision::text FROM bitrix_comment_events WHERE task_external_id=889100 AND external_id=777 AND transport='chat'")).rows[0].revision,before);
+ }finally{
+  await db.pool.query('DROP TRIGGER IF EXISTS reject_im_cursor ON bitrix_im_state; DROP FUNCTION IF EXISTS reject_im_cursor()');
+  if(saved===undefined)delete process.env.BITRIX_IM_EVENTS_EXCLUSIVE;else process.env.BITRIX_IM_EVENTS_EXCLUSIVE=saved;
+ }
+});
+
+test('File download rejects a signed URL outside the trusted portal without forwarding credentials',async()=>{
+ const {mkdtemp,writeFile,rm}=await import('node:fs/promises');const {tmpdir}=await import('node:os');const {join}=await import('node:path');
+ const folder=await mkdtemp(join(tmpdir(),'file-download-'));await writeFile(join(folder,'hook'),'https://portal.example/rest/1/fixture/',{mode:0o600});
+ const saved={fetch:globalThis.fetch,portal:process.env.BITRIX_PORTAL,file:process.env.BITRIX_WEBHOOK_FILE};
+ process.env.BITRIX_PORTAL='portal.example';process.env.BITRIX_WEBHOOK_FILE=join(folder,'hook');
+ const taskId=(await db.pool.query('SELECT task_id FROM bitrix_task_links WHERE external_id=889100')).rows[0].task_id;
+ await db.pool.query("UPDATE bitrix_rest_gate SET next_at='epoch'");
+ let untrusted=0;
+ globalThis.fetch=async(input,options)=>{
+  const url=new URL(String(input));if(url.hostname==='127.0.0.1')return saved.fetch(input,options);
+  if(url.hostname!=='portal.example'){untrusted++;throw new Error('Credentials must never reach this host');}
+  if(url.pathname.endsWith('tasks.task.get'))return Response.json({result:{task:{id:'889100',title:'Discussion fixture',description:'Task',deadline:null,ufTaskWebdavFiles:['501']}}});
+  if(url.pathname.endsWith('disk.attachedObject.get'))return Response.json({result:{ID:501,OBJECT_ID:500}});
+  assert(url.pathname.endsWith('disk.file.get'));return Response.json({result:{ID:500,NAME:'fixture.txt',DOWNLOAD_URL:'https://untrusted.example/file?token=private'}});
+ };
+ try{
+  const result=await fetch(`${base}/api/tasks/${taskId}/bitrix-files/500`,{headers:{Cookie:cookies.get('anna')!}});assert.equal(result.status,502);assert.equal(untrusted,0);
+  assert(!(await result.text()).includes('token=private'));
+ }finally{
+  globalThis.fetch=saved.fetch;
+  for(const [key,value] of Object.entries({BITRIX_PORTAL:saved.portal,BITRIX_WEBHOOK_FILE:saved.file}))if(value===undefined)delete process.env[key];else process.env[key]=value;
+  await rm(folder,{recursive:true,force:true});
+ }
+});
+
+test('Discussion catchup resumes from the newest saved message instead of dropping a burst after an outage',async()=>{
+ const {refreshDiscussion}=await import('../server/bitrix-content.js');
+ const taskId=(await db.pool.query('SELECT task_id FROM bitrix_task_links WHERE external_id=889100')).rows[0].task_id;
+ await db.pool.query('INSERT INTO bitrix_content_state(task_id,chat_cursor,chat_latest) VALUES($1,0,100) ON CONFLICT(task_id) DO UPDATE SET chat_cursor=0,chat_latest=100',[taskId]);
+ const starts:string[]=[];
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.get')return {task:{id:'889100',title:'Discussion fixture',description:'Task',deadline:null,chatId:'99'}} as T;
+  assert.equal(method,'im.dialog.messages.get');
+  if(params.FIRST_ID){starts.push(params.FIRST_ID);const first=Number(params.FIRST_ID);return {chat_id:99,messages:[first+1,first+2].map(id=>({id,author_id:111,date:'2026-11-12T10:00:00+03:00',text:'Recovered '+id,params:{}}))} as T;}
+  return {chat_id:99,messages:[]} as T;
+ };
+ await refreshDiscussion(transport,taskId,'889100','0','100');
+ const latest=String((await db.pool.query('SELECT chat_latest FROM bitrix_content_state WHERE task_id=$1',[taskId])).rows[0].chat_latest);assert.equal(latest,'102');
+ await refreshDiscussion(transport,taskId,'889100','0',latest);assert.deepEqual(starts,['100','102']);
+ assert.equal(String((await db.pool.query('SELECT chat_latest FROM bitrix_content_state WHERE task_id=$1',[taskId])).rows[0].chat_latest),'104');
+});
+
+test('Local custom fields use real portal metadata in both directions and block an unmapped field',async()=>{
+ const {processBitrixCreation}=await import('../server/bitrix-create.js');const {syncLinkedTask}=await import('../server/bitrix-sync.js');
+ await db.pool.query("INSERT INTO bitrix_metadata(id,fields) VALUES(1,$1) ON CONFLICT(id) DO UPDATE SET fields=excluded.fields",[JSON.stringify({UF_CUSTOM_FIXTURE:{title:'Номер заказа',type:'string'},UF_CONFIRM_FIXTURE:{title:'Подтверждено',type:'boolean'}})]);
+ const input={title:'Custom field fixture',description:'Custom',price:0,assigneeId:'anna',deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null,customFields:[{label:'Номер заказа',value:'A-1'},{label:'Подтверждено',value:'Да'}]};
+ const id=(await request('admin','/tasks',input)).data.id;
+ const remote={id:'889300',title:input.title,description:input.description,deadline:null,status:'2',responsibleId:'111',createdBy:'113',priority:'1',ufCustomFixture:'A-1',ufConfirmFixture:'1'};
+ let adds=0,writes=0;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.add'){adds++;assert.equal(params.fields.UF_CUSTOM_FIXTURE,'A-1');assert.equal(params.fields.UF_CONFIRM_FIXTURE,'1');return {task:{id:remote.id}} as T;}
+  if(method==='tasks.task.update'){writes++;assert.deepEqual(params.fields,{UF_CUSTOM_FIXTURE:'A-2',UF_CONFIRM_FIXTURE:'0'});remote.ufCustomFixture=params.fields.UF_CUSTOM_FIXTURE;remote.ufConfirmFixture=params.fields.UF_CONFIRM_FIXTURE;return true as T;}
+  assert.equal(method,'tasks.task.get');return {task:{...remote}} as T;
+ };
+ const saved={write:process.env.BITRIX_WRITE_ENABLED,create:process.env.BITRIX_CREATE_ENABLED};process.env.BITRIX_WRITE_ENABLED='true';process.env.BITRIX_CREATE_ENABLED='true';
+ try{
+  assert.equal(await processBitrixCreation(transport),true);assert.equal(adds,1);
+  assert.equal((await db.pool.query('SELECT external_id::text FROM bitrix_task_links WHERE task_id=$1',[id])).rows[0].external_id,remote.id);
+  let current=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+  assert.equal((await request('admin',`/tasks/${id}`,{...input,customFields:[{label:'Номер заказа',value:'A-2'},{label:'Подтверждено',value:'Нет'}],expectedVersion:current.version,reason:'Update mapped custom field'},'PUT')).status,200);
+  await syncLinkedTask(transport,id,true);assert.equal(writes,1);
+  remote.ufCustomFixture='A-3';await syncLinkedTask(transport,id,false);
+  current=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];assert.deepEqual(current.custom_fields,[{label:'Номер заказа',value:'A-3'},{label:'Подтверждено',value:'Нет'}]);
+  assert.equal((await request('admin',`/tasks/${id}`,{...input,customFields:[{label:'Нет такого поля на портале',value:'Blocked'}],expectedVersion:current.version,reason:'Unknown portal field fixture'},'PUT')).status,200);
+  await assert.rejects(()=>syncLinkedTask(transport,id,true),/Нет однозначного поля/);assert.equal(writes,1);
+  assert.equal((await db.pool.query("SELECT state FROM task_sync_queue WHERE task_id=$1 ORDER BY task_version DESC LIMIT 1",[id])).rows[0].state,'pending');
+ }finally{for(const [key,value] of Object.entries({BITRIX_WRITE_ENABLED:saved.write,BITRIX_CREATE_ENABLED:saved.create}))if(value===undefined)delete process.env[key];else process.env[key]=value;}
+});
+
+test('Metadata-aware field verification accepts numeric formatting without repeating a confirmed write',async()=>{
+ const {saveBitrixContent}=await import('../server/bitrix-content.js');const {processBitrixContentOperation}=await import('../server/bitrix-operations.js');
+ const taskId=(await db.pool.query('SELECT task_id FROM bitrix_task_links WHERE external_id=889100')).rows[0].task_id;
+ await db.pool.query("UPDATE bitrix_metadata SET fields=fields||$1::jsonb WHERE id=1",[JSON.stringify({UF_AMOUNT_FIXTURE:{type:'double',title:'Числовое поле'}})]);
+ await saveBitrixContent(taskId,'fields',{ufAmountFixture:'1.00'});
+ const revision=(await db.pool.query("SELECT revision FROM bitrix_task_content WHERE task_id=$1 AND kind='fields'",[taskId])).rows[0].revision;
+ assert.equal((await request('admin',`/tasks/${taskId}/bitrix-content`,{kind:'fields',fields:{UF_AMOUNT_FIXTURE:'2'},expectedRevision:revision})).status,202);
+ let value='1.00',writes=0;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.update'){writes++;value=Number(params.fields.UF_AMOUNT_FIXTURE).toFixed(2);return true as T;}
+  assert.equal(method,'tasks.task.get');return {task:{id:'889100',title:'Discussion fixture',description:'Task',deadline:null,ufAmountFixture:value}} as T;
+ };
+ const saved=process.env.BITRIX_WRITE_ENABLED;process.env.BITRIX_WRITE_ENABLED='true';
+ try{await processBitrixContentOperation(transport);assert.equal(writes,1);assert.equal(await processBitrixContentOperation(transport),false);}finally{if(saved===undefined)delete process.env.BITRIX_WRITE_ENABLED;else process.env.BITRIX_WRITE_ENABLED=saved;}
+});
+
+test('Periodic task reconciliation saves the page cursor and does not scan unchanged tasks every loop',async()=>{
+ const {processBitrixReconcile}=await import('../server/bitrix-reconcile.js');
+ const saved={reconcile:process.env.BITRIX_RECONCILE_ENABLED,import:process.env.BITRIX_IMPORT_NEW_ENABLED};process.env.BITRIX_RECONCILE_ENABLED='true';process.env.BITRIX_IMPORT_NEW_ENABLED='false';
+ let pages=0;
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  assert.equal(method,'tasks.task.list');assert(params.filter['>=CHANGED_DATE']);pages++;
+  if(pages===1){assert.equal(params.filter['>ID'],'0');return {tasks:[{id:'889100',title:'Discussion fixture',description:'Task',deadline:null,status:'2',responsibleId:'111',createdBy:'113'}]} as T;}
+  assert.equal(params.filter['>ID'],'889100');return {tasks:[]} as T;
+ };
+ try{
+  await db.pool.query("UPDATE bitrix_reconcile_state SET next_at=now()-interval '1 second'");
+  assert.equal(await processBitrixReconcile(transport),true);
+  assert.equal((await db.pool.query('SELECT cursor FROM bitrix_reconcile_state')).rows[0].cursor,'889100');
+  await db.pool.query("UPDATE bitrix_reconcile_state SET next_at=now()-interval '1 second'");
+  assert.equal(await processBitrixReconcile(transport),true);
+  assert.equal((await db.pool.query('SELECT cursor FROM bitrix_reconcile_state')).rows[0].cursor,'0');
+  assert.equal(await processBitrixReconcile(transport),false);assert.equal(pages,2);
+ }finally{for(const [key,value] of Object.entries({BITRIX_RECONCILE_ENABLED:saved.reconcile,BITRIX_IMPORT_NEW_ENABLED:saved.import}))if(value===undefined)delete process.env[key];else process.env[key]=value;}
+});
+
+test('Bitrix durable write markers do not deadlock when panel requests fill the main database pool',async()=>{
+ const {linkTask,syncLinkedTask}=await import('../server/bitrix-sync.js');
+ const input={title:'Pool saturation fixture',description:'Original',price:0,assigneeId:'anna',deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null};
+ const id=(await request('admin','/tasks',input)).data.id;
+ const remote={id:'889400',title:input.title,description:input.description,deadline:null,status:'2',responsibleId:'111',createdBy:'113'};
+ let readers=0,releaseTimer:ReturnType<typeof setTimeout>|undefined,timedOut=false;
+ const held:pg.PoolClient[]=[];
+ const release=()=>{for(const client of held.splice(0))client.release();};
+ const transport:import('../server/bitrix-rest.js').BitrixRequest=async <T>(method:import('../server/bitrix-rest.js').BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.get'){
+   readers++;
+   if(readers===3){held.push(...await Promise.all([db.pool.connect(),db.pool.connect(),db.pool.connect()]));releaseTimer=setTimeout(()=>{timedOut=true;release();},2000);}
+   return {task:{...remote}} as T;
+  }
+  assert.equal(method,'tasks.task.update');assert.equal(timedOut,false);remote.description=params.fields.DESCRIPTION;release();if(releaseTimer)clearTimeout(releaseTimer);return true as T;
+ };
+ try{
+  await linkTask(transport,id,remote.id);
+  assert.equal((await request('admin',`/tasks/${id}`,{...input,description:'Concurrent-safe write',expectedVersion:1,reason:'Exercise a saturated DB pool'},'PUT')).status,200);
+  await syncLinkedTask(transport,id,true);assert.equal(timedOut,false);assert.equal(remote.description,'Concurrent-safe write');
+ }finally{if(releaseTimer)clearTimeout(releaseTimer);release();}
+});
+
+test('Deleted Bitrix tasks leave live queues and retain their history; a verified restoration reopens them',async()=>{
+ const {markBitrixTaskDeleted}=await import('../server/bitrix-deleted.js');const {syncLinkedTask}=await import('../server/bitrix-sync.js');
+ const taskId=(await db.pool.query('SELECT task_id FROM bitrix_task_links WHERE external_id=889400')).rows[0].task_id;
+ await markBitrixTaskDeleted(taskId);await markBitrixTaskDeleted(taskId);
+ assert.equal((await request('anna',`/tasks/${taskId}`)).status,404);
+ assert.equal((await request('anna','/integrations/bitrix/deleted')).status,403);
+ const archived=await request('admin',`/integrations/bitrix/deleted/${taskId}`);assert.equal(archived.status,200);assert(archived.data.task.bitrix_deleted_at);
+ assert.equal(archived.data.events.filter((e:any)=>e.kind==='bitrix_task_deleted').length,1);
+ const reader:import('../server/bitrix-rest.js').BitrixRequest=async <T>()=>({task:{id:'889400',title:'Pool saturation fixture',description:'Concurrent-safe write',deadline:null,status:'2',responsibleId:'111',createdBy:'113'}} as T);
+ await syncLinkedTask(reader,taskId,false);assert.equal((await request('anna',`/tasks/${taskId}`)).status,200);
+ assert.equal((await db.pool.query('SELECT bitrix_deleted_at FROM tasks WHERE id=$1',[taskId])).rows[0].bitrix_deleted_at,null);
+ const {processBitrixEvent}=await import('../server/bitrix-events.js');
+ await db.pool.query("INSERT INTO bitrix_event_queue(external_id,event,available_at) VALUES(889400,'ONTASKDELETE',now()-interval '1 second')");
+ await processBitrixEvent(reader);assert.equal((await request('anna',`/tasks/${taskId}`)).status,200);
+});
+
+test('Administrator edits employee positions and roles with audit, conflict protection and last-admin protection',async()=>{
+ const id='profile-fixture',child='profile-child';
+ await db.pool.query("INSERT INTO users(id,name,role,branch_id,position) VALUES($1,'Тестовый сотрудник','employee','Тестовый филиал','Специалист'),($2,'Тестовый подчинённый','employee','Тестовый филиал','Менеджер')",[id,child]);
+ const input={name:'Тестовый сотрудник',position:'Руководитель отдела',role:'admin',branchId:'Тестовый филиал',expectedVersion:1,reason:'Назначение в изолированном тесте'};
+ assert.equal((await request('anna',`/system/access/${id}`,input,'PATCH')).status,403);
+ assert.equal((await request('director',`/system/access/${id}`,input,'PATCH')).status,403);
+ const original=(await db.pool.query("SELECT * FROM users WHERE id='admin'")).rows[0];
+ assert.equal((await request('admin','/system/access/admin',{name:original.name,position:original.position,role:'employee',branchId:original.branch_id,expectedVersion:original.version},'PATCH')).status,409);
+ const login=await fetch(base+'/api/demo/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:id})});assert.equal(login.status,200);cookies.set(id,login.headers.get('set-cookie')!.split(';')[0]);
+ assert.equal((await request('admin',`/system/access/${id}`,input,'PATCH')).status,200);
+ const directory=(await request('admin','/system/access')).data;
+ assert.equal(directory.find((p:any)=>p.id===id).position,input.position);assert.equal(directory.find((p:any)=>p.id===id).role,'admin');
+ assert.equal((await request(id,'/system/access')).status,200);
+ assert.equal((await request('admin',`/system/access/${id}`,{...input,position:'Устаревшая правка'},'PATCH')).status,409);
+ assert.equal((await request('admin',`/org/reporting/${child}`,{managerId:id},'PUT')).status,200);
+ const substitution=(await request('admin','/org/substitutions',{managerId:id,deputyId:'director',startsAt:new Date(Date.now()-1000).toISOString(),endsAt:new Date(Date.now()+3600000).toISOString()}));assert.equal(substitution.status,201);
+ const taskId=(await request('admin','/tasks',{title:'Profile permission fixture',description:'Synthetic',price:0,assigneeId:child,deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null})).data.id;
+ await db.pool.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,current_step,route,route_version) VALUES($1,$2,'admin','completion','Synthetic reason','Synthetic plan',1,'pending',0,$3,(SELECT max(version) FROM rule_versions))",[randomBytes(16).toString('hex'),taskId,JSON.stringify([{userId:id,label:'Тестовый согласующий'}])]);
+ assert.equal((await request('admin',`/system/access/${id}`,{...input,role:'employee',expectedVersion:2},'PATCH')).status,200);
+ assert.equal((await request(id,'/system/access')).status,403);
+ assert.equal((await db.pool.query('SELECT count(*)::int n FROM org_reporting WHERE manager_id=$1',[id])).rows[0].n,0);
+ assert((await db.pool.query('SELECT revoked_at FROM org_substitutions WHERE id=$1',[substitution.data.id])).rows[0].revoked_at);
+ assert.equal((await db.pool.query('SELECT state FROM approvals WHERE task_id=$1',[taskId])).rows[0].state,'stale');
+ const audit=(await db.pool.query('SELECT * FROM employee_profile_changes WHERE user_id=$1 ORDER BY created_at',[id])).rows;
+ assert.equal(audit.length,2);assert.equal(audit[0].before_snapshot.position,'Специалист');assert.equal(audit[0].after_snapshot.position,input.position);
+ await assert.rejects(()=>db.pool.query('DELETE FROM employee_profile_changes WHERE user_id=$1',[id]));
+});
+
+test('Creators and administrators edit task data during review and after completion while deadlines still require approval',async()=>{
+ const input={title:'Creator rights fixture',description:'Original',price:500,assigneeId:'anna',deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null};
+ const id=(await request('anna','/tasks',input)).data.id;
+ assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Тестовый результат работы',expectedVersion:1})).status,200);
+ let current=(await request('anna',`/tasks/${id}`)).data.task;
+ const reviewerInput={...input,description:'Updated by creator',price:600,assigneeId:'ivan',expectedVersion:current.version,reason:'Уточнение данных постановщиком'};
+ assert.equal((await request('anna',`/tasks/${id}`,reviewerInput,'PUT')).status,200);
+ assert.equal((await request('anna',`/tasks/${id}`,reviewerInput,'PUT')).status,409);
+ current=(await request('anna',`/tasks/${id}`)).data.task;assert.equal(current.status,'review');assert.equal(current.assignee_id,'ivan');
+ assert.equal((await request('ivan',`/tasks/${id}`,{...reviewerInput,expectedVersion:current.version},'PUT')).status,403);
+ assert.equal((await request('admin',`/tasks/${id}/review`,{action:'accept',comment:'',expectedVersion:current.version})).status,200);
+ current=(await request('anna',`/tasks/${id}`)).data.task;const completion=current.completed_at;
+ assert.equal((await request('anna',`/tasks/${id}`,{...reviewerInput,description:'Corrected after acceptance',expectedVersion:current.version},'PUT')).status,200);
+ current=(await request('anna',`/tasks/${id}`)).data.task;assert.equal(current.status,'completed');assert.equal(current.completed_at,completion);
+ assert.equal((await request('director',`/tasks/${id}`,{...reviewerInput,expectedVersion:current.version},'PUT')).status,403);
+ assert.equal((await request('admin',`/tasks/${id}`,{...reviewerInput,title:'Administrator correction',expectedVersion:current.version},'PUT')).status,200);
+ current=(await request('anna',`/tasks/${id}`)).data.task;assert.equal(current.status,'completed');assert.equal(current.completed_at,completion);
+ assert.equal((await request('anna',`/tasks/${id}`,{...reviewerInput,deadline:new Date(Date.now()+86400000).toISOString(),expectedVersion:current.version},'PUT')).status,400);
+ assert.equal((await request('anna',`/tasks/${id}`)).data.task.deadline,null);
+ assert.equal((await request('anna',`/tasks/${id}/assignees`)).status,200);
+ const {botView}=await import('../server/bot.js');const actor=(await db.pool.query("SELECT * FROM users WHERE id='anna'")).rows[0];
+ const menu=await botView(actor,'preview',{op:'edit',id});assert(menu.text.includes('Редактирование #'+id));assert(!menu.buttons.flat().some(button=>button.text.includes('Крайний срок')));
+ const events=(await request('admin',`/tasks/${id}`)).data.events.filter((e:any)=>e.kind==='task_edited');assert.equal(events.length,3);
 });

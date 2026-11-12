@@ -59,6 +59,7 @@ export function TaskEditor({task,users,user,busy,save,close,showPlanning,onCondi
  }}>
   <div className="panel-heading"><h2>{task?'Параметры задачи':'Новая локальная задача'}</h2><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
   {error&&<p className="alert error" role="alert">{error}</p>}
+  {task&&task.status!=='active'&&<p className="muted">Редактирование параметров сохраняет текущий статус и историю задачи. Крайний срок меняется через согласование.</p>}
   {!task&&<fieldset className="task-mode"><legend>Когда создавать</legend><div>
    {([{id:'once',label:'Один раз',detail:'Создать сейчас'},{id:'repeat',label:'По расписанию',detail:'Повторять по календарю'},
     ...(onConditional?[{id:'conditional',label:'По условию',detail:'По событию в процессе'}]:[])]).map(item=><label key={item.id}>
