@@ -177,7 +177,7 @@ const botButton=(view:any,label:string)=>{const b=view.buttons.flat().find((b:an
 test('bot result → return → resubmission → acceptance shares panel history and ignores repeated confirmation',async()=>{
  const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,director=users.find(u=>u.id==='director')!;
  const id=(await request('admin','/tasks',taskInput)).data.id;
- async function enter(user:typeof anna,label:string,text:string){let v=await bot.botView(user,'preview',{op:'task',id});v=await bot.botClick(user,'preview',botButton(v,label));v=await bot.botText(user,'preview',text,crypto.randomUUID());return botButton(v,'Подтвердить и отправить')}
+ async function enter(user:typeof anna,label:string,text:string){let v=await bot.botView(user,'preview',{op:'task',id});if(['Принять результат','Вернуть с замечаниями'].includes(label))v=await bot.botClick(user,'preview',botButton(v,'Проверить результат'));v=await bot.botClick(user,'preview',botButton(v,label));v=await bot.botText(user,'preview',text,crypto.randomUUID());return botButton(v,'Подтвердить и отправить')}
  const confirmation=await enter(anna,'Сдать результат','Результат готов: расчёт и ссылка на документы');
  const receipts=await Promise.all([bot.botClick(anna,'preview',confirmation),bot.botClick(anna,'preview',confirmation)]);assert.deepEqual(receipts[0],receipts[1]);
  assert.equal((await request('anna',`/tasks/${id}`)).data.submissions.length,1);
@@ -283,7 +283,7 @@ test('bot supports optional positive review comment and applies acceptance only 
  const {botView,botClick,botText}=await import('../server/bot.js');const director=users.find(u=>u.id==='director')!;
  const id=(await request('admin','/tasks',taskInput)).data.id;
  assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Результат работы передан',expectedVersion:1})).status,200);
- const view=await botView(director,'preview',{op:'task',id});assert(view.buttons.flat().some(b=>b.text.includes('без комментария')));
+ const card=await botView(director,'preview',{op:'task',id}),view=await botClick(director,'preview',botButton(card,'Проверить результат'));assert(view.buttons.flat().some(b=>b.text.includes('без комментария')));
  await botClick(director,'preview',botButton(view,'Принять результат'));
  await assert.rejects(()=>botText(director,'preview','да',crypto.randomUUID()),/от 5/);
  const confirm=await botText(director,'preview','Результат проверен и принят',crypto.randomUUID());
@@ -552,7 +552,7 @@ test('management observation is personal, confirmed, role protected and does not
 test('bot discussion shares task comments and undo requires a separate confirmation',async()=>{
  const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!;
  const id=(await request('admin','/tasks',taskInput)).data.id;
- let view=await bot.botView(anna,'preview',{op:'task',id});view=await bot.botClick(anna,'preview',botButton(view,'Написать комментарий'));
+ let view=await bot.botView(anna,'preview',{op:'discussion',id});view=await bot.botClick(anna,'preview',botButton(view,'Написать комментарий'));
  view=await bot.botText(anna,'preview','Комментарий из рабочего бота по задаче',crypto.randomUUID());view=await bot.botClick(anna,'preview',botButton(view,'Подтвердить и отправить'));
  let detail=(await request('anna',`/tasks/${id}`)).data;assert.equal(detail.comments.length,1);
  const prepare=await bot.botClick(anna,'preview',botButton(view,'Отменить последнее действие'));
@@ -582,7 +582,7 @@ test('playful nudge is opt-in, scoped to bound recipients, confirmed and rate li
 test('positive bot review may omit comment but still requires confirmation',async()=>{
  const bot=await import('../server/bot.js'),director=users.find(u=>u.id==='director')!;
  const id=(await request('admin','/tasks',taskInput)).data.id;await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Готовая работа передана',expectedVersion:1});
- const view=await bot.botView(director,'preview',{op:'task',id}),prompt=await bot.botClick(director,'preview',botButton(view,'Принять без комментария'));
+ const card=await bot.botView(director,'preview',{op:'task',id}),view=await bot.botClick(director,'preview',botButton(card,'Проверить результат')),prompt=await bot.botClick(director,'preview',botButton(view,'Принять без комментария'));
  assert.equal((await request('director',`/tasks/${id}`)).data.task.status,'review');await bot.botClick(director,'preview',botButton(prompt,'Да, принять результат'));
  assert.equal((await request('director',`/tasks/${id}`)).data.submissions[0].remark,null);
 });
@@ -877,7 +877,8 @@ test('delegation creates a priced-zero child, enforces hierarchy and reuses the 
  const {botView,botClick}=await import('../server/bot.js');
  const actor=users.find(u=>u.id==='lead-msk')!,channel='test-delegation';
  const card=await botView(actor,channel,{op:'task',id});
- const list=await botClick(actor,channel,botButton(card,'Делегировать задачу'));
+ const more=await botClick(actor,channel,botButton(card,'Ещё действия'));
+ const list=await botClick(actor,channel,botButton(more,'Делегировать задачу'));
  const preview=await botClick(actor,channel,botButton(list,users.find(u=>u.id==='ivan')!.name));
  const token=botButton(preview,'Создать поручение');
  const confirmation=await botClick(actor,channel,token);
@@ -1488,4 +1489,48 @@ test('Creators and administrators edit task data during review and after complet
  const {botView}=await import('../server/bot.js');const actor=(await db.pool.query("SELECT * FROM users WHERE id='anna'")).rows[0];
  const menu=await botView(actor,'preview',{op:'edit',id});assert(menu.text.includes('Редактирование #'+id));assert(!menu.buttons.flat().some(button=>button.text.includes('Крайний срок')));
  const events=(await request('admin',`/tasks/${id}`)).data.events.filter((e:any)=>e.kind==='task_edited');assert.equal(events.length,3);
+});
+
+test('compact bot lists retain full searchable titles, all description pages and the original list position',async()=>{
+ const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,channel='ux-list';
+ const marker='UXNAV',description=('Большое тестовое описание. Проверить все условия поставки.\n\n').repeat(100)+'КОНЕЦ_ОПИСАНИЯ';
+ for(let i=0;i<7;i++)assert.equal((await request('admin','/tasks',{...taskInput,title:`РЗМ* Необходимо подготовить материалы для проверки ${'согласованных условий '.repeat(8)} ${marker} №${9100+i}`,description})).status,201);
+ let list=await bot.botText(anna,channel,marker,crypto.randomUUID());assert.equal(list.format,'HTML');
+ assert.equal(list.buttons.flat().filter(b=>/^\d\. Открыть/.test(b.text)).length,5);assert(list.text.length<1700);
+ list=await bot.botClick(anna,channel,botButton(list,'Следующие →'));assert.equal(list.buttons.flat().filter(b=>/^\d\. Открыть/.test(b.text)).length,2);
+ const originalText=list.text,open=list.buttons.flat().find(b=>/^1\. Открыть/.test(b.text))!;
+ let card=await bot.botClick(anna,channel,open.token);assert(card.text.length<700);assert(!card.text.includes('Большое тестовое описание'));assert(card.buttons.length<=6);
+ assert.equal(card.buttons[0][0].text,'Сдать результат');assert(!card.buttons.flat().some(b=>b.text==='Редактировать задачу'));
+ let page=await bot.botClick(anna,channel,botButton(card,'Описание')),all=page.text;
+ for(let i=0;i<10&&page.buttons.flat().some(b=>b.text==='Продолжение →');i++){page=await bot.botClick(anna,channel,botButton(page,'Продолжение →'));all+=page.text;}
+ assert(all.includes(marker));assert(all.includes('КОНЕЦ_ОПИСАНИЯ'));assert(all.includes('Постановщик:'));
+ card=await bot.botClick(anna,channel,botButton(page,'← К задаче'));list=await bot.botClick(anna,channel,botButton(card,'← К списку'));assert.equal(list.text,originalText);
+ const inputId=crypto.randomUUID();await bot.clearBotDraft(anna,channel);
+ const first=await bot.botText(anna,channel,marker,inputId);assert.deepEqual(await bot.botText(anna,channel,marker,inputId),first);
+ const menu=await bot.botView(anna,channel);assert(menu.text.length<400);assert.equal(menu.buttons.length,4);
+ const filters=await bot.botClick(anna,channel,botButton(menu,'Мои задачи'));assert(filters.buttons.flat().some(b=>b.text.startsWith('На приёмке')));
+});
+
+test('long bot discussions expose every part and the next action is separate from deadline approval details',async()=>{
+ const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,director=users.find(u=>u.id==='director')!,channel='ux-discussion';
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ await service.addComment(anna,id,'Длинный тестовый комментарий. '.repeat(220)+'КОНЕЦ_КОММЕНТАРИЯ');
+ let page=await bot.botView(anna,channel,{op:'discussion',id}),content=page.text;
+ while(page.buttons.flat().some(b=>b.text==='Читать дальше →')){page=await bot.botClick(anna,channel,botButton(page,'Читать дальше →'));content+=page.text;}
+ assert(content.includes('КОНЕЦ_КОММЕНТАРИЯ'));
+ const proposal=new Date(Date.now()+10*86400000).toISOString(),approvalId=crypto.randomUUID();
+ await db.pool.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,proposed_deadline,task_version,state,current_step,route,route_version) VALUES($1,$2,'anna','deadline','Тестовая причина переноса','Тестовый план работ',$3,1,'pending',0,$4,(SELECT max(version) FROM rule_versions))",[approvalId,id,proposal,JSON.stringify([{userId:'director',label:'Тестовый директор'}])]);
+ const card=await bot.botView(director,channel,{op:'task',id});assert(!card.text.includes('Тестовая причина переноса'));assert(!card.buttons.flat().some(b=>b.text==='Согласовать'));
+ const requestPage=await bot.botClick(director,channel,botButton(card,'Рассмотреть запрос'));assert(requestPage.text.includes('Тестовая причина переноса'));assert(requestPage.text.includes('Предложенный срок:'));assert(requestPage.buttons.flat().some(b=>b.text==='Согласовать'));
+ const own=await bot.botView(anna,channel,{op:'task_approval',id});assert(!own.buttons.flat().some(b=>b.text==='Согласовать'));
+ assert.equal((await request('anna',`/tasks/${id}`)).data.task.deadline,taskInput.deadline);
+});
+
+test('bot search works concurrently without holding the task connection pool and preserves task visibility',async()=>{
+ const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!;
+ const screens=await Promise.all(Array.from({length:4},(_,i)=>bot.botText(anna,'ux-parallel-'+i,'UXNAV',crypto.randomUUID())));
+ for(const screen of screens)assert(screen.text.includes('UXNAV'));
+ const hidden=await bot.botText(anna,'ux-private','2403',crypto.randomUUID());assert(!hidden.text.includes('#2403'));
+ const search=await bot.botView(anna,'ux-prompt',{op:'search_prompt'});assert(search.text.includes('полном названию')||search.text.includes('полному названию'));
+ const found=await bot.botText(anna,'ux-prompt','UXNAV',crypto.randomUUID());assert(found.text.includes('UXNAV'));
 });

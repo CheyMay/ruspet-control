@@ -1,0 +1,78 @@
+import {button,htmlScreen,type Payload,type ListOrigin} from './bot-ui.js';
+import {compactTaskTitle} from '../shared/task-title.js';
+import {botDue,sortBotTasks} from './bot-presentation.js';
+import {escapeHtml as h} from '../shared/report-links.js';
+import {actionItems} from '../shared/actions.js';
+import {taskQueue} from '../shared/queues.js';
+import {summarize} from '../shared/analytics.js';
+import {bootstrap} from './service.js';
+import {assert} from './domain.js';
+import {lastUndo} from './undo.js';
+import {pool} from './db.js';
+import type {User,Task} from '../shared/types.js';
+
+async function taskList(u:User,ch:string,p:Payload,items:{task:Task;hint?:string}[],label:string,now:Date,name:(id:string)=>string){
+ const pages=Math.max(1,Math.ceil(items.length/5)),page=Math.max(0,Math.min(p.page||0,pages-1)),slice=items.slice(page*5,page*5+5);
+ const lines=slice.map(({task:t,hint},i)=>`<b>${i+1}. ${h(compactTaskTitle(t.title,68))}</b>\n#${h(t.id)} · ${h(hint||botDue(t,now))}${u.role!=='employee'?' · '+h(name(t.assignee_id)):''}`);
+ const list:ListOrigin={op:p.op,page,filter:p.filter,query:p.query};
+ const choices=slice.map(({task:t},i)=>button(`${i+1}. Открыть`,'task',{id:t.id,list}));
+ return htmlScreen(u,ch,`<b>${h(label)} · ${items.length}</b>\n\n${lines.join('\n\n')||'Здесь пока нет задач.'}${pages>1?`\n\nСтраница ${page+1} из ${pages}`:''}`,[
+  ...Array.from({length:Math.ceil(choices.length/2)},(_,i)=>choices.slice(i*2,i*2+2)),
+  [...(page?[button('← Предыдущие',p.op,{...list,page:page-1})]:[]),...(page+1<pages?[button('Следующие →',p.op,{...list,page:page+1})]:[])],
+  [button('Фильтры','tasks'),button('Поиск','search_prompt'),button('Меню','home')]
+ ]);
+}
+
+export async function renderBotNavigation(u:User,ch:string,p:Payload){
+ if(p.op==='search_prompt'){
+  const draft={payload:{op:'search'},fields:[{key:'query',label:'Название, номер задачи или имя исполнителя',min:2}],index:0,values:{}};
+  await pool.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+interval '1 hour') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(draft)]);
+  return htmlScreen(u,ch,'<b>Поиск задач</b>\n\nНапишите часть названия, номер задачи или имя исполнителя.\nНапример: макет или 1742.\n\nИщем по полному названию, даже если в списке оно сокращено.',[[button('Отмена','cancel')]]);
+ }
+ const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(x=>x.id===id)?.name||id;
+ if(p.op==='search'){
+  const query=(p.query||'').trim().replace(/^#\s*/,'').toLocaleLowerCase('ru-RU');assert(query.length>=2&&query.length<=100,400,'Для поиска введите от 2 до 100 символов.');
+  const list=sortBotTasks(data.tasks.filter(t=>t.id.toLocaleLowerCase('ru-RU').includes(query)||t.title.toLocaleLowerCase('ru-RU').includes(query)||name(t.assignee_id).toLocaleLowerCase('ru-RU').includes(query)),now);
+  list.sort((a,b)=>Number(b.id.toLocaleLowerCase('ru-RU')===query)-Number(a.id.toLocaleLowerCase('ru-RU')===query));
+  return taskList(u,ch,p,list.map(task=>({task})),`Поиск: ${p.query}`,now,name);
+ }
+ const myActions=actionItems(data).filter(a=>a.mine),actionTasks=new Set(myActions.map(a=>a.taskId));
+ if(p.op==='tasks'&&!p.filter){
+  const count=(filter:string)=>data.tasks.filter(t=>filter==='active'?t.status==='active':filter==='open'?t.status!=='completed':filter==='mine'?t.status!=='completed'&&t.assignee_id===u.id:filter==='created'?t.status!=='completed'&&t.creator_id===u.id:taskQueue(t,now)===filter).length;
+  const choice=(text:string,filter:string)=>button(`${text} · ${count(filter)}`,'tasks',{filter});
+  return htmlScreen(u,ch,'<b>Задачи · выберите список</b>\n\nСначала срочные, затем ближайшие по сроку.\nВремя — московское.',[
+   [choice('Просрочены','overdue'),choice('Срок сегодня','today')],
+   [choice('В работе','active'),choice('На приёмке','review')],
+   [choice('Без срока','no_deadline'),choice('Завершены','completed')],
+   [choice('Я исполнитель','mine'),choice('Я постановщик','created')],
+   [choice('Все незавершённые','open')],[button('Поиск','search_prompt'),button('Меню','home')]
+  ]);
+ }
+ if(['inbox','tasks','day'].includes(p.op)){
+  if(p.op==='inbox'){
+   const grouped=new Map<string,string[]>();for(const action of myActions){const labels=grouped.get(action.taskId)||[];if(!labels.includes(action.label))labels.push(action.label);grouped.set(action.taskId,labels);}
+   const tasks=new Map(data.tasks.map(t=>[t.id,t]));
+   return taskList(u,ch,p,[...grouped].flatMap(([id,labels])=>tasks.has(id)?[{task:tasks.get(id)!,hint:labels.join(' · ')}]:[]),'Нужно ваше действие',now,name);
+  }
+  const filter=p.op==='day'?'today':p.filter||'open',labels:Record<string,string>={open:'Все незавершённые',active:'В работе',today:'Срок сегодня',overdue:'Просрочены',review:'На приёмке',completed:'Завершены',no_deadline:'Без срока',mine:'Я исполнитель',created:'Я постановщик'};
+  const tasks=sortBotTasks(data.tasks.filter(t=>filter==='open'?t.status!=='completed':filter==='active'?t.status==='active':filter==='mine'?t.status!=='completed'&&t.assignee_id===u.id:filter==='created'?t.status!=='completed'&&t.creator_id===u.id:taskQueue(t,now)===filter),now);
+  return taskList(u,ch,p,tasks.map(task=>({task})),labels[filter]||'Задачи',now,name);
+ }
+ if(p.op==='menu_more'){
+  const last=await lastUndo(u);
+  return htmlScreen(u,ch,'<b>Другие разделы</b>\n\nНапоминания, отчёты и помощь.',[
+   [button('🔔 Напоминания','alerts'),button('📁 Отчёты','reports')],
+   ...(u.role!=='employee'?[[button('📊 Сводка команды','brief')]]:[]),
+   ...(last?[[button('Отменить последнее действие','undo_prepare',{id:last.task_id,target:last.id})]]:[]),
+   [button('Как пользоваться','help')],[button('Меню','home')]
+  ]);
+ }
+ if(p.op==='help')return htmlScreen(u,ch,'<b>Как пользоваться ботом</b>\n\n1. «Нужно действие» — ответы, приёмка и согласования лично для вас.\n2. «Срок сегодня» и «Просрочены» — срочные задачи.\n3. Откройте задачу: сверху ближайшее действие, ниже описание и обсуждение.\n4. «Ещё действия» — новый срок, редактирование, напоминания и история.\n\nДля поиска просто напишите название, номер или имя исполнителя. Изменения выполняются после отдельного подтверждения.',[[button('Найти задачу','search_prompt')],[button('Меню','home')]]);
+ const s=summarize(data.tasks,now);
+ return htmlScreen(u,ch,`<b>РУСПЭТ · ${u.role==='employee'?'Мои задачи':'Задачи команды'}</b>\n${h(u.name)}\n\nНужно ваше действие: <b>${actionTasks.size}</b>\nСрок сегодня: ${s.today} · Просрочены: ${s.overdue}\n\nВыберите раздел или напишите, какую задачу найти.`,[
+  [button(`📥 Нужно действие · ${actionTasks.size}`,'inbox')],
+  [button(`Сегодня · ${s.today}`,'day'),button(`Просрочены · ${s.overdue}`,'tasks',{filter:'overdue'})],
+  [button(u.role==='employee'?'Мои задачи':'Задачи команды','tasks'),button('Поиск','search_prompt')],
+  [button('Ещё разделы','menu_more')]
+ ]);
+}
