@@ -275,11 +275,34 @@ test('bot search finds a visible task by number or title and keeps access scope'
  const {botView,botClick,botText}=await import('../server/bot.js');const anna=users.find(u=>u.id==='anna')!;
  const own=(await service.bootstrap(anna)).tasks[0];
  const found=await botText(anna,'preview-search',own.id,crypto.randomUUID());assert(found.text.includes('#'+own.id));
- const card=await botClick(anna,'preview-search',botButton(found,'1. Открыть'));
+ const card=await botClick(anna,'preview-search',botButton(found,'#'+own.id));
  assert(card.text.includes('#'+own.id));
  const back=await botClick(anna,'preview-search',botButton(card,'← К списку'));
  assert.equal(back.text,found.text);
  const foreign=await botView(anna,'preview',{op:'search',query:'2403'});assert(!foreign.text.includes('#2403'));
+});
+test('bot lists four tasks per screen, preserves the search page and keeps full details one tap away',async()=>{
+ const {botView,botClick}=await import('../server/bot.js');const anna=users.find(u=>u.id==='anna')!;
+ const channel='preview-compact-task',title='РЗМ* Контрольная поставка для экрана бота';
+ const description='Уточнить тип крышки <28 мм>.\n\n'+'Сверить позиции заказа, подтвердить комплект документов. '.repeat(45)+'Последняя строка техзадания.';
+ for(let i=0;i<5;i++){
+  const result=await request('admin','/tasks',{...taskInput,title:title+' '+(i+1),description,customFields:[{label:'Номер партии',value:'Тест 26'}]});
+  assert.equal(result.status,201);
+ }
+ const list=await botView(anna,channel,{op:'search',query:'Контрольная поставка для экрана бота'});
+ assert.match(list.text,/1–4 из 5/);assert.equal(list.buttons.flat().filter(b=>b.text.startsWith('#')).length,4);
+ const second=await botClick(anna,channel,botButton(list,'Дальше →'));assert.match(second.text,/5 из 5/);
+ const onlyTask=second.buttons.flat().find(b=>b.text.startsWith('#'));assert(onlyTask);
+ const card=await botClick(anna,channel,onlyTask.token);
+ assert.match(card.text,/Крайний срок/);assert.match(card.text,/&lt;28 мм&gt;/);assert(!card.text.includes('Последняя строка техзадания'));
+ assert(card.text.length<500);assert.equal(card.buttons[0][0].text,'Сдать результат');
+ const details=await botClick(anna,channel,botButton(card,'Описание'));assert.match(details.text,/<b>Описание/);assert(!details.text.includes('Номер партии'));
+ const end=await botClick(anna,channel,botButton(details,'Продолжение →'));assert.match(end.text,/Последняя строка техзадания/);
+ const fields=await botClick(anna,channel,botButton(details,'Поля задачи'));assert.match(fields.text,/Номер партии: Тест 26/);assert(!fields.text.includes('Сверить позиции'));
+ assert.equal((await botClick(anna,channel,botButton(card,'← К списку'))).text,second.text);
+ const menu=await botView(anna,channel);
+ const own=await botClick(anna,channel,botButton(menu,'Мои задачи'));assert.match(own.text,/<b>Мои задачи<\/b>/);
+ const filters=await botClick(anna,channel,botButton(own,'Фильтры'));assert(filters.buttons.flat().some(b=>b.text.startsWith('Срок сегодня')));
 });
 test('director may submit and request a deadline for a visible employee task with own audit identity',async()=>{
  const id=(await request('admin','/tasks',taskInput)).data.id;

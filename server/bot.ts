@@ -23,7 +23,7 @@ import {summarize} from '../shared/analytics.js';
 import type {User} from '../shared/types.js';
 import {taskInput} from './task-input.js';
 type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};
-const taskScreens=['task','history','discussion','task_details','task_result','task_approval','task_more','task_reminders'];
+const taskScreens=['task','history','discussion','task_details','task_fields','task_result','task_approval','task_more'];
 async function saveDialog(db:Db,u:User,ch:string,dialog:Dialog,minutes=60){
  await db.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+$4*interval '1 minute') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(dialog),minutes]);
 }
@@ -33,13 +33,13 @@ function nextMissing(dialog:Dialog){
 export async function clearBotDraft(u:User,ch:string){await transaction(async db=>{await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch])})}
 export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<BotScreen>{
  const result=await renderView(u,ch,p);
- if(p.id&&taskScreens.includes(p.op))await saveDialog(pool,u,ch,{payload:{op:'context',id:p.id},fields:[],index:0,values:{}},15);
+ if(p.id&&(taskScreens.includes(p.op)||p.op==='task_reminders'))await saveDialog(pool,u,ch,{payload:{op:'context',id:p.id},fields:[],index:0,values:{}},15);
  if(p.op==='home'&&process.env.PUBLIC_ORIGIN)result.links=[...(result.links||[]),{text:'Войти на сайт',url:new URL('/',process.env.PUBLIC_ORIGIN).href}];
  if(p.op==='home'||p.op==='task')result.timingKind=p.op==='home'?'menu':'task';
  return result;
 }
 async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
- if(['task','history','discussion','task_details','task_result','task_approval','task_more'].includes(p.op))return renderBotTask(u,ch,p);
+ if(taskScreens.includes(p.op))return renderBotTask(u,ch,p);
  if(p.op==='report_pdf'){const report=await getReport(u,p.id!);return {text:'PDF · '+new Date(report.created_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}),buttons:[],document:{reportId:report.id}};}
  if(p.op==='reports'){
   const page=p.page||0,report=p.id?await getReport(u,p.id):null;

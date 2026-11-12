@@ -1,7 +1,7 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
 import {compactTaskTitle} from '../shared/task-title.js';
-import {botTextPages,botDue,sortBotTasks} from '../server/bot-presentation.js';
+import {botTextPages,botDue,botTaskStatus,botExcerpt,sortBotTasks} from '../server/bot-presentation.js';
 import type {Task} from '../shared/types.js';
 
 test('task labels remove only leading boilerplate and retain codes, negations and reference numbers',()=>{
@@ -34,8 +34,19 @@ test('list deadlines follow Moscow days and completed tasks are sorted after ope
  const now=new Date('2026-11-12T21:30:00Z');
  const make=(id:string,deadline:string|null,status:Task['status']='active')=>({id,deadline,status} as Task);
  assert.equal(botDue(make('1','2026-11-12T22:00:00Z'),now),'Сегодня 01:00');
- assert.match(botDue(make('1','2026-11-12T20:59:00Z'),now),/Просрочена/);
+ assert.equal(botTaskStatus(make('1','2026-11-12T20:59:00Z'),now),'Просрочена');
+ assert.equal(botTaskStatus(make('1','2026-11-12T21:05:00Z'),now),'Срок сегодня прошёл');
+ assert.equal(botTaskStatus(make('1','2026-11-12T20:59:00Z','review'),now),'На приёмке');
+ assert.equal(botTaskStatus(make('1',null),now,true),'На согласовании');
+ assert.equal(botTaskStatus(make('1',null,'completed'),now),'Завершена');
  assert.equal(botDue(make('1',null),now),'Без срока');
  const tasks=[make('3',null,'completed'),make('2','2026-11-12T22:00:00Z'),make('1','2026-11-12T20:59:00Z')];
  assert.deepEqual(sortBotTasks(tasks,now).map(t=>t.id),['1','2','3']);assert.equal(tasks[0].id,'3');
+});
+
+test('task description excerpts collapse spacing and stop at a complete character',()=>{
+ assert.equal(botExcerpt(' Проверить\n\nкрышку 28 мм ',100),'Проверить крышку 28 мм');
+ const preview=botExcerpt('Проверить образцы крышки перед отправкой на производство',34);
+ assert.equal(preview,'Проверить образцы крышки перед…');
+ assert.match(botExcerpt('🧰'.repeat(100),10),/^(?:🧰){4}…$/u);
 });
