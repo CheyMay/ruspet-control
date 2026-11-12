@@ -1,5 +1,5 @@
 import {lockDelegationChain} from './delegation-lock.js';
-import {resolveCompanyResponsibility} from './company-responsibility.js';
+import {findDelegationClients,resolveCompanyResponsibility} from './company-responsibility.js';
 import {actingManager,delegatesFor} from './org.js';
 import {recordTaskAction,recordTaskBarrier} from './undo-record.js';
 import {randomUUID} from 'node:crypto';
@@ -44,16 +44,26 @@ export async function delegationLinks(actor:User,id:string){
 function availableDelegate(actor:User,manager:User,person:User){
  return person.id!==actor.id&&(actor.id===manager.id||globalAccess(actor)||actor.branch_id===person.branch_id);
 }
-export async function delegationTargets(actor:User,id:string){
- const task=(await pool.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+async function delegationContext(actor:User,id:string,db:Db){
+ const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
  assert(task&&canSee(actor,task),404,'Задача недоступна.');
- const manager=await actingManager(actor,task);
+ const manager=await actingManager(actor,task,db);
  assert(manager,403,'Делегировать можно свою задачу в работе или задачу руководителя, которого вы замещаете.');
- const people=(await delegatesFor(manager)).filter(person=>availableDelegate(actor,manager,person));
- return {version:task.version,people,responsibility:await resolveCompanyResponsibility(task,people)};
-
+ const people=(await delegatesFor(manager,db)).filter(person=>availableDelegate(actor,manager,person));
+ return {task,people};
 }
-export async function delegateTask(actor:User,id:string,input:{assigneeId?:string;responsibilityToken?:string;expectedVersion:number;instruction?:string;deadline?:string|null}){
+export async function delegationTargets(actor:User,id:string,companyId?:string,db:Db=pool){
+ const {task,people}=await delegationContext(actor,id,db);
+ const responsibility=await resolveCompanyResponsibility(task,people,db,companyId);
+ if(companyId&&!globalAccess(actor))assert(responsibility.managerId,403,'Выберите клиента, с которым работает ваш подчинённый.');
+ return {version:task.version,people,responsibility};
+}
+export async function delegationClients(actor:User,id:string,query:string,db:Db=pool){
+ const {task,people}=await delegationContext(actor,id,db);
+ if(task.company_id)return [];
+ return findDelegationClients(task,people,query,globalAccess(actor),db);
+}
+export async function delegateTask(actor:User,id:string,input:{assigneeId?:string;companyId?:string;responsibilityToken?:string;expectedVersion:number;instruction?:string;deadline?:string|null}){
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock_shared(431036)');
   await lockDelegationChain(db,id);
@@ -63,10 +73,12 @@ export async function delegateTask(actor:User,id:string,input:{assigneeId?:strin
   assert(manager,403,'Делегировать можно свою задачу в работе или задачу руководителя, которого вы замещаете.');
   assert(source.version===input.expectedVersion,409,'Задача изменилась. Откройте её заново.');
   const available=(await delegatesFor(manager,db)).filter(p=>availableDelegate(actor,manager,p));
-  const responsibility=input.assigneeId?null:await resolveCompanyResponsibility(source,available,db);
+  const responsibility=input.assigneeId&&!input.companyId?null:await resolveCompanyResponsibility(source,available,db,input.companyId);
+  assert(!input.assigneeId||!input.responsibilityToken,400,'Выберите автоматическое назначение или укажите исполнителя.');
+  assert(!input.responsibilityToken||input.responsibilityToken===responsibility?.token,409,'Ответственный компании изменился. Откройте делегирование заново.');
+  if(input.companyId&&!globalAccess(actor))assert(responsibility?.managerId,403,'Выберите клиента, с которым работает ваш подчинённый.');
   if(!input.assigneeId){
    assert(responsibility?.managerId,422,responsibility?.reason||'Выберите исполнителя вручную.');
-   assert(!input.responsibilityToken||input.responsibilityToken===responsibility.token,409,'Ответственный компании изменился. Откройте делегирование заново.');
   }
   const target=available.find(p=>p.id===(input.assigneeId||responsibility?.managerId));
   assert(target,403,'Выберите подчинённого из доступного списка.');

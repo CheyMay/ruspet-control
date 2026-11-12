@@ -882,11 +882,12 @@ test('delegation creates a priced-zero child, enforces hierarchy and reuses the 
  assert.equal((await request('anna',copyPath+'/delegation')).data.source,null);
  assert.equal((await request('anna',copyPath+'/review',{action:'submit',comment:'Выполнена проверка',expectedVersion:1})).status,200);
  assert.equal((await request('lead-msk',copyPath+'/review',{action:'accept',comment:'',expectedVersion:2})).status,200);
- assert.equal((await request('lead-msk',path)).data.task.status,'review');
- assert.equal((await request('director',path+'/review',{action:'return',comment:'Нужно дополнительное поручение',expectedVersion:2})).status,200);
+ assert.equal((await request('lead-msk',path)).data.task.status,'completed');
 
  const {botView,botClick}=await import('../server/bot.js');
  const actor=users.find(u=>u.id==='lead-msk')!,channel='test-delegation';
+ const {lastUndo,undoLastAction}=await import('../server/undo.js');
+ const acceptance=await lastUndo(actor,copied);assert(acceptance);await undoLastAction(actor,acceptance.id);
  const card=await botView(actor,channel,{op:'task',id});
  const actions=await botClick(actor,channel,botButton(card,'Ещё действия'));
  const list=await botClick(actor,channel,botButton(actions,'Делегировать задачу'));
@@ -894,7 +895,7 @@ test('delegation creates a priced-zero child, enforces hierarchy and reuses the 
  const token=botButton(preview,'Создать поручение');
  const confirmation=await botClick(actor,channel,token);
  assert.deepEqual(await botClick(actor,channel,token),confirmation);
- assert.match(confirmation.text,/Результат вернётся руководителю на приёмку/);
+ assert.match(confirmation.text,/основная задача закроется автоматически/);
  assert.equal((await request('lead-msk',path+'/delegation')).data.copies.length,2);
 });
 

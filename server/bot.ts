@@ -6,6 +6,7 @@ import {parseVoiceIntent} from './voice-intent.js';
 import {normalizeActionField,prepareVoiceAction,taskActionFields,voiceLabels,type Field} from './bot-voice-actions.js';
 import {voiceExample} from '../shared/voice.js';
 import {compactTaskTitle} from '../shared/task-title.js';
+import {responsibilityLabels} from '../shared/company-responsibility.js';
 export type {BotScreen} from './bot-ui.js';
 import {lastUndo,undoLastAction} from './undo.js';
 import {formatPrice,priceBand,priceLabels,parsePrice,taskPrice} from '../shared/pricing.js';
@@ -16,7 +17,7 @@ import {pool,transaction,type Db} from './db.js';
 import {acknowledgeAlert,userAlerts,listTaskReminders,saveTaskReminder,disableTaskReminder,saveOneTimeReminder,cancelOneTimeReminder} from './reminders.js';
 import {assert,canEdit,AppError} from './domain.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports,notify} from './service.js';
-import {canDelegateTask,createTask,delegateTask,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
+import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
 import type {User} from '../shared/types.js';
@@ -49,20 +50,23 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   rows.push([...(page?[button('← Назад','reports',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1})]:[])],[button('Общий отчёт сейчас','report_now')],[button('Итоги дня и завтра','report_evening')],[button('Меню','home')]);return screen(u,ch,'Отчёты · '+archive.total+'\nВыберите снимок или сформируйте новый. Каждый отчёт сохраняет время и параметры.',rows);
  }
  if(p.op==='delegate_list'||p.op==='delegate_preview'){
-  const {people,version,responsibility}=await delegationTargets(u,p.id!);
+  const companyId=p.values?.companyId;
+  const chosen:Record<string,string>=companyId?{companyId}:{};
+  const {people,version,responsibility}=await delegationTargets(u,p.id!,companyId);
   const automatic=p.op==='delegate_list'&&p.filter!=='manual'&&!!responsibility.managerId;
   if(p.op==='delegate_preview'||automatic){
    const person=people.find(person=>person.id===(automatic?responsibility.managerId:p.target));
    assert(person,403,'Выберите подчинённого из доступного списка.');
-   return screen(u,ch,`Создать поручение по задаче #${p.id} для ${person.name}?${automatic?'\nОтветственный компании «'+responsibility.companyName+'» · '+(responsibility.source==='bitrix'?'Битрикс24':'ОКБ'):''}\nПосле приёмки всех поручений основная задача перейдёт на приёмку.\nСрок перейдёт в копию. Цена копии — 0 ₽. Результат вернётся руководителю на приёмку.`,[
-    [button('Создать поручение','confirm',{kind:'delegate',id:p.id,list:p.list,version,target:person.id,...(automatic?{values:{assignment:'auto',responsibilityToken:responsibility.token!}}:{})})],
-    [button('Другой сотрудник','delegate_list',{id:p.id,list:p.list,filter:'manual'}),button('К задаче','task',{id:p.id,list:p.list})]
+   return screen(u,ch,`Создать поручение по задаче #${p.id} для ${person.name}?${automatic?'\nМенеджер клиента «'+responsibility.companyName+'» · '+responsibilityLabels[responsibility.source!]:''}\nПосле приёмки всех поручений основная задача закроется автоматически. Бюджет и крайний срок основной задачи сохранятся.`,[
+    [button('Создать поручение','confirm',{kind:'delegate',id:p.id,list:p.list,version,target:person.id,values:automatic?{...chosen,assignment:'auto',responsibilityToken:responsibility.token!}:chosen})],
+    [button('Другой сотрудник','delegate_list',{id:p.id,list:p.list,filter:'manual',values:chosen}),button('К задаче','task',{id:p.id,list:p.list})]
    ]);
   }
   const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/8)-1));
   return screen(u,ch,people.length?(responsibility.reason?responsibility.reason+'\n':'')+'Кому делегировать задачу #'+p.id+'?':'В вашей области нет доступных подчинённых.',[
-   ...people.slice(page*8,page*8+8).map(person=>[button(person.name,'delegate_preview',{id:p.id,list:p.list,target:person.id})]),
-   [...(page?[button('← Назад','delegate_list',{id:p.id,page:page-1,filter:'manual'})]:[]),...((page+1)*8<people.length?[button('Далее →','delegate_list',{id:p.id,page:page+1,filter:'manual'})]:[])],
+   ...people.slice(page*8,page*8+8).map(person=>[button(person.name,'delegate_preview',{id:p.id,list:p.list,target:person.id,values:chosen})]),
+   [...(page?[button('← Назад','delegate_list',{id:p.id,page:page-1,filter:'manual',values:chosen})]:[]),...((page+1)*8<people.length?[button('Далее →','delegate_list',{id:p.id,page:page+1,filter:'manual',values:chosen})]:[])],
+   ...(people.length&&!responsibility.companyId?[[button('Найти клиента в ОКБ','form',{id:p.id,kind:'delegate_client'})]]:[]),
    [button('К задаче','task',{id:p.id,list:p.list})]
   ]);
  }
@@ -141,7 +145,7 @@ export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:s
   const existing=(await db.query('SELECT data FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now()',[u.id,ch])).rows[0]?.data as Dialog|undefined;
   const context=existing?.payload.op==='context'?existing.payload.id:undefined;
   const intent=parseVoiceIntent(transcript,at,context);
-  if(!intent&&existing&&!['context','search'].includes(existing.payload.op))return botText(u,ch,transcript,'voice:'+inputId);
+  if(!intent&&existing&&!['context','search'].includes(existing.payload.op))return handleBotText(db,u,ch,transcript,'voice:'+inputId);
   let response:BotScreen;
   if(!intent){
    response=await screen(u,ch,'Распознал: '+transcript.slice(0,600)+'\n\nНазовите действие и номер задачи. Например: «'+voiceExample+'»',[[button('Мои задачи','tasks'),button('Меню','home')]],db);
@@ -156,14 +160,24 @@ export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:s
     if(!intent.values.deadline)values.deadline='none';
     if(!intent.values.description)values.description='';
    }
-   if(kind==='delegate'&&!intent.values.instruction)values.instruction='';
+   let client='';
+   if(kind==='delegate'){
+    if(!intent.values.instruction)values.instruction='';
+    if(!intent.values.assignee||/^(?:менеджер[ау]? клиента|ответственн\p{L}* клиента)$/iu.test(intent.values.assignee)){
+     const {responsibility}=await delegationTargets(u,payload.id!,undefined,db);
+     if(responsibility.managerId){
+      Object.assign(values,{assignee:responsibility.managerId,assignment:'auto',responsibilityToken:responsibility.token!});
+      client='\nКлиент: '+responsibility.companyName+' · '+responsibilityLabels[responsibility.source!];
+     }
+    }
+   }
    const draft:Dialog={payload,fields,index:0,values};
    for(const f of fields){
-    const value=intent.values[f.key];if(!value)continue;
+    const value=intent.values[f.key];if(!value||(f.key==='assignee'&&values.assignment==='auto'))continue;
     try{values[f.key]=await normalizeActionField(u,payload,f,value,db,stamp=>parseMoscowInput(stamp,at),at);}
     catch(error){if(!(error instanceof AppError)||error.status!==400)throw error;}
    }
-   const heading=voiceLabels[kind]+(payload.id?' · #'+payload.id+'\n'+title.slice(0,180):'');
+   const heading=voiceLabels[kind]+(payload.id?' · #'+payload.id+'\n'+title.slice(0,180):'')+client;
    await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);
    await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch]);
    nextMissing(draft);
@@ -178,7 +192,10 @@ export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:s
    else{
     await saveDialog(db,u,ch,draft);
     const summary=(await draftSummary(draft,db)).slice(0,2500);
-    response=await screen(u,ch,heading+(summary?'\n\n'+summary:'')+'\n\n'+missingLabel(draft),[[button('Отменить ввод','cancel',{id:payload.id})]],db);
+    response=await screen(u,ch,heading+(summary?'\n\n'+summary:'')+'\n\n'+missingLabel(draft),[
+     ...(kind==='delegate'&&!values.assignee?[[button('Найти клиента в ОКБ','form',{id:payload.id,kind:'delegate_client'})]]:[]),
+     [button('Отменить ввод','cancel',{id:payload.id})]
+    ],db);
    }
   }
   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,'voice:'+inputId,JSON.stringify(response)]);
@@ -222,7 +239,11 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    result='Задача #'+created.id+' поставлена.';
   }
   else if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}
-  else if(p.kind==='delegate'){const copy=await delegateTask(u,p.id!,{...(p.values?.assignment==='auto'?{responsibilityToken:p.values.responsibilityToken}:{assigneeId:v.assignee||p.target!}),expectedVersion:p.version!,instruction:v.instruction||undefined});resultTask=copy.id;result='Поручение #'+copy.id+' создано. Результат вернётся руководителю на приёмку.';}
+  else if(p.kind==='delegate'){
+   const copy=await delegateTask(u,p.id!,{...(v.assignment==='auto'?{responsibilityToken:v.responsibilityToken}:{assigneeId:v.assignee||p.target!}),
+    companyId:v.companyId,expectedVersion:p.version!,instruction:v.instruction||undefined});
+   resultTask=copy.id;result='Поручение #'+copy.id+' создано. После приёмки всех поручений основная задача закроется автоматически.';
+  }
   else if(p.kind==='comment'){await addComment(u,p.id!,v.comment,p.target);result='Комментарий сохранён в обсуждении задачи и доступен руководителю.'}
   else if(p.kind==='reminder'){await saveTaskReminder(u,p.id!,{recipientId:u.id,days:v.days.split(',').map(Number),times:v.times.split(',').map(s=>s.trim()),weeks:Number(v.weeks)},true);result='Напоминание сохранено. Время московское. Для доставки привяжите свой чат в панели.'}
   else if(p.kind==='reminder_once'){await saveOneTimeReminder(u,p.id!,v.deadline);result='Разовое напоминание сохранено на '+date(v.deadline)+' МСК. Доставка в личный чат подключённого бота.';}
@@ -247,7 +268,9 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
  });
 }
 export async function botText(u:User,ch:string,text:string,inputId:string):Promise<BotScreen>{
- return transaction(async db=>{
+ return transaction(db=>handleBotText(db,u,ch,text,inputId));
+}
+async function handleBotText(db:Db,u:User,ch:string,text:string,inputId:string):Promise<BotScreen>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);const old=(await db.query('SELECT screen FROM bot_inputs WHERE actor_id=$1 AND channel=$2 AND input_id=$3',[u.id,ch,inputId])).rows[0];if(old)return old.screen;
   const row=(await db.query('SELECT * FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now() FOR UPDATE',[u.id,ch])).rows[0];
   const d=row?.data as Dialog|undefined;
@@ -259,13 +282,22 @@ export async function botText(u:User,ch:string,text:string,inputId:string):Promi
   }
   const f=d.fields[d.index];
   d.values[f.key]=await normalizeActionField(u,d.payload,f,text,db,parseMoscowInput);
+  if(d.payload.kind==='delegate_client'){
+   const id=d.payload.id!,clients=await delegationClients(u,id,d.values.client,db);
+   if(clients.length)await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);
+   const response=await screen(u,ch,clients.length?'Выберите клиента.':'Клиенты по этому запросу не найдены. Введите другое название или ИНН.',[
+    ...clients.map(company=>[button(company.name.slice(0,55),'delegate_list',{id,values:{companyId:company.id}})]),
+    [button('К поручению','delegate_list',{id})]
+   ],db);
+   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,inputId,JSON.stringify(response)]);
+   return response;
+  }
   d.index++;nextMissing(d);
   let response:BotScreen;if(d.index<d.fields.length){await db.query('UPDATE bot_sessions SET data=$3 WHERE actor_id=$1 AND channel=$2',[u.id,ch,JSON.stringify(d)]);response=await prompt(u,ch,d,db)}else{
    // The draft is now immutable and bound to a one-time confirmation button.
    await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);response=await confirmation(u,ch,d,db);
   }
   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,inputId,JSON.stringify(response)]);return response;
- });
 }
 
 export async function alertScreen(u:User,ch:string,alert:{id:string;task_id:string|null;body:string;links?:{text:string;url:string}[];report_id?:string|null}):Promise<BotScreen>{const result=await screen(u,ch,alert.body,[[button('ОК, увидел','confirm',{kind:'alert_ack',target:alert.id,id:alert.task_id||undefined})],...(alert.task_id?[[button('Открыть задачу','task',{id:alert.task_id}),button('Новое напоминание','reminder_days',{id:alert.task_id})]]:[]),...(alert.report_id?[[button('Открыть отчёт','reports',{id:alert.report_id}),button('PDF','report_pdf',{id:alert.report_id})]]:[]),[button('Мои задачи','tasks')]]);return {...result,text:linkedText(alert.body,alert.links||[]),format:'HTML'};}

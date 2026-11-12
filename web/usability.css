@@ -73,6 +73,8 @@ main select:disabled { opacity:.6; }
 .task-delegation { border:1px solid var(--line); border-radius:7px; padding:12px; margin:0 0 16px; background:var(--theme-surface-soft); }
 .task-delegation p { margin-top:5px; }
 .task-delegation .text-button { white-space:normal; text-align:left; }
+.delegation-client-options { display:flex; flex-wrap:wrap; gap:8px; margin-top:8px; }
+.delegation-client-options .button { max-width:100%; height:auto; white-space:normal; overflow-wrap:anywhere; text-align:left; }
 
 .bpm-layout { display:grid; grid-template-columns:minmax(0,1fr) minmax(175px,245px); gap:10px; }
 .bpm-board { overflow:auto; min-width:0; border:1px solid var(--line); border-radius:8px; background-color:var(--theme-surface-soft); background-image:radial-gradient(var(--line) 1px,transparent 1px); background-size:15px 15px; }

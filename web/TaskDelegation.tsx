@@ -2,6 +2,7 @@ import {useEffect,useState,type FormEvent} from 'react';
 import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import type {Task,User} from '../shared/types.js';
+import {responsibilityLabels,type DelegationClient} from '../shared/company-responsibility.js';
 
 type LinkedTask={id:string;title:string;status:Task['status'];assignee_id:string};
 type Links={canDelegate:boolean;source:LinkedTask|null;copies:LinkedTask[]};
@@ -14,6 +15,8 @@ export function TaskDelegation({task,user,users,open,onCreated,readOnly=false}:{
  const [links,setLinks]=useState<Links|null>(null),[show,setShow]=useState(false),[targets,setTargets]=useState<Targets|null>(null);
  const available=!readOnly&&(links?.canDelegate??(user.role!=='employee'&&task.assignee_id===user.id&&task.status==='active'));
  const [manual,setManual]=useState(false);
+ const [client,setClient]=useState<DelegationClient|null>(null),[clientQuery,setClientQuery]=useState(''),[clients,setClients]=useState<DelegationClient[]|null>(null);
+ const [clientError,setClientError]=useState('');
  const [busy,setBusy]=useState(false),[error,setError]=useState(''),[linkError,setLinkError]=useState(''),[newId,setNewId]=useState<string|null>(null);
  useEffect(()=>{
   let active=true;
@@ -23,13 +26,24 @@ export function TaskDelegation({task,user,users,open,onCreated,readOnly=false}:{
  useEffect(()=>{
   if(!show)return;
   let active=true;
-  void api<Targets>('/tasks/'+encodeURIComponent(task.id)+'/delegation-targets').then(result=>{
+  const query=client?'?companyId='+encodeURIComponent(client.id):'';
+  void api<Targets>('/tasks/'+encodeURIComponent(task.id)+'/delegation-targets'+query).then(result=>{
    if(!active)return;
    if(result.version!==task.version){setError('Карточка изменилась. Откройте задачу заново.');return;}
    setTargets(result);
   }).catch(e=>{if(active)setError(e.message);});
   return()=>{active=false;};
- },[show,task.id,task.version]);
+ },[show,task.id,task.version,client?.id]);
+ useEffect(()=>{
+  const query=clientQuery.trim();
+  if(!show||client||query.length<2)return;
+  let active=true;
+  const timer=setTimeout(()=>{
+   void api<DelegationClient[]>('/tasks/'+encodeURIComponent(task.id)+'/delegation-clients?q='+encodeURIComponent(query))
+    .then(result=>{if(active)setClients(result);}).catch(e=>{if(active)setClientError(e.message);});
+  },250);
+  return()=>{active=false;clearTimeout(timer);};
+ },[show,task.id,clientQuery,client?.id]);
  async function submit(event:FormEvent<HTMLFormElement>){
   event.preventDefault();
   if(!targets)return;
@@ -38,6 +52,7 @@ export function TaskDelegation({task,user,users,open,onCreated,readOnly=false}:{
   try{
    const copy=await api<{id:string}>('/tasks/'+encodeURIComponent(task.id)+'/delegate','POST',{
     ...(targets.responsibility.managerId&&!manual?{responsibilityToken:targets.responsibility.token}:{assigneeId:fields.get('assigneeId')}),instruction:fields.get('instruction'),expectedVersion:task.version,
+    ...(client?{companyId:client.id}:{}),
     ...(date!==moscowInput(task.deadline)?{deadline:date?new Date(date+':00+03:00').toISOString():null}:{})
    });
    setNewId(copy.id);setShow(false);onCreated();
@@ -45,7 +60,7 @@ export function TaskDelegation({task,user,users,open,onCreated,readOnly=false}:{
  }
  if(!available&&!links?.source&&!links?.copies.length&&!task.delegated_from_id)return null;
  return <section className="task-delegation">
-  <div className="automation-heading"><h3>Делегирование</h3>{available&&<button className="button secondary" type="button" onClick={()=>{setTargets(null);setManual(false);setError('');setShow(true);}}>Делегировать задачу</button>}</div>
+  <div className="automation-heading"><h3>Делегирование</h3>{available&&<button className="button secondary" type="button" onClick={()=>{setTargets(null);setManual(false);setError('');setClient(null);setClientQuery('');setClients(null);setClientError('');setShow(true);}}>Делегировать задачу</button>}</div>
   {links?.source&&<p>Исходная задача · <button className="text-button" onClick={()=>open(links.source!.id)}>#{links.source.id} · {links.source.title}</button></p>}
   {task.delegated_from_id&&!links?.source&&<p className="muted">Поручение от руководителя</p>}
   {linkError&&<p className="red-text" role="alert">{linkError}</p>}
@@ -56,12 +71,21 @@ export function TaskDelegation({task,user,users,open,onCreated,readOnly=false}:{
   </div></div>)}
   {show&&<div className="modal-backdrop"><form className="modal task-editor" role="dialog" aria-modal="true" aria-label="Делегировать задачу" onSubmit={submit}>
    <div className="panel-heading"><div><h2>Делегировать задачу</h2><p>#{task.id} · {task.title}</p></div><button type="button" className="text-button" disabled={busy} onClick={()=>setShow(false)}>Закрыть</button></div>
-   <p className="muted">Исходная задача остаётся у своего руководителя. После приёмки всех поручений она автоматически перейдёт на приёмку. Цена поручения 0 ₽, бюджет остаётся в исходной задаче.</p>
+   <p className="muted">Руководитель принимает поручение менеджера. После приёмки всех поручений исходная задача закрывается автоматически. Её бюджет и крайний срок сохраняются.</p>
    {error&&<p className="alert error" role="alert">{error}</p>}
    {!targets&&!error&&<p role="status">Загружаем подчинённых…</p>}
    {targets?.people.length===0&&<p>В вашей области нет доступных подчинённых.</p>}
+   {!task.company_id&&<div className="delegation-client">
+    {client?<p>Клиент · <strong>{client.name}</strong> <button type="button" className="text-button" disabled={busy} onClick={()=>{setClient(null);setTargets(null);setManual(false);setError('');}}>Сменить</button></p>:
+     <label>Клиент из ОКБ<input type="search" value={clientQuery} maxLength={150} placeholder="Название или ИНН"
+      onKeyDown={event=>{if(event.key==='Enter')event.preventDefault();}}
+      onChange={event=>{setClientQuery(event.target.value);setClients(null);setClientError('');}}/></label>}
+    {clientError&&<p className="red-text" role="alert">{clientError}</p>}
+    {!client&&clientQuery.trim().length>=2&&clients?.length===0&&<p className="muted">Подходящих клиентов по запросу нет.</p>}
+    {!client&&clients&&clients.length>0&&<div className="delegation-client-options">{clients.map(company=><button key={company.id} type="button" className="button secondary" onClick={()=>{setTargets(null);setManual(false);setError('');setClient(company);}}>{company.name}</button>)}</div>}
+   </div>}
    {!!targets?.people.length&&<>
-    {targets.responsibility.managerId&&!manual?<div className="inline-note"><p>Ответственный компании «{targets.responsibility.companyName}»: <strong>{targets.responsibility.managerName}</strong> · {targets.responsibility.source==='bitrix'?'Битрикс24':'ОКБ'}</p><button type="button" className="text-button" onClick={()=>setManual(true)}>Выбрать другого сотрудника</button></div>:<><p className="muted">{targets.responsibility.reason||'Выберите другого доступного сотрудника.'}</p><label>Подчинённый<select name="assigneeId" defaultValue="" required><option value="" disabled>Выберите сотрудника</option>{targets.people.map(person=><option value={person.id} key={person.id}>{person.name} · {person.branch_id}</option>)}</select></label></>}
+    {targets.responsibility.managerId&&!manual?<div className="inline-note"><p>Менеджер клиента «{targets.responsibility.companyName}» · <strong>{targets.responsibility.managerName}</strong>{targets.responsibility.source&&<> · {responsibilityLabels[targets.responsibility.source]}</>}</p><button type="button" className="text-button" onClick={()=>setManual(true)}>Выбрать другого сотрудника</button></div>:<><p className="muted">{targets.responsibility.reason||'Выберите другого доступного сотрудника.'}</p><label>Подчинённый<select name="assigneeId" defaultValue="" required><option value="" disabled>Выберите сотрудника</option>{targets.people.map(person=><option value={person.id} key={person.id}>{person.name} · {person.branch_id}</option>)}</select></label></>}
     <label>Крайний срок поручения · МСК<input name="deadline" type="datetime-local" defaultValue={moscowInput(task.deadline)}/></label>
     <p className="muted">Крайний срок исходной задачи · {moscowTimestamp(task.deadline)}</p>
     <label>Уточнение для исполнителя<textarea name="instruction" maxLength={2000} placeholder="Что именно сделать и какой результат ожидается"/></label>

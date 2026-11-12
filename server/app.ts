@@ -39,7 +39,7 @@ import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
 import {ownerTimeRouter} from './owner-time.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
-import {createTask,delegateTask,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
+import {createTask,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
 import type { User } from '../shared/types.js';
 declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
@@ -133,9 +133,10 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.delete('/api/org/substitutions/:id',async(req,res)=>{await revokeSubstitution(req.actor,z.uuid().parse(req.params.id));res.json({ok:true});});
  app.get('/api/delegations',async(req,res)=>res.json(await myDelegations(req.actor)));
  app.get('/api/tasks/:id/delegation',async(req,res)=>res.json(await delegationLinks(req.actor,String(req.params.id))));
- app.get('/api/tasks/:id/delegation-targets',async(req,res)=>res.json(await delegationTargets(req.actor,String(req.params.id))));
+ app.get('/api/tasks/:id/delegation-targets',async(req,res)=>res.json(await delegationTargets(req.actor,String(req.params.id),z.uuid().optional().parse(req.query.companyId))));
+ app.get('/api/tasks/:id/delegation-clients',async(req,res)=>res.json(await delegationClients(req.actor,String(req.params.id),z.string().trim().min(2).max(150).parse(req.query.q))));
  app.post('/api/tasks/:id/delegate',async(req,res)=>res.status(201).json(await delegateTask(req.actor,String(req.params.id),z.object({
-  assigneeId:z.string().trim().min(1).max(100).optional(),responsibilityToken:z.string().regex(/^[a-f0-9]{64}$/).optional(),expectedVersion:z.number().int().positive(),
+  assigneeId:z.string().trim().min(1).max(100).optional(),companyId:z.uuid().optional(),responsibilityToken:z.string().regex(/^[a-f0-9]{64}$/).optional(),expectedVersion:z.number().int().positive(),
   instruction:z.string().trim().max(2000).optional(),deadline:date.nullable().optional()
  }).parse(req.body))));
  app.get('/api/tasks/:id/assignees',async(req,res)=>res.json(await taskAssignees(req.actor,String(req.params.id))));

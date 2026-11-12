@@ -62,6 +62,29 @@ test('company manager drives delegation through shared API; a changed recommenda
  assert.equal((await request(director,'/tasks/'+id2+'/delegate',{expectedVersion:1})).status,403);
 });
 
+test('imports and current client work supply a manager and allow explicit client selection',async()=>{
+ const imported=await okb.saveCompany(director,{name:'Импорт Тест-ОКБ',taxId:null,status:'active',contact:'',notes:''});
+ await okb.okbPool().query("UPDATE companies SET xlsx_source=$2 WHERE id=$1",[imported.id,JSON.stringify({manager:anna.name.split(' ').reverse().join(' ').toUpperCase()})]);
+ const id=await source(),path='/tasks/'+id;
+ assert.deepEqual((await request(lead,path+'/delegation-clients?q='+encodeURIComponent('Импорт Тест'))).data,[{id:imported.id,name:imported.name}]);
+ const targets=await request(lead,path+'/delegation-targets?companyId='+imported.id);
+ assert.equal(targets.data.responsibility.source,'excel');
+ assert.equal(targets.data.responsibility.managerId,anna.id);
+ const made=await request(lead,path+'/delegate',{expectedVersion:1,companyId:imported.id,responsibilityToken:targets.data.responsibility.token});
+ assert.equal(made.status,201);assert.equal((await row(made.data.id)).company_id,imported.id);
+ assert.equal((await row(made.data.id)).assignee_id,anna.id);
+
+ const working=await okb.saveCompany(director,{name:'Клиент Тест-Текущая работа',taxId:null,status:'active',contact:'',notes:''});
+ await workflow.createTask(director,input(ivan.id,working.id));
+ const local=await source();
+ await db.pool.query("UPDATE tasks SET source_fields=$2 WHERE id=$1",[local,JSON.stringify({'Компания':working.name.toUpperCase()})]);
+ const hint=(await workflow.delegationTargets(lead,local)).responsibility;
+ assert.equal(hint.companyId,working.id);assert.equal(hint.managerId,ivan.id);assert.equal(hint.source,'tasks');
+ await workflow.createTask(director,input(anna.id,working.id));
+ assert.match((await workflow.delegationTargets(lead,local)).responsibility.reason!,/несколько менеджеров/);
+ await assert.rejects(()=>workflow.delegateTask(lead,local,{expectedVersion:1,responsibilityToken:hint.token!}),/Ответственный компании изменился/);
+});
+
 test('CRM snapshots preserve all fields, map external managers, keep business status and support dry-run and repeat sync',async()=>{
  const item={externalId:'7101',name:'Фиктивный клиент CRM',externalManagerId:'202',raw:{ID:'7101',TITLE:'Фиктивный клиент CRM',ASSIGNED_BY_ID:'202',UF_SPECIAL:{code:'fixture'}}};
  const batch={portal:'fixture.bitrix24.ru',companies:[item]};
@@ -108,44 +131,48 @@ test('CRM pagination uses documented fields and stable IDs, rejects malformed pa
  await assert.rejects(()=>companies.fetchBitrixCompanies((async()=>[{ID:'7',TITLE:'Фикстура'}]) as BitrixRequest,'7'),/порядок/);
 });
 
-test('only acceptance of every delegated task submits the source once, with explicit automatic result and manual final acceptance',async()=>{
+test('the source closes once after every delegated task is accepted, with the accepted results recorded',async()=>{
  const id=await source();const a=await workflow.delegateTask(lead,id,{assigneeId:anna.id,expectedVersion:1}),b=await workflow.delegateTask(lead,id,{assigneeId:ivan.id,expectedVersion:1});
  await assert.rejects(()=>submit(id,lead),/всех делегированных/);
  await submit(a.id,anna);assert.equal((await row(id)).status,'active');await accept(a.id);assert.equal((await row(id)).status,'active');
- await submit(b.id,ivan);assert.equal((await row(id)).status,'active');await accept(b.id);
- assert.equal((await row(id)).status,'review');assert.equal((await row(id)).version,2);assert.equal(Number((await row(id)).price),12000);
+ await submit(b.id,ivan);assert.equal((await row(id)).status,'active');
+ await workflow.reviewTask(lead,b.id,'return','Уточните результат',(await row(b.id)).version);
+ assert.equal((await row(id)).status,'active');await submit(b.id,ivan);await accept(b.id);
+ const closed=await row(id);assert.equal(closed.status,'completed');assert(closed.completed_at);
+ assert.equal(closed.version,2);assert.equal(Number(closed.price),12000);assert.equal(closed.assignee_id,lead.id);
  const submission=(await db.pool.query('SELECT * FROM task_submissions WHERE task_id=$1',[id])).rows[0];
- assert.equal(submission.automatic,true);assert.deepEqual(submission.based_on_tasks.sort(),[a.id,b.id].sort());assert.match(submission.result,/Проверка выполнена/);
+ assert.equal(submission.automatic,true);assert.equal(submission.state,'accepted');assert(submission.decided_at);
+ assert.deepEqual(submission.based_on_tasks.sort(),[a.id,b.id].sort());assert.match(submission.result,/Проверка выполнена/);
  assert.equal((await db.pool.query('SELECT count(*)::int n FROM outbox WHERE task_id=$1 AND recipient_id=$2',[id,director.id])).rows[0].n,1);
  await db.transaction(client=>reviews.delegatedTaskAccepted(client,b.id));assert.equal(await reviews.runDelegationReviews(),0);
  assert.equal((await db.pool.query('SELECT count(*)::int n FROM task_submissions WHERE task_id=$1',[id])).rows[0].n,1);
- await workflow.reviewTask(director,id,'accept','',2);assert.equal((await row(id)).status,'completed');
+ assert.equal((await db.pool.query("SELECT count(*)::int n FROM task_events WHERE task_id=$1 AND kind='task_completed'",[id])).rows[0].n,1);
 });
 
-test('concurrent sibling acceptances serialize the source; ordinary parent links do not trigger automatic submission',async()=>{
+test('concurrent acceptances close the source once and ordinary parent links do not close it',async()=>{
  const id=await source(),a=await workflow.delegateTask(lead,id,{assigneeId:anna.id,expectedVersion:1}),b=await workflow.delegateTask(lead,id,{assigneeId:ivan.id,expectedVersion:1});
  await submit(a.id,anna);await submit(b.id,ivan);await Promise.all([accept(a.id),accept(b.id)]);
- assert.equal((await row(id)).status,'review');assert.equal((await db.pool.query('SELECT count(*)::int n FROM delegation_auto_reviews WHERE source_id=$1',[id])).rows[0].n,1);
+ assert.equal((await row(id)).status,'completed');assert.equal((await db.pool.query('SELECT count(*)::int n FROM delegation_auto_reviews WHERE source_id=$1',[id])).rows[0].n,1);
  const plainParent=await source(),plain=await workflow.createTask(lead,{...input(anna.id),parentId:plainParent});await submit(plain.id,anna);await accept(plain.id);assert.equal((await row(plainParent)).status,'active');
 });
 
-test('an active source approval defers automatic submission until it is resolved; a returned source is not repeatedly resubmitted',async()=>{
+test('an active source approval defers automatic completion until it is resolved',async()=>{
  const id=await source(),child=await workflow.delegateTask(lead,id,{assigneeId:anna.id,expectedVersion:1});
  const approval=randomUUID();await db.pool.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version) SELECT $1,$2,$3,'completion','Фикстура согласования','Проверить результат',1,'pending',$4,max(version) FROM rule_versions",[approval,id,lead.id,JSON.stringify([{userId:director.id,label:'Директор'}])]);
  await submit(child.id,anna);await accept(child.id);assert.equal((await row(id)).status,'active');assert.equal(await reviews.runDelegationReviews(),0);
  // Fixture resolves the source route without making an unrelated external call.
  await db.pool.query("UPDATE approvals SET state='rejected' WHERE task_id=$1 AND state='pending'",[id]);assert(approval);
- assert.equal(await reviews.runDelegationReviews(),1);assert.equal((await row(id)).status,'review');
- await workflow.reviewTask(director,id,'return','Нужна дополнительная проверка',2);await reviews.runDelegationReviews();assert.equal((await row(id)).status,'active');
+ assert.equal(await reviews.runDelegationReviews(),1);assert.equal((await row(id)).status,'completed');
+ assert.equal(await reviews.runDelegationReviews(),0);assert.equal((await row(id)).version,2);
 });
 
-test('undo of a contributing acceptance also withdraws the automatic source submission and preserves history',async()=>{
+test('undo of a contributing acceptance reopens the source and preserves history',async()=>{
  const id=await source(),child=await workflow.delegateTask(lead,id,{assigneeId:anna.id,expectedVersion:1});await submit(child.id,anna);await accept(child.id);
  const undo=await import('../server/undo.js'),action=await undo.lastUndo(lead,child.id);assert(action);await undo.undoLastAction(lead,action.id);
  assert.equal((await row(child.id)).status,'review');assert.equal((await row(id)).status,'active');
  const entries=(await db.pool.query('SELECT * FROM task_submissions WHERE task_id=$1',[id])).rows;assert.equal(entries.length,1);assert(entries[0].withdrawn_at);
  assert((await db.pool.query('SELECT reverted_at FROM delegation_auto_reviews WHERE source_id=$1',[id])).rows[0].reverted_at);
- await accept(child.id);assert.equal((await row(id)).status,'review');
+ await accept(child.id);assert.equal((await row(id)).status,'completed');
 });
 
 test('undo refuses to revert a source after later activity or external publication, leaving both tasks consistent',async()=>{
@@ -156,26 +183,38 @@ test('undo refuses to revert a source after later activity or external publicati
   if(mode==='activity')await (await import('../server/service.js')).addComment(director,id,'Проверяем принятый результат');
   else await db.pool.query("UPDATE task_sync_queue SET attempts=1,state='sent' WHERE task_id=$1 AND task_version=2",[id]);
   await assert.rejects(()=>undo.undoLastAction(lead,action.id),/Основная задача|Основная|основной/);
-  assert.equal((await row(child.id)).status,'completed');assert.equal((await row(id)).status,'review');
+  assert.equal((await row(child.id)).status,'completed');assert.equal((await row(id)).status,'completed');
  }
 });
 
-test('undo handles an earlier contributor accepted by another reviewer and a deferred automatic submission',async()=>{
+test('undo handles an earlier contributor accepted by another reviewer and deferred completion',async()=>{
  const id=await source(),a=await workflow.delegateTask(lead,id,{assigneeId:anna.id,expectedVersion:1}),b=await workflow.delegateTask(lead,id,{assigneeId:ivan.id,expectedVersion:1});
  await submit(a.id,anna);await submit(b.id,ivan);await accept(a.id);
  const undo=await import('../server/undo.js'),action=await undo.lastUndo(lead,a.id);assert(action);
- await workflow.reviewTask(director,b.id,'accept','',(await row(b.id)).version);assert.equal((await row(id)).status,'review');
+ await workflow.reviewTask(director,b.id,'accept','',(await row(b.id)).version);assert.equal((await row(id)).status,'completed');
  await undo.undoLastAction(lead,action.id);assert.equal((await row(a.id)).status,'review');assert.equal((await row(b.id)).status,'completed');assert.equal((await row(id)).status,'active');
  // A pending route makes the next acceptance produce its automatic effect later.
  await db.pool.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version) SELECT $1,$2,$3,'completion','Фикстура','Проверить',3,'pending',$4,max(version) FROM rule_versions",[randomUUID(),id,lead.id,JSON.stringify([{userId:director.id,label:'Директор'}])]);
  await accept(a.id);const deferred=await undo.lastUndo(lead,a.id);assert(deferred);assert.equal((await row(id)).status,'active');
- await db.pool.query("UPDATE approvals SET state='rejected' WHERE task_id=$1 AND state='pending'",[id]);await reviews.runDelegationReviews();assert.equal((await row(id)).status,'review');
+ await db.pool.query("UPDATE approvals SET state='rejected' WHERE task_id=$1 AND state='pending'",[id]);await reviews.runDelegationReviews();assert.equal((await row(id)).status,'completed');
  await undo.undoLastAction(lead,deferred.id);assert.equal((await row(id)).status,'active');assert.equal((await row(a.id)).status,'review');
+});
+
+test('acceptance and undo propagate through a delegation chain',async()=>{
+ const top=await workflow.createTask(director,input(director.id));
+ const middle=await workflow.delegateTask(director,top.id,{assigneeId:lead.id,expectedVersion:1});
+ const leaf=await workflow.delegateTask(lead,middle.id,{assigneeId:anna.id,expectedVersion:1});
+ await submit(leaf.id,anna);await accept(leaf.id);
+ assert.equal((await row(middle.id)).status,'completed');assert.equal((await row(top.id)).status,'completed');
+ const undo=await import('../server/undo.js'),action=await undo.lastUndo(lead,leaf.id);assert(action);
+ await undo.undoLastAction(lead,action.id);
+ assert.equal((await row(leaf.id)).status,'review');assert.equal((await row(middle.id)).status,'active');assert.equal((await row(top.id)).status,'active');
+ assert.equal((await db.pool.query('SELECT count(*)::int n FROM delegation_auto_reviews WHERE source_id=ANY($1) AND reverted_at IS NOT NULL',[[top.id,middle.id]])).rows[0].n,2);
 });
 
 test('Telegram previews the company manager, keeps manual fallback and makes confirmation idempotent',async()=>{
  const c=await company(),id=await source(c.id),bot=await import('../server/bot.js'),channel='fixture-company-delegation';
- const preview=await bot.botView(lead,channel,{op:'delegate_list',id});assert.match(preview.text,/Ответственный компании/);assert.match(preview.text,new RegExp(anna.name));
+ const preview=await bot.botView(lead,channel,{op:'delegate_list',id});assert.match(preview.text,/Менеджер клиента/);assert.match(preview.text,new RegExp(anna.name));
  const manual=await bot.botClick(lead,channel,preview.buttons.flat().find(b=>b.text==='Другой сотрудник')!.token);assert(manual.buttons.flat().some(b=>b.text===ivan.name));
  const fresh=await bot.botView(lead,channel,{op:'delegate_list',id});
  const confirm=fresh.buttons.flat().find(b=>b.text==='Создать поручение')!.token;
@@ -184,4 +223,24 @@ test('Telegram previews the company manager, keeps manual fallback and makes con
  const id2=await source(c.id),stale=await bot.botView(lead,channel,{op:'delegate_list',id:id2});
  const updated=await okb.getCompany(director,c.id);await okb.saveCompany(director,{name:c.name,taxId:null,status:'active',contact:'',notes:'',version:updated.version,managerId:ivan.id},c.id);
  await assert.rejects(()=>bot.botClick(lead,channel,stale.buttons.flat().find(b=>b.text==='Создать поручение')!.token),/Ответственный компании изменился/);
+});
+
+test('Telegram finds the company and voice delegation suggests its manager before confirmation',async()=>{
+ const bot=await import('../server/bot.js'),channel='fixture-delegation-voice';
+ const c=await okb.saveCompany(director,{name:'Клиент голосового теста',taxId:null,status:'active',contact:'',notes:'',managerId:anna.id});
+ const unlinked=await source();
+ const list=await bot.botView(lead,channel,{op:'delegate_list',id:unlinked});
+ const find=(screen:typeof list,label:string)=>screen.buttons.flat().find(b=>b.text===label)!.token;
+ await bot.botClick(lead,channel,find(list,'Найти клиента в ОКБ'));
+ const results=await bot.botVoiceDraft(lead,channel,'голосового теста','client-search');
+ const selected=await bot.botClick(lead,channel,find(results,c.name));assert.match(selected.text,new RegExp(anna.name));
+ await bot.botClick(lead,channel,find(selected,'Создать поручение'));
+ assert.equal((await db.pool.query('SELECT company_id FROM tasks WHERE delegated_from_id=$1',[unlinked])).rows[0].company_id,c.id);
+
+ const linked=await source(c.id);await bot.botView(lead,channel,{op:'task',id:linked});
+ const voice=await bot.botVoiceDraft(lead,channel,'Делегируй эту задачу менеджеру клиента','delegate-voice');
+ assert.match(voice.text,new RegExp(anna.name));assert.match(voice.text,new RegExp(c.name));
+ const confirm=voice.buttons.flat().find(b=>b.text==='Подтвердить и отправить');assert(confirm);
+ await bot.botClick(lead,channel,confirm.token);
+ assert.equal((await db.pool.query('SELECT assignee_id FROM tasks WHERE delegated_from_id=$1',[linked])).rows[0].assignee_id,anna.id);
 });

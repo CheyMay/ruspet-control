@@ -132,6 +132,7 @@ function recurringReminder(tail:string):Record<string,string>|null{
 const actions:{kind:VoiceKind;pattern:string}[]=[
  {kind:'reminder_cancel_voice',pattern:'(?:отмени(?:те)?|отключи(?:те)?|убери(?:те)?) (?:напоминание|напоминания)'},
  {kind:'undo',pattern:'(?:отмени(?:те)?|верни(?:те)?) последнее действие'},
+ {kind:'delegate',pattern:'делегируй(?:те)?|делегировать'},
  {kind:'edit_assignee',pattern:'(?:смени(?:те)?|поменяй(?:те)?|измени(?:те)?) исполнителя|переназначь(?:те)?'},
  {kind:'edit_title',pattern:'(?:измени(?:те)?|поменяй(?:те)?|смени(?:те)?) название|переименуй(?:те)?'},
  {kind:'edit_description',pattern:'(?:измени(?:те)?|поменяй(?:те)?|обнови(?:те)?) описание'},

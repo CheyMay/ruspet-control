@@ -35,6 +35,7 @@ export function taskActionFields(kind:string|undefined,min:number,withAssignee=t
   case 'edit_description':return [field('value','Новое описание задачи',1),reasonField];
   case 'edit_assignee':return [...(withAssignee?[assigneeField]:[]),field('reason','Почему меняется исполнитель?')];
   case 'delegate':return [assigneeField,field('instruction','Поручение сотруднику или «пропустить»',1)];
+  case 'delegate_client':return [field('client','Введите название клиента или ИНН',2,150)];
   case 'answer':return [field('reason','Что помешало выполнить задачу?',min),field('progress','Что уже сделано?',min),field('plan','Что будете делать дальше?',min)];
   case 'deadline':return [deadlineField,field('reason','Почему нужен новый срок?',min),field('plan','Что будет сделано к новому сроку?',min)];
   case 'clarification':return [field('answer','Ответьте на вопрос согласующего')];
@@ -57,7 +58,7 @@ function relatedName(a:string,b:string){
  return stem(a)===stem(b);
 }
 async function availableAssignees(actor:User,payload:Payload,db:Db){
- if(payload.kind==='delegate')return (await delegationTargets(actor,payload.id!)).people;
+ if(payload.kind==='delegate')return (await delegationTargets(actor,payload.id!,undefined,db)).people;
  if(payload.kind==='edit_assignee')return taskAssignees(actor,payload.id!);
  return (await db.query<User>('SELECT * FROM users WHERE id=$1 OR NOT root_access AND ($2 OR ($3 AND branch_id=$4)) ORDER BY name',[actor.id,globalAccess(actor),actor.role==='branch_manager',actor.branch_id])).rows;
 }

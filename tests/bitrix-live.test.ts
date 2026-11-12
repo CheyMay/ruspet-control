@@ -65,7 +65,7 @@ test('verified event mode skips background task scans and reads an idle task onl
  await db.pool.query('UPDATE bitrix_event_capture SET enabled=false,verified_at=NULL WHERE id=1');await db.pool.query('UPDATE bitrix_task_links SET live_enabled=false WHERE task_id=$1',[task.id]);
 });
 
-test('delegated acceptance arriving from Bitrix submits its source and queues the source review through the existing transport',async()=>{
+test('delegated acceptance arriving from Bitrix closes its source through the existing transport',async()=>{
  const lead=(await db.pool.query<User>("SELECT * FROM users WHERE id='lead-msk'")).rows[0];
  await fields.mapBitrixUser(transport,lead.id,'204',true);await db.pool.query("INSERT INTO bitrix_pilot_members(user_id,pilot_role) VALUES($1,'leader')",[lead.id]);
  const source=await workflow.createTask(director,{title:'РЗМ* Источник поручения',description:'Фикстура автоматической сдачи',assigneeId:lead.id,price:55000,deadline:null,plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null});
@@ -78,10 +78,10 @@ test('delegated acceptance arriving from Bitrix submits its source and queues th
  await workflow.reviewTask(anna,child.id,'submit','Результат делегированного поручения готов',1);await live.tickLiveSync(transport);
  assert.equal(remote.get('9802')!.status,'4');assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[source.id])).rows[0].status,'active');
  remote.get('9802')!.status='5';await live.tickLiveSync(transport);
- assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[source.id])).rows[0].status,'review');
+ assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[source.id])).rows[0].status,'completed');
  assert.equal((await db.pool.query('SELECT state FROM task_submissions WHERE task_id=$1 AND withdrawn_at IS NULL',[child.id])).rows[0].state,'accepted');
  const parentSubmission=(await db.pool.query('SELECT * FROM task_submissions WHERE task_id=$1',[source.id])).rows[0];assert.equal(parentSubmission.automatic,true);assert.match(parentSubmission.result,/Результат делегированного поручения готов/);
- await live.tickLiveSync(transport);assert.equal(remote.get('9801')!.status,'4');
+ await live.tickLiveSync(transport);assert.equal(remote.get('9801')!.status,'5');
  assert.equal((await db.pool.query('SELECT count(*)::int n FROM delegation_auto_reviews WHERE source_id=$1',[source.id])).rows[0].n,1);
  const oldSource=await workflow.createTask(director,{title:'РЗМ* Историческая сверка',description:'Фикстура первичного выравнивания',assigneeId:lead.id,price:0,deadline:null,plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null});
  const oldChild=await workflow.delegateTask(lead,oldSource.id,{assigneeId:anna.id,expectedVersion:1}),oldTask=(await db.pool.query<Task>('SELECT * FROM tasks WHERE id=$1',[oldChild.id])).rows[0];
