@@ -15,7 +15,8 @@ export const readCookie=(req:express.Request,name:string)=>req.headers.cookie?.s
 export async function sessionUser(token:string){
  return (await pool.query(`SELECT u.* FROM sessions s JOIN users u ON u.id=s.user_id
   WHERE s.token_hash=$1 AND s.expires_at>now()
-   AND (NOT u.root_access OR EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled))
+   AND ((NOT u.root_access AND NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id))
+    OR EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled))
    AND (s.auth_method<>'telegram' OR
    (EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled)
    AND EXISTS(SELECT 1 FROM telegram_binding b WHERE b.id=s.telegram_binding_id AND b.user_id=u.id)

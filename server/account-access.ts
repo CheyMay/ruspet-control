@@ -35,6 +35,32 @@ export async function createUserAccount(actor:User,userId:string,username:string
   return insertAccount(db,user,username,actor.id);
  });
 }
+export async function changeUserAccount(actor:User,userId:string,username:string,action:'enable'|'disable'|'reset'){
+ assert(actor.role==='admin',403,'Входы сотрудников настраивает администратор.');
+ assert(userId!==actor.id||action==='enable',403,'Ваш вход может изменить другой администратор.');
+ return transaction(async db=>{
+  await db.query('SELECT pg_advisory_xact_lock($1)',[accountLock]);
+  const target=(await db.query('SELECT name,root_access FROM users WHERE id=$1',[userId])).rows[0];
+  assert(target,404,'Сотрудник не найден.');
+  assert(!target.root_access,403,'Доступ владельца настраивается отдельно.');
+  const account=(await db.query('SELECT enabled,password_login FROM login_accounts WHERE user_id=$1 AND username=$2 FOR UPDATE',[userId,username])).rows[0];
+  assert(account,404,'Вход сотрудника не найден.');
+  const password=action==='reset'?randomBytes(18).toString('base64url'):undefined;
+  if(password){
+   assert(account.enabled&&account.password_login,409,'Сброс доступен для активного входа с паролем.');
+   await db.query('UPDATE login_accounts SET password_hash=$3 WHERE user_id=$1 AND username=$2',[userId,username,await hashPassword(password)]);
+  }else{
+   await db.query('UPDATE login_accounts SET enabled=$3 WHERE user_id=$1 AND username=$2',[userId,username,action==='enable']);
+  }
+  if(action!=='enable'){
+   await db.query('DELETE FROM sessions WHERE user_id=$1',[userId]);
+   await db.query("UPDATE telegram_login_requests SET state='cancelled' WHERE user_id=$1 AND state IN ('pending','approved')",[userId]);
+  }
+  const message={enable:'Вход сотрудника включён',disable:'Вход сотрудника отключён',reset:'Пароль сотрудника обновлён'}[action];
+  await event(db,null,actor.id,'account_changed',message,{userId,username,action});
+  return {name:target.name,username,password};
+ });
+}
 async function accountPlan(db:Db,total:number){
  assert(Number.isInteger(total)&&total>=1&&total<=1000,400,'Число пользователей должно быть от 1 до 1000.');
  const active=Number((await db.query('SELECT count(DISTINCT user_id)::int n FROM login_accounts WHERE enabled')).rows[0].n),required=Math.max(0,total-active);

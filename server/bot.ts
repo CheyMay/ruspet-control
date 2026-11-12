@@ -1,6 +1,7 @@
 import {button,date,screen,type BotScreen,type Payload} from './bot-ui.js';
 import {renderBotTask} from './bot-task.js';
 import {renderBotNavigation} from './bot-navigation.js';
+import {readNotifications} from './notifications.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 export type {BotScreen} from './bot-ui.js';
 import {lastUndo,undoLastAction} from './undo.js';
@@ -63,7 +64,7 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   const state=await listTaskReminders(u,p.id!),active=state.schedules.filter(r=>r.enabled);
   const people=active.length?(await pool.query('SELECT id,name FROM users WHERE id=ANY($1)',[active.map(r=>r.recipient_id)])).rows:[];
   const name=(id:string)=>people.find(person=>person.id===id)?.name||id;
-  return screen(u,ch,'Напоминания по задаче #'+p.id+'\n'+(active.map(r=>`${name(r.recipient_id)}: дни ${r.days.join(', ')} · ${r.times.join(', ')} МСК · ${r.weeks} нед.`).join('\n')||'Расписаний нет.')+'\nНеподтверждённые сообщения повторяются каждые 30 минут до конца дня.',[[button('Новое напоминание для меня','reminder_days',{id:p.id})],...active.map(r=>[button('Выключить: '+r.times.join(', '),'confirm',{kind:'reminder_cancel',id:p.id,target:r.id})]),[button('К задаче','task',{id:p.id,list:p.list}),button('Ожидают подтверждения','alerts')]]);
+  return screen(u,ch,'Напоминания по задаче #'+p.id+'\n'+(active.map(r=>`${name(r.recipient_id)}: дни ${r.days.join(', ')} · ${r.times.join(', ')} МСК · ${r.weeks} нед.`).join('\n')||'Расписаний нет.')+'\nБез подтверждения бот напомнит ещё раз через 30 минут.',[[button('Новое напоминание для меня','reminder_days',{id:p.id})],...active.map(r=>[button('Выключить: '+r.times.join(', '),'confirm',{kind:'reminder_cancel',id:p.id,target:r.id})]),[button('К задаче','task',{id:p.id,list:p.list}),button('Ожидают подтверждения','alerts')]]);
  }
  if(p.op==='alerts'){const alerts=(await userAlerts(u)).filter(a=>!a.acknowledged_at&&!a.canceled_at);return screen(u,ch,'Напоминания, ожидающие подтверждения: '+alerts.length, [...alerts.slice(0,15).map(a=>[button('ОК · '+(a.task_id?'#'+a.task_id:a.kind),'confirm',{kind:'alert_ack',target:a.id})]),[button('Меню','home')]]);}
  if(p.op==='edit'){const d=await detail(u,p.id!);assert(canEdit(u,d.task)&&d.task.status==='active',403,'Редактирование доступно постановщику или руководителю.');return screen(u,ch,'Редактирование #'+d.task.id+' · '+compactTaskTitle(d.task.title),[[button('Название','form',{kind:'edit_title',id:p.id,version:d.task.version})],[button('Описание','form',{kind:'edit_description',id:p.id,version:d.task.version})],[button('Цена задачи','form',{kind:'edit_price',id:p.id,version:d.task.version})],[button('Исполнитель','assignee_list',{id:p.id,version:d.task.version})],[button('Крайний срок через согласование','form',{kind:'deadline',id:p.id,version:d.task.version})],[button('К задаче','task',{id:p.id,list:p.list})]]);}
@@ -82,6 +83,10 @@ export function parseMoscowInput(value:string){const match=value.match(/^(\d{2})
 async function prompt(u:User,ch:string,d:Dialog,db:Db){const f=d.fields[d.index];return screen(u,ch,`Задача #${d.payload.id}\nШаг ${d.index+1}/${d.fields.length}\n\n${f.label}\n${f.key==='deadline'?'Формат: ДД.ММ.ГГГГ ЧЧ:ММ · Москва':`Минимум ${f.min} символов. Можно указать ссылку на материалы.`}`,[[button('Отменить ввод','cancel',{id:d.payload.id,list:d.payload.list})]],db)}
 export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>{
  const b=(await pool.query('SELECT * FROM bot_buttons WHERE token=$1 AND actor_id=$2 AND channel=$3 AND expires_at>now()',[token,u.id,ch])).rows[0];assert(b,409,'Кнопка устарела. Откройте меню заново.');const p=b.payload as Payload;
+ if(p.op==='notices_read'){
+  await readNotifications(u,p.noticeIds||[]);
+  return botView(u,ch,{op:'notices'});
+ }
  if(!['form','confirm','cancel','accept_prepare','assignee_prepare','undo_prepare'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);

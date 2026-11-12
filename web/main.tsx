@@ -11,4 +11,5 @@ import './usability.css';
 import './appearance.css';
 import './telegram-login.css';
 import './staff-onboarding.css';
+import './personal-workspace.css';
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

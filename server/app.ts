@@ -11,7 +11,10 @@ import {listCompanies,saveCompany,getCompany,companyContacts,recordCompanyContac
 import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,previewProcess,toggleProcess} from './work-design.js';
 import {taskInput} from './task-input.js';
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
-import {createUserAccount} from './account-access.js';
+import {changeUserAccount,createUserAccount} from './account-access.js';
+import {updateEmployeeProfile} from './employee-profiles.js';
+import {notificationPreference,personalNotifications,readNotifications,saveNotificationPreference} from './notifications.js';
+import {setOwnerBitrixExchange} from './owner-operations.js';
 import {taskIntegration} from './bitrix-fields.js';
 import {pilotReadiness,pilotQueue} from './pilot-readiness.js';
 import {managementProgress,resetObservation,setNudgePreference,nudgeTeam} from './management.js';
@@ -110,6 +113,16 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/tasks/:id/integration',async(req,res)=>res.json(await taskIntegration(req.actor,String(req.params.id))));
  app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
  app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));
+ app.get('/api/notifications',async(req,res)=>res.json(await personalNotifications(req.actor,req.query.unread==='true')));
+ app.post('/api/notifications/read',async(req,res)=>{
+  const {ids}=z.object({ids:z.array(z.uuid()).min(1).max(150)}).parse(req.body);
+  res.json(await readNotifications(req.actor,ids));
+ });
+ app.get('/api/notifications/preferences',async(req,res)=>res.json(await notificationPreference(req.actor)));
+ app.put('/api/notifications/preferences',async(req,res)=>{
+  const {telegramDigest}=z.object({telegramDigest:z.boolean()}).parse(req.body);
+  res.json(await saveNotificationPreference(req.actor,telegramDigest));
+ });
  app.post('/api/alerts/:id/ack',async(req,res)=>res.json(await acknowledgeAlert(req.actor,String(req.params.id))));
  app.get('/api/org',async(req,res)=>res.json(await orgDirectory(req.actor)));
  app.put('/api/org/reporting/:id',async(req,res)=>{await setManager(req.actor,String(req.params.id),req.body);res.json({ok:true});});
@@ -134,6 +147,15 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/system/registrations',async(req,res)=>res.json(await listRegistrations(req.actor)));
  app.post('/api/system/registrations/:id',async(req,res)=>{const input=z.object({action:z.enum(['approve','reject']),staffId:z.uuid().optional(),userId:z.string().max(100).optional(),forceNew:z.boolean().optional(),confirmed:z.literal(true)}).parse(req.body);res.json(await reviewRegistration(req.actor,z.uuid().parse(req.params.id),input));});
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
+ app.patch('/api/system/access/:id',async(req,res)=>res.json(await updateEmployeeProfile(req.actor,String(req.params.id),req.body)));
+ app.put('/api/system/access/:id/account/:username',async(req,res)=>{
+  const {action}=z.object({action:z.enum(['enable','disable','reset']),confirmed:z.literal(true)}).parse(req.body);
+  res.json(await changeUserAccount(req.actor,String(req.params.id),String(req.params.username),action));
+ });
+ app.put('/api/owner/bitrix/exchange',async(req,res)=>{
+  const {enabled}=z.object({enabled:z.boolean(),confirmed:z.literal(true)}).parse(req.body);
+  res.json(await setOwnerBitrixExchange(req.actor,enabled));
+ });
  app.put('/api/system/access/:id/telegram',async(req,res)=>{const input=z.object({telegramId:z.string().trim().max(16).nullable(),confirmed:z.literal(true)}).parse(req.body);res.json(await setTelegramBinding(req.actor,String(req.params.id),input.telegramId));});
  app.get('/api/system/pilot',async(req,res)=>{assert(req.actor.role==='admin',403,'Подготовку пилота видит администратор.');res.json(await pilotReadiness());});
  app.get('/api/system/pilot/queue',async(req,res)=>{assert(req.actor.role==='admin',403,'Очередь пилота видит администратор.');res.json(await pilotQueue());});

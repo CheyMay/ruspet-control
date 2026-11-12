@@ -12,7 +12,7 @@ export function TaskReminders({task,user,users,readOnly=false}:{readOnly?:boolea
  async function refresh(){setData(await api<State>(`/tasks/${task.id}/reminders`));}
  useEffect(()=>{void refresh().catch(e=>setError(e.message));},[task.id,user.id]);
  async function run(fn:()=>Promise<unknown>){setBusy(true);setError('');try{await fn();await refresh();}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
- return <section className="task-reminders"><h3>Напоминания по задаче · МСК</h3><p className="muted">Каждое напоминание нужно подтвердить кнопкой «ОК, увидел» в боте. Без подтверждения — повтор каждые 30 минут до конца дня. Подтверждение не закрывает задачу.</p>
+ return <section className="task-reminders"><h3>Напоминания по задаче · МСК</h3><p className="muted">Бот напомнит по расписанию и ещё раз через 30 минут, если вы не нажали «ОК, увидел». Задачу можно закрыть из её карточки.</p>
  {error&&<p className="alert error" role="alert">{error}</p>}
  {!readOnly&&task.status!=='completed'&&<form onSubmit={e=>{e.preventDefault();void run(()=>api(`/tasks/${task.id}/reminders`,'POST',{recipientId:recipient,days:selected,times:multi?times:times.slice(0,1),weeks:repeat?weeks:1}));}}>
   <label>Кому<select value={recipient} onChange={e=>setRecipient(e.target.value)}><option value={user.id}>Мне · {user.name}</option>{canEdit&&task.assignee_id!==user.id&&<option value={task.assignee_id}>Исполнителю · {name(task.assignee_id)}</option>}</select></label>

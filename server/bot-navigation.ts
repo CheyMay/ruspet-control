@@ -9,6 +9,8 @@ import {bootstrap,visibleTasks} from './service.js';
 import {assert} from './domain.js';
 import {lastUndo} from './undo.js';
 import {pool,type Db} from './db.js';
+import {personalNotifications} from './notifications.js';
+import {groupNotifications} from '../shared/notifications.js';
 import type {User,Task} from '../shared/types.js';
 
 async function taskList(u:User,ch:string,p:Payload,items:{task:Task;hint?:string}[],label:string,now:Date,name:(id:string)=>string,db:Db=pool){
@@ -24,6 +26,19 @@ async function taskList(u:User,ch:string,p:Payload,items:{task:Task;hint?:string
 }
 
 export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool){
+ if(p.op==='notice_menu')return htmlScreen(u,ch,'Уведомления',[[button('Открыть уведомления','notices'),button('Нужно действие','inbox')]]);
+ if(p.op==='notices'){
+  const groups=groupNotifications(await personalNotifications(u,true)).slice(0,5);
+  const lines=groups.map(group=>{
+   const item=group[0];
+   return h(item.body.slice(0,190))+(group.length>1?' · ещё '+(group.length-1):'');
+  });
+  return htmlScreen(u,ch,'<b>Новые уведомления</b>\n\n'+(lines.join('\n\n')||'Все уведомления прочитаны.'),[
+   ...groups.filter(group=>group[0].task_id).map(group=>[button('Открыть #'+group[0].task_id,'task',{id:group[0].task_id!,list:{op:'notices'}})]),
+   ...(groups.length?[[button('Отметить показанные прочитанными','notices_read',{noticeIds:groups.flat().map(item=>item.id)})]]:[]),
+   [button('Меню','home')]
+  ]);
+ }
  if(p.op==='search_prompt'){
   const draft={payload:{op:'search'},fields:[{key:'query',label:'Название, номер задачи или имя исполнителя',min:2}],index:0,values:{}};
   await pool.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+interval '1 hour') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(draft)]);
@@ -65,7 +80,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  if(p.op==='menu_more'){
   const last=await lastUndo(u);
   return htmlScreen(u,ch,'<b>Другие разделы</b>\n\nНапоминания, отчёты и помощь.',[
-   [button('🔔 Напоминания','alerts'),button('📁 Отчёты','reports')],
+   [button('🔔 Напоминания','alerts'),...(u.role!=='employee'?[button('📁 Отчёты','reports')]:[])],
    ...(u.role!=='employee'?[[button('📊 Сводка команды','brief')]]:[]),
    ...(last?[[button('Отменить последнее действие','undo_prepare',{id:last.task_id,target:last.id})]]:[]),
    [button('Как пользоваться','help')],[button('Меню','home')]
@@ -77,6 +92,6 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   [button(`📥 Нужно действие · ${actionTasks.size}`,'inbox')],
   [button(`Сегодня · ${s.today}`,'day'),button(`Просрочены · ${s.overdue}`,'tasks',{filter:'overdue'})],
   [button(u.role==='employee'?'Мои задачи':'Задачи команды','tasks'),button('Поиск','search_prompt')],
-  [button('Ещё разделы','menu_more')]
+  [button('Уведомления','notices'),button('Ещё разделы','menu_more')]
  ]);
 }

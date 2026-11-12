@@ -11,7 +11,7 @@ function requireOrgAdmin(actor:User){
 export async function orgDirectory(actor:User){
  requireOrgAdmin(actor);
  const [people,substitutions]=await Promise.all([
-  pool.query('SELECT u.id,u.name,u.role,u.branch_id,r.manager_id FROM users u LEFT JOIN org_reporting r ON r.employee_id=u.id ORDER BY u.name,u.id'),
+  pool.query('SELECT u.id,u.name,u.role,u.branch_id,r.manager_id FROM users u LEFT JOIN org_reporting r ON r.employee_id=u.id WHERE NOT u.root_access ORDER BY u.name,u.id'),
   pool.query('SELECT * FROM org_substitutions WHERE revoked_at IS NULL AND ends_at>now() ORDER BY starts_at,id LIMIT 100')
  ]);
  return {people:people.rows,substitutions:substitutions.rows};
@@ -23,9 +23,10 @@ export async function setManager(actor:User,employeeId:string,input:unknown){
   await db.query('SELECT pg_advisory_xact_lock(431036)');
   const employee=(await db.query<User>('SELECT * FROM users WHERE id=$1',[employeeId])).rows[0];
   assert(employee,404,'Сотрудник не найден.');
+  assert(!employee.root_access,403,'Владелец управляется отдельно.');
   if(!managerId){await db.query('DELETE FROM org_reporting WHERE employee_id=$1',[employeeId]);return;}
   const manager=(await db.query<User>('SELECT * FROM users WHERE id=$1',[managerId])).rows[0];
-  assert(manager&&canManage(manager),400,'Выберите сотрудника с ролью руководителя.');
+  assert(manager&&!manager.root_access&&canManage(manager),400,'Выберите сотрудника с ролью руководителя.');
   assert(employee.id!==manager.id,400,'Сотрудник не может руководить собой.');
   const chain=(await db.query(`WITH RECURSIVE chain(id) AS (SELECT $1::text UNION SELECT o.manager_id
     FROM org_reporting o JOIN chain c ON c.id=o.employee_id) SELECT 1 FROM chain WHERE id=$2`,[managerId,employeeId])).rowCount;
@@ -42,7 +43,7 @@ export async function saveSubstitution(actor:User,input:unknown){
   await db.query('SELECT pg_advisory_xact_lock(431036)');
   const people=(await db.query<User>('SELECT * FROM users WHERE id=ANY($1)',[[value.managerId,value.deputyId]])).rows;
   const manager=people.find(p=>p.id===value.managerId),deputy=people.find(p=>p.id===value.deputyId);
-  assert(manager&&deputy&&canManage(manager)&&canManage(deputy),400,'У обоих участников должна быть роль руководителя.');
+  assert(manager&&deputy&&!manager.root_access&&!deputy.root_access&&canManage(manager)&&canManage(deputy),400,'У обоих участников должна быть роль руководителя.');
   assert(globalAccess(deputy)||!globalAccess(manager)&&deputy.branch_id===manager.branch_id,400,'Заместителю нужна действующая область доступа руководителя.');
   const overlap=(await db.query('SELECT 1 FROM org_substitutions WHERE manager_id=$1 AND revoked_at IS NULL AND starts_at<$3 AND ends_at>$2',[manager.id,value.startsAt,value.endsAt])).rowCount;
   assert(!overlap,409,'У руководителя уже есть замещение на этот период.');

@@ -1,6 +1,6 @@
 import type {ReportAnalysis} from './reporting.js';
 export type Role = 'admin' | 'director' | 'branch_manager' | 'sales_head' | 'employee';
-export interface User { id: string; name: string; role: Role; branch_id: string; position: string; root_access?: boolean }
+export interface User { id: string; name: string; role: Role; branch_id: string; position: string; root_access?: boolean; version?: number }
 export type Status = 'active' | 'review' | 'completed';
 export interface Task { delegated_from_id?:string|null; company_id?:string|null; custom_fields?:{label:string;value:string}[]; price?:number|string|null; planned_start?:string|null; parent_id?:string|null; source_fields?: Record<string,unknown>; source_status?: string; id: string; title: string; description: string; branch_id: string; assignee_id: string; creator_id: string; deadline: string | null; original_deadline: string | null; planned_end: string | null; status: Status; priority: 'normal' | 'high'; code: string; important: boolean | null; customer_risk: boolean | null; version: number; transfer_count: number; created_at: string; updated_at: string; completed_at: string | null }
 export interface Finding { id: string; task_id: string; rule: string; severity: string; message: string; status: 'open' | 'resolved'; first_seen: string }
@@ -11,7 +11,7 @@ export interface Approval { action_revision:number; canceled_at?:string|null; id
 export interface Decision { retracted?:boolean; id: string; approval_id: string; actor_id: string; step_index: number; decision: string; comment: string; created_at: string }
 export interface Rules { requiredPrice?:boolean; showPlanning?:boolean; writtenRules?:import('./written-rules.js').WrittenRule[]; planning?:boolean; overdue: boolean; missingDeadline: boolean; plannedOverdue: boolean; requiredFields: boolean; code: boolean; responseMinLength: number; reminderMinutes: number; maxReminders: number; routes: { deadline: ('branchManager' | 'salesHead' | 'director' | 'creator')[]; completion: ('branchManager' | 'salesHead' | 'director' | 'creator')[] } }
 export interface ControlRequest { id: string; task_id: string; assignee_id: string; state: 'waiting' | 'answered' | 'escalated' | 'resolved'; reason: string | null; progress: string | null; plan: string | null; due_at: string; reminders: number; created_at: string }
-export interface Notification { id: string; task_id: string | null; recipient_id: string; body: string; state: string; created_at: string }
+export interface Notification { id: string; task_id: string | null; recipient_id: string; body: string; state: string; created_at: string; read_at?: string | null }
 export interface Metrics { total: number; active: number; overdue: number; today: number; review: number; completed: number; pending: number; waiting: number; transfers: number }
 export interface Report { parameters?:import('./report-parameters.js').ReportParameters; summary?:import('./report-summary.js').ReportSummary|null; analysis?:ReportAnalysis|null; formula_version?:string; slot?:string; kind?:string; activity?:Record<string,number>; id: string; day: string; scope: string; metrics: Metrics; rows: Task[]; rules_version: number; created_at: string }
 export interface SourceInfo { file_name:string; sheet_name:string; row_count:number; imported_at:string; assumptions:Record<string,unknown> }

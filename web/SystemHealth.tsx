@@ -1,6 +1,7 @@
 import {useEffect,useState} from 'react';
 import type {User} from '../shared/types.js';
 import {api,viewAsLink} from './api.js';
+import {EmployeeProfileEditor} from './EmployeeProfileEditor.js';
 
 export function moscowTimestamp(value:string|null|undefined){
  return value?new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'})+' МСК':'—';
@@ -67,10 +68,21 @@ export function SystemHealth(){
 }
 
 type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean;password_login?:boolean}[];visibleTasks:number;paired_at:string|null;telegram_id:string|null;invitation_expires:string|null};
-export function AccessDirectory({roles}:{roles:Record<string,string>}){
+export function AccessDirectory({roles,currentUserId}:{roles:Record<string,string>;currentUserId:string}){
  const {value,error,busy,refresh}=usePanelData<AccessPerson[]>('/system/access');
  const [query,setQuery]=useState(''),[invite,setInvite]=useState<{name:string;url:string}|null>(null),[creating,setCreating]=useState(false),[notice,setNotice]=useState(''),[inviteError,setInviteError]=useState('');
  const [accountPerson,setAccountPerson]=useState<AccessPerson|null>(null),[accountLogin,setAccountLogin]=useState(''),[accountBusy,setAccountBusy]=useState(false),[accountError,setAccountError]=useState(''),[newAccount,setNewAccount]=useState<{name:string;username:string;password:string}|null>(null);
+ const [profile,setProfile]=useState<AccessPerson|null>(null);
+ async function changeAccount(person:AccessPerson,username:string,action:'enable'|'disable'|'reset'){
+  const label={enable:'Включить вход',disable:'Отключить вход и завершить сессии',reset:'Выдать новый пароль и завершить сессии'}[action];
+  if(accountBusy||!window.confirm(label+' для '+person.name+'?'))return;
+  setAccountBusy(true);setAccountError('');setNewAccount(null);setNotice('');
+  try{
+   const result=await api<{name:string;username:string;password?:string}>('/system/access/'+encodeURIComponent(person.id)+'/account/'+encodeURIComponent(username),'PUT',{action,confirmed:true});
+   if(result.password)setNewAccount({...result,password:result.password});else setNotice('Настройки входа сохранены.');
+   refresh();
+  }catch(e){setAccountError((e as Error).message);}finally{setAccountBusy(false);}
+ }
  async function createAccount(e:React.FormEvent){
   e.preventDefault();if(!accountPerson||accountBusy)return;setAccountBusy(true);setAccountError('');
   try{const result=await api<{name:string;username:string;password:string}>('/system/access/'+encodeURIComponent(accountPerson.id)+'/account','POST',{username:accountLogin});setNewAccount(result);setAccountPerson(null);refresh();}
@@ -95,6 +107,7 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
   {(error||inviteError)&&<p className="alert error" role="alert">{inviteError||error}</p>}
   <p className="muted">Пользователей с активным входом: <strong>{value?.filter(p=>p.accounts.some(a=>a.enabled)).length??'—'}</strong>. Количество входов не ограничено десятью. Роль и доступ к задачам сохраняются при создании логина.</p>
   {accountError&&<p className="alert error" role="alert">{accountError}</p>}
+  {profile&&<EmployeeProfileEditor person={profile} roles={roles} own={profile.id===currentUserId} close={()=>setProfile(null)} saved={refresh}/>}
   {telegramPerson&&<form className="source-banner" onSubmit={e=>void saveTelegram(e)}><strong>{telegramPerson.paired_at?'Отключение Telegram':'Привязка Telegram'} · {telegramPerson.name}</strong>
    {telegramPerson.paired_at?<p>Telegram ID: {telegramPerson.telegram_id}. Входы через Telegram будут завершены, новые подтверждения отменены. Для повторного подключения выдайте новое приглашение.</p>:<><p>Предпочтительно выдать сотруднику персональное приглашение. Для ручной привязки нужен проверенный числовой ID личного аккаунта, а не @имя. Сотрудник должен открыть бота и нажать «Старт».</p><label>Telegram ID<input aria-label="Telegram ID сотрудника" inputMode="numeric" autoComplete="off" pattern="[1-9][0-9]*" maxLength={16} required value={telegramId} onChange={e=>setTelegramId(e.target.value)}/></label></>}
    <label><input type="checkbox" checked={telegramConfirmed} onChange={e=>setTelegramConfirmed(e.target.checked)}/>Подтверждаю {telegramPerson.paired_at?'отключение привязки':'личность сотрудника и правильность ID'}</label><button className="button primary" disabled={!telegramConfirmed||telegramBusy}>{telegramBusy?'Сохраняем…':telegramPerson.paired_at?'Отключить Telegram':'Привязать Telegram'}</button><button className="button secondary" type="button" disabled={telegramBusy} onClick={()=>setTelegramPerson(null)}>Отмена</button></form>}
@@ -104,10 +117,18 @@ export function AccessDirectory({roles}:{roles:Record<string,string>}){
   {!value&&busy&&<p role="status">Загружаем список сотрудников…</p>}
   {people&&<><div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, филиал, роль или логин" value={query} onChange={e=>setQuery(e.target.value)}/></div>
    <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th><th>Просмотр</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
-    <td><strong>{p.name}</strong><br/><small>{p.branch_id}</small></td><td>{roles[p.role]}</td><td>{p.visibleTasks}</td>
-    <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>{a.password_login===false?'Telegram / QR':a.username}{a.enabled?'':' · отключён'}{a.password_login===false&&a.enabled&&<button className="text-button" onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setAccountError('');}}>Создать пароль</button>}</div>):<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
+    <td><strong>{p.name}</strong><br/><small>{[p.position,p.branch_id].filter(Boolean).join(' · ')}</small>{!p.root_access&&<div><button className="text-button" onClick={()=>setProfile(p)}>Изменить профиль</button></div>}</td><td>{p.root_access?'Владелец':roles[p.role]}</td><td>{p.visibleTasks}</td>
+    <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>
+     {a.password_login===false?'Telegram / QR':a.username}{a.enabled?'':' · отключён'}
+     {!p.root_access&&p.id!==currentUserId&&<div className="notice-actions">
+      <button className="text-button" disabled={accountBusy} onClick={()=>void changeAccount(p,a.username,a.enabled?'disable':'enable')}>{a.enabled?'Отключить вход':'Включить вход'}</button>
+      {a.enabled&&(a.password_login===false
+       ?<button className="text-button" onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setAccountError('');}}>Создать пароль</button>
+       :<button className="text-button" disabled={accountBusy} onClick={()=>void changeAccount(p,a.username,'reset')}>Сбросить пароль</button>)}
+     </div>}
+    </div>):<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
     <td>{p.paired_at?<><span>Подключён · {moscowTimestamp(p.paired_at)}<br/>ID: {p.telegram_id}</span><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramConfirmed(false);setInviteError('');}}>Отключить</button></>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramId('');setTelegramConfirmed(false);setInviteError('');}}>Привязать по ID</button></>}</td>
-    <td><a className="text-button" href={viewAsLink(p.id)} target="_blank" rel="noopener" aria-label={`Открыть как ${p.name}`}>Открыть как сотрудник ↗</a></td>
+    <td>{!p.root_access&&<a className="text-button" href={viewAsLink(p.id)} target="_blank" rel="noopener" aria-label={`Открыть как ${p.name}`}>Открыть как сотрудник ↗</a>}</td>
    </tr>)}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}
  </section>;
 }

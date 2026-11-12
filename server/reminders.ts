@@ -68,7 +68,8 @@ export async function tickTaskReminders(now=new Date()){
    }
   }
   if(weekday<=5){
-   const people=(await db.query('SELECT u.*,b.paired_at FROM telegram_binding b JOIN users u ON u.id=b.user_id')).rows;
+   const people=(await db.query(`SELECT u.*,b.paired_at FROM telegram_binding b JOIN users u ON u.id=b.user_id
+    LEFT JOIN notification_preferences p ON p.user_id=u.id WHERE COALESCE(p.telegram_digest,true)`)).rows;
    for(const u of people){
     const tasks=(await visibleTasks(u,db)).filter(t=>u.role!=='employee'||t.assignee_id===u.id),remaining=tasks.filter(t=>taskQueue(t,now)==='overdue'||elapsedToday(t,now));
     const sendReport=async(kind:string,key:string,alertKind:string,due:Date,until:Date)=>{const r=await makeReport(u,kind,key,now);const content=reportText(r);await add(db,u.id,key,alertKind,content.text,due,until,null,null,r.id,content.links);};
@@ -84,5 +85,12 @@ export async function tickTaskReminders(now=new Date()){
 
 export async function pendingAlerts(u:User,now=new Date(),limit:number|null=5){
  const allowed=(await visibleTasks(u)).filter(t=>t.status!=='completed').map(t=>t.id);
- return (await pool.query('SELECT a.* FROM task_alerts a WHERE recipient_id=$1 AND acknowledged_at IS NULL AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3)) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=$4)) AND NOT EXISTS(SELECT 1 FROM task_alert_deliveries d WHERE d.alert_id=a.id AND (d.state IN (\'sending\',\'uncertain\') OR d.created_at>$2::timestamptz-interval \'30 minutes\')) ORDER BY due_at LIMIT $5',[u.id,now.toISOString(),allowed,reportScope(u),limit])).rows;
+ return (await pool.query(`SELECT a.* FROM task_alerts a WHERE recipient_id=$1 AND acknowledged_at IS NULL
+  AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3))
+  AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=$4))
+  AND (a.kind='task' OR COALESCE((SELECT p.telegram_digest FROM notification_preferences p WHERE p.user_id=$1),true))
+  AND (SELECT count(*) FROM task_alert_deliveries d WHERE d.alert_id=a.id) < CASE WHEN a.kind='task' THEN 2 ELSE 1 END
+  AND NOT EXISTS(SELECT 1 FROM task_alert_deliveries d WHERE d.alert_id=a.id
+   AND (d.state IN ('sending','uncertain') OR d.created_at>$2::timestamptz-interval '30 minutes'))
+  ORDER BY due_at LIMIT $5`,[u.id,now.toISOString(),allowed,reportScope(u),limit])).rows;
 }
