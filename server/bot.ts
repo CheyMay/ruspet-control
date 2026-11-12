@@ -15,15 +15,16 @@ import {linkedText,reportLink,escapeHtml,taskLink} from '../shared/report-links.
 import {randomBytes} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {acknowledgeAlert,userAlerts,listTaskReminders,saveTaskReminder,disableTaskReminder,saveOneTimeReminder,cancelOneTimeReminder} from './reminders.js';
-import {assert,canEdit,AppError} from './domain.js';
+import {assert,AppError} from './domain.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports,notify} from './service.js';
 import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
 import type {User} from '../shared/types.js';
 import {taskInput} from './task-input.js';
+import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};
-const taskScreens=['task','history','discussion','task_details','task_fields','task_result','task_approval','task_more'];
+const taskScreens=['task','history','discussion','task_details','task_fields','task_edit_permission','task_result','task_approval','task_more'];
 async function saveDialog(db:Db,u:User,ch:string,dialog:Dialog,minutes=60){
  await db.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+$4*interval '1 minute') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(dialog),minutes]);
 }
@@ -82,8 +83,8 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   return screen(u,ch,'Напоминания по задаче #'+p.id+'\n'+(active.map(r=>`${name(r.recipient_id)}: дни ${r.days.join(', ')} · ${r.times.join(', ')} МСК · ${r.weeks} нед.`).join('\n')||'Расписаний нет.')+'\nБез подтверждения бот напомнит ещё раз через 30 минут.',[[button('Разовое напоминание','form',{id:p.id,kind:'reminder_once'}),button('По расписанию','reminder_days',{id:p.id})],...state.oneTime.map(r=>[button('Отменить '+date(r.due_at),'confirm',{kind:'reminder_cancel_once',id:p.id,target:r.id})]),...active.map(r=>[button('Выключить: '+r.times.join(', '),'confirm',{kind:'reminder_cancel',id:p.id,target:r.id})]),[button('К задаче','task',{id:p.id,list:p.list}),button('Ожидают подтверждения','alerts')]]);
  }
  if(p.op==='alerts'){const alerts=(await userAlerts(u)).filter(a=>!a.acknowledged_at&&!a.canceled_at);return screen(u,ch,'Напоминания, ожидающие подтверждения: '+alerts.length, [...alerts.slice(0,15).map(a=>[button('ОК · '+(a.task_id?'#'+a.task_id:a.kind),'confirm',{kind:'alert_ack',target:a.id})]),[button('Меню','home')]]);}
- if(p.op==='edit'){const d=await detail(u,p.id!);assert(canEdit(u,d.task)&&d.task.status==='active',403,'Редактирование доступно постановщику или руководителю.');return screen(u,ch,'Редактирование #'+d.task.id+' · '+compactTaskTitle(d.task.title),[[button('Название','form',{kind:'edit_title',id:p.id,version:d.task.version})],[button('Описание','form',{kind:'edit_description',id:p.id,version:d.task.version})],[button('Цена задачи','form',{kind:'edit_price',id:p.id,version:d.task.version})],[button('Исполнитель','assignee_list',{id:p.id,version:d.task.version})],[button('Крайний срок через согласование','form',{kind:'deadline',id:p.id,version:d.task.version})],[button('К задаче','task',{id:p.id,list:p.list})]]);}
- if(p.op==='assignee_list'){const d=await detail(u,p.id!);assert(canEdit(u,d.task),403,'Нет права редактировать задачу.');const people=await taskAssignees(u,p.id!);const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/8)-1));return screen(u,ch,'Выберите исполнителя · страница '+(page+1),[...people.slice(page*8,page*8+8).map(person=>[button(person.name,'assignee_prepare',{id:p.id,version:d.task.version,target:person.id})]),[...(page?[button('← Назад','assignee_list',{id:p.id,page:page-1})]:[]),...((page+1)*8<people.length?[button('Далее →','assignee_list',{id:p.id,page:page+1})]:[])],[button('К задаче','task',{id:p.id,list:p.list})]]);}
+ if(p.op==='edit'){const d=await detail(u,p.id!);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу. Исполнитель может запросить разрешение.');return screen(u,ch,'Редактирование #'+d.task.id+' · '+compactTaskTitle(d.task.title),[[button('Название','form',{kind:'edit_title',id:p.id,version:d.task.version})],[button('Описание','form',{kind:'edit_description',id:p.id,version:d.task.version})],[button('Цена задачи','form',{kind:'edit_price',id:p.id,version:d.task.version})],[button('Исполнитель','assignee_list',{id:p.id,version:d.task.version})],[button('Крайний срок через согласование','form',{kind:'deadline',id:p.id,version:d.task.version})],[button('К задаче','task',{id:p.id,list:p.list})]]);}
+ if(p.op==='assignee_list'){const d=await detail(u,p.id!);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');const people=await taskAssignees(u,p.id!);const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/8)-1));return screen(u,ch,'Выберите исполнителя · страница '+(page+1),[...people.slice(page*8,page*8+8).map(person=>[button(person.name,'assignee_prepare',{id:p.id,version:d.task.version,target:person.id})]),[...(page?[button('← Назад','assignee_list',{id:p.id,page:page-1})]:[]),...((page+1)*8<people.length?[button('Далее →','assignee_list',{id:p.id,page:page+1})]:[])],[button('К задаче','task',{id:p.id,list:p.list})]]);}
  if(p.op==='brief'){
   assert(u.role!=='employee',403,'Сводка команды доступна руководителям.');
   const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(person=>person.id===id)?.name||id;
@@ -218,16 +219,16 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    if(p.id)await saveDialog(db,u,ch,{payload:{op:'context',id:p.id},fields:[],index:0,values:{}},15);
    return screen(u,ch,'Ввод отменён. Изменения не отправлены.',[[...(p.id?[button('К задаче','task',{id:p.id,list:p.list})]:[]),button('Меню','home')]],db);
   }
-  if(p.op==='assignee_prepare'){const d=await detail(u,p.id!);assert(canEdit(u,d.task),403,'Нет права редактировать задачу.');const person=(await db.query('SELECT name FROM users WHERE id=$1',[p.target])).rows[0];assert(person,400,'Исполнитель не найден.');return screen(u,ch,'Назначить исполнителем: '+person.name+'?',[[button('Указать причину','form',{kind:'edit_assignee',id:p.id,version:p.version,target:p.target})],[button('Отмена','cancel')]],db);}
+  if(p.op==='assignee_prepare'){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');const person=(await db.query('SELECT name FROM users WHERE id=$1',[p.target])).rows[0];assert(person,400,'Исполнитель не найден.');return screen(u,ch,'Назначить исполнителем: '+person.name+'?',[[button('Указать причину','form',{kind:'edit_assignee',id:p.id,version:p.version,target:p.target})],[button('Отмена','cancel')]],db);}
   if(p.op==='accept_prepare')return screen(u,ch,`Принять результат по задаче #${p.id} без комментария?`,[[button('Да, принять результат','confirm',{kind:'accept',id:p.id,list:p.list,version:p.version,values:{comment:''}})],[button('Отмена','cancel')]],db);
   if(p.op==='undo_prepare'){const last=await lastUndo(u,undefined,db);assert(last&&last.id===p.target,409,'Отмена недоступна: действие изменилось или прошло пять минут.');return screen(u,ch,`Отменить «${last.label}» по задаче #${last.task_id}? История сохранится, участники получат уточнение.`,[[button('Да, отменить действие','confirm',{kind:'undo',id:last.task_id,list:p.list,target:last.id})],[button('Оставить действие','cancel')]],db);}
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;
-   if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!);assert(canEdit(u,d.task),403,'Нет права редактировать задачу.');}
+   if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');}
    const fields=taskActionFields(p.kind,min,!p.target);
    const values={...(p.kind==='create_task'&&u.role==='employee'?{assignee:u.id}:{}),...p.values};
    const d:Dialog={payload:p,fields,index:0,values};nextMissing(d);
-   if(d.index===fields.length)return confirmation(u,ch,d,db);
+   if(d.index===fields.length)return confirmation(u,ch,d,db,p.kind==='permission_approve'?'Разрешить одно редактирование задачи #'+p.id+'?':undefined);
    await saveDialog(db,u,ch,d);return prompt(u,ch,d,db);
   }
   const v=p.values||{};let result='Действие сохранено.',resultTask:string|undefined;
@@ -250,7 +251,13 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   else if(p.kind==='reminder_cancel_once'){await cancelOneTimeReminder(u,p.target!);result='Разовое напоминание отменено.';}
   else if(p.kind==='reminder_cancel'){await disableTaskReminder(u,p.target!);result='Расписание выключено.'}
   else if(p.kind==='alert_ack'){await acknowledgeAlert(u,p.target!);result='ОК, получение напоминания подтверждено. Это не завершает задачу.'}
-  else if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!),t=d.task;const input:TaskInput={title:t.title,description:t.description,assigneeId:t.assignee_id,deadline:t.deadline,plannedStart:t.planned_start||null,plannedEnd:t.planned_end,important:t.important,customerRisk:t.customer_risk,parentId:t.parent_id||null};if(p.kind==='edit_title'){assert(v.value.length<=500,400,'Название не длиннее 500 символов.');input.title=v.value;}else if(p.kind==='edit_description')input.description=v.value;else if(p.kind==='edit_price'){const price=parsePrice(v.price);assert(price!==null,400,'Укажите корректную цену в рублях.');input.price=price;}else input.assigneeId=v.assignee||p.target!;await editTask(u,t.id,input,p.version!,v.reason);result='Изменение сохранено в задаче и истории.'}
+  else if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db),t=d.task;const input:TaskInput={title:t.title,description:t.description,assigneeId:t.assignee_id,deadline:t.deadline,plannedStart:t.planned_start||null,plannedEnd:t.planned_end,important:t.important,customerRisk:t.customer_risk,parentId:t.parent_id||null};if(p.kind==='edit_title'){assert(v.value.length<=500,400,'Название не длиннее 500 символов.');input.title=v.value;}else if(p.kind==='edit_description')input.description=v.value;else if(p.kind==='edit_price'){const price=parsePrice(v.price);assert(price!==null,400,'Укажите корректную цену в рублях.');input.price=price;}else input.assigneeId=v.assignee||p.target!;await editTask(u,t.id,input,p.version!,v.reason);result='Изменение сохранено в задаче и истории.'}
+  else if(p.kind==='permission_request'){await requestTaskEdit(u,p.id!,p.version!,v.reason);result='Запрос отправлен постановщику задачи.';}
+  else if(p.kind==='permission_approve'||p.kind==='permission_reject'){
+   const approved=p.kind==='permission_approve';
+   await decideTaskEdit(u,p.id!,p.target!,approved?'approve':'reject',v.comment||'');
+   result=approved?'Исполнителю разрешено одно сохранение карточки.':'Запрос на редактирование отклонён.';
+  }
   else if(p.kind==='answer'){await answerControl(u,p.target!,{reason:v.reason,progress:v.progress,plan:v.plan});result='Ответ сохранён и доступен руководителю.'}
   else if(p.kind==='deadline'){await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,plan:v.plan,proposedDeadline:v.deadline,expectedVersion:p.version!});result='Новый срок предложен. Текущий крайний срок изменится после согласования.'}
   else if(p.kind==='clarification'){await answerClarification(u,p.target!,v.answer);result='Ответ отправлен согласующему. Этап ожидает его решения.'}

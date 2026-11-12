@@ -5,7 +5,7 @@ import type {ReportLink} from '../shared/report-links.js';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {pool,transaction,reportTransaction,type Db} from './db.js';
-import {assert,canSee,canEdit} from './domain.js';
+import {assert,canSee,canManageTaskReminders} from './domain.js';
 import {event,visibleTasks} from './service.js';
 import {businessDay,taskQueue,elapsedToday} from '../shared/queues.js';
 import type {User,Task} from '../shared/types.js';
@@ -21,15 +21,15 @@ export type TaskReminder=Omit<ReminderInput,'recipientId'>&{id:string;task_id:st
 async function task(db:Db,u:User,id:string,lock=false){const t=(await db.query('SELECT * FROM tasks WHERE id=$1'+(lock?' FOR UPDATE':''),[id])).rows[0] as Task;assert(t&&canSee(u,t),404,'Задача недоступна.');return t;}
 export async function listTaskReminders(u:User,id:string){return transaction(async db=>{
  const t=await task(db,u,id);
- const schedules=(await db.query('SELECT * FROM task_reminders WHERE task_id=$1 AND (recipient_id=$2 OR created_by=$2 OR $3) ORDER BY created_at',[id,u.id,canEdit(u,t)])).rows;
- const alerts=(await db.query('SELECT a.id,kind,recipient_id,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE task_id=$1 AND (recipient_id=$2 OR $3) ORDER BY due_at DESC LIMIT 30',[id,u.id,canEdit(u,t)])).rows;
+ const schedules=(await db.query('SELECT * FROM task_reminders WHERE task_id=$1 AND (recipient_id=$2 OR created_by=$2 OR $3) ORDER BY created_at',[id,u.id,canManageTaskReminders(u,t)])).rows;
+ const alerts=(await db.query('SELECT a.id,kind,recipient_id,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE task_id=$1 AND (recipient_id=$2 OR $3) ORDER BY due_at DESC LIMIT 30',[id,u.id,canManageTaskReminders(u,t)])).rows;
  const bound=(await db.query('SELECT user_id FROM telegram_binding WHERE user_id=ANY($1)',[[u.id,t.assignee_id]])).rows.map(r=>r.user_id);
  const oneTime=(await db.query<{id:string;due_at:string}>("SELECT id,due_at FROM task_alerts WHERE task_id=$1 AND recipient_id=$2 AND dedupe_key LIKE 'task-once:%' AND canceled_at IS NULL AND acknowledged_at IS NULL AND expires_at>now() ORDER BY due_at LIMIT 20",[id,u.id])).rows;
  return {schedules,alerts,bound,oneTime};
 });}
 export async function saveTaskReminder(u:User,id:string,raw:ReminderInput,personalDelivery=false){const input=reminderInput.parse(raw);return transaction(async db=>{
  const t=await task(db,u,id,true);assert(t.status!=='completed',409,'Задача уже завершена.');
- assert(input.recipientId===u.id||input.recipientId===t.assignee_id&&canEdit(u,t),403,'Напоминание другому исполнителю назначает постановщик или руководитель.');
+ assert(input.recipientId===u.id||input.recipientId===t.assignee_id&&canManageTaskReminders(u,t),403,'Напоминание другому исполнителю назначает постановщик или руководитель.');
  const recipient=(await db.query('SELECT * FROM users WHERE id=$1',[input.recipientId])).rows[0];assert(recipient&&canSee(recipient,t),403,'Получателю задача недоступна.');
  const normalizedDays=[...input.days].sort((a,b)=>a-b),normalizedTimes=[...input.times].sort(),start=businessDay(new Date());
  const existing=(await db.query('SELECT id,personal_delivery FROM task_reminders WHERE task_id=$1 AND recipient_id=$2 AND enabled AND days=$3 AND times=$4 AND start_date=$5 AND weeks=$6',[id,input.recipientId,normalizedDays,normalizedTimes,start,input.weeks])).rows[0];
@@ -43,7 +43,7 @@ export async function saveTaskReminder(u:User,id:string,raw:ReminderInput,person
 });}
 export async function disableTaskReminder(u:User,id:string){return transaction(async db=>{
  const r=(await db.query('SELECT * FROM task_reminders WHERE id=$1 FOR UPDATE',[id])).rows[0];assert(r,404,'Напоминание не найдено.');const t=await task(db,u,r.task_id);
- assert(r.recipient_id===u.id||r.created_by===u.id||canEdit(u,t),403,'Нет права отменить напоминание.');
+ assert(r.recipient_id===u.id||r.created_by===u.id||canManageTaskReminders(u,t),403,'Нет права отменить напоминание.');
  if(r.enabled){await db.query('UPDATE task_reminders SET enabled=false,version=version+1 WHERE id=$1',[id]);await db.query('UPDATE task_alerts SET canceled_at=now() WHERE reminder_id=$1 AND acknowledged_at IS NULL AND canceled_at IS NULL',[id]);await event(db,t.id,u.id,'reminder_disabled','Расписание напоминаний выключено',{reminderId:id});}
  return {ok:true};
 });}

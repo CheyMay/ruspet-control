@@ -15,7 +15,7 @@ export function ManagerHome({data,open,tasks,actions}:Props){
  const queue=actionItems(data).filter(item=>item.mine);
  const next=queue.filter((item,index)=>queue.findIndex(other=>other.taskId===item.taskId)===index);
  const fallback=[...urgent,...today].sort((a,b)=>(a.deadline||'').localeCompare(b.deadline||''));
- const focus=next.length?next.map(item=>({id:item.taskId,title:item.title,label:item.label,tab:item.kind==='answer'?'discussion':undefined})):
+ const focus=next.length?next.map(item=>({id:item.taskId,title:item.title,label:item.label,tab:item.kind==='answer'?'discussion':item.kind==='review'||item.kind==='rework'?'result':'approvals'})):
   fallback.map(task=>({id:task.id,title:task.title,label:taskQueue(task,now)==='overdue'?'Просрочена':'Крайний срок сегодня',tab:undefined}));
  return <div className="personal-workspace">
   <section className="panel personal-intro">

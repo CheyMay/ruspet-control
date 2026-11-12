@@ -3,7 +3,7 @@ import {botExcerpt,botTaskStatus,botTextPages} from './bot-presentation.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import {formatPrice,priceBand,priceLabels} from '../shared/pricing.js';
-import {canRequest,canEdit} from './domain.js';
+import {canRequest} from './domain.js';
 import {canReview} from '../shared/actions.js';
 import {detail,config} from './service.js';
 import {canDelegateTask} from './workflow.js';
@@ -16,6 +16,7 @@ import type {User} from '../shared/types.js';
 export async function renderBotTask(u:User,ch:string,p:Payload){
  const d=await detail(u,p.id!),t=d.task,now=new Date();
  const pending=d.approvals.find(a=>a.state==='pending'),last=d.submissions[0];
+ const {canEdit,canRequest:canRequestEdit,canDecide,request}=d.editAccess;
  const approver=pending?.route[pending.current_step];
  const ids=[t.assignee_id,t.creator_id,...(pending?[pending.requester_id,approver?.userId]:[]),
   ...(p.op==='discussion'?d.comments.map(c=>c.author_id):[]),...(p.op==='history'?d.events.map(e=>e.actor_id):[])].filter(Boolean);
@@ -38,6 +39,16 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   return htmlScreen(u,ch,`<b>${h(label)} · #${h(t.id)}</b>${pages.length>1?` · ${page+1}/${pages.length}`:''}\n\n${h(pages[page])}`,[
    [...(page?[button('← Предыдущая часть',p.op,{...extra,page:page-1})]:[]),...(page+1<pages.length?[button('Продолжение →',p.op,{...extra,page:page+1})]:[])],...rows,back]);
  };
+ if(p.op==='task_edit_permission'){
+  const labels={pending:'Ожидает решения',approved:'Разрешено одно сохранение',rejected:'Отклонено',used:'Использовано'};
+  const rows:ReturnType<typeof button>[][]=[];
+  if(canDecide&&request)rows.push([form('Разрешить','permission_approve',request.id),form('Отклонить','permission_reject',request.id)]);
+  if(canRequestEdit)rows.push([form('Запросить разрешение','permission_request')]);
+  if(canEdit&&request?.state==='approved')rows.push([button('Редактировать задачу','edit',extra)]);
+  return paged('Разрешение на редактирование',request?
+   labels[request.state]+' · '+name(request.requesterId)+'\n\n'+request.reason+(request.decisionComment?'\n\n'+request.decisionComment:''):
+   canRequestEdit?'Укажите, что нужно изменить. Запрос получит постановщик задачи.':'Активного запроса нет.',rows);
+ }
  if(p.op==='task_details')return paged('Описание',t.title+'\n\n'+(t.description||'Описание пока не заполнено.'),[[button('Поля задачи','task_fields',extra)]]);
  if(p.op==='task_fields'){
   const showPlanning=(await config(pool)).config.showPlanning;
@@ -76,7 +87,8 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  }
  if(p.op==='task_more'){
   const rows:ReturnType<typeof button>[][]=[];
-  if(t.status==='active'&&canEdit(u,t))rows.push([button('Редактировать задачу','edit',extra)]);
+  if(canEdit)rows.push([button('Редактировать задачу','edit',extra)]);
+  if(canRequestEdit||request)rows.push([button(request?'Разрешение на редактирование':'Запросить редактирование','task_edit_permission',extra)]);
   if(!pending&&t.status==='active'&&canRequest(u,t))rows.push([form('Предложить новый срок','deadline')]);
   if(await canDelegateTask(u,t))rows.push([button('Делегировать задачу','delegate_list',extra)]);
   rows.push([button('Напоминания','task_reminders',extra)],[button('История','history',extra),button('Поля задачи','task_fields',extra)]);
@@ -87,6 +99,8 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const rows:ReturnType<typeof button>[][]=[];
  const control=d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));
  if(control){context.push('От вас ждут ответ на запрос');rows.push([form('Ответить на запрос','answer',control.id)]);}
+ if(canDecide||request?.state==='approved'&&request.requesterId===u.id)
+  rows.push([button(canDecide?'Решить запрос на редактирование':'Редактировать задачу',canDecide?'task_edit_permission':'edit',extra)]);
  if(pending){
   const participant=waiting?pending.requester_id:approver?.userId;
   const mine=participant===u.id;

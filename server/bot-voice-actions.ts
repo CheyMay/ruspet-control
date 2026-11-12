@@ -1,5 +1,6 @@
 import type {Db} from './db.js';
-import {assert,canEdit,canManage,canRequest,canSee,globalAccess} from './domain.js';
+import {assert,canManage,canRequest,canSee,globalAccess} from './domain.js';
+import {taskEditAccess} from './task-edit-permissions.js';
 import {canReview} from '../shared/actions.js';
 import {parsePrice} from '../shared/pricing.js';
 import type {Approval,Task,User} from '../shared/types.js';
@@ -34,6 +35,9 @@ export function taskActionFields(kind:string|undefined,min:number,withAssignee=t
   case 'edit_title':return [field('value','Новое название задачи',3,500),reasonField];
   case 'edit_description':return [field('value','Новое описание задачи',1),reasonField];
   case 'edit_assignee':return [...(withAssignee?[assigneeField]:[]),field('reason','Почему меняется исполнитель?')];
+  case 'permission_request':return [field('reason','Что нужно изменить в карточке?')];
+  case 'permission_reject':return [field('comment','Почему редактирование отклонено?')];
+  case 'permission_approve':return [];
   case 'delegate':return [assigneeField,field('instruction','Поручение сотруднику или «пропустить»',1)];
   case 'delegate_client':return [field('client','Введите название клиента или ИНН',2,150)];
   case 'answer':return [field('reason','Что помешало выполнить задачу?',min),field('progress','Что уже сделано?',min),field('plan','Что будете делать дальше?',min)];
@@ -59,7 +63,7 @@ function relatedName(a:string,b:string){
 }
 async function availableAssignees(actor:User,payload:Payload,db:Db){
  if(payload.kind==='delegate')return (await delegationTargets(actor,payload.id!,undefined,db)).people;
- if(payload.kind==='edit_assignee')return taskAssignees(actor,payload.id!);
+ if(payload.kind==='edit_assignee')return taskAssignees(actor,payload.id!,db);
  return (await db.query<User>('SELECT * FROM users WHERE id=$1 OR NOT root_access AND ($2 OR ($3 AND branch_id=$4)) ORDER BY name',[actor.id,globalAccess(actor),actor.role==='branch_manager',actor.branch_id])).rows;
 }
 export async function resolveAssignee(actor:User,payload:Payload,value:string,db:Db){
@@ -149,7 +153,7 @@ export async function prepareVoiceAction(actor:User,intent:VoiceIntent,db:Db){
   assert(items.length===1,409,'Откройте обсуждение задачи и выберите запрос, на который нужно ответить.');
   payload.target=items[0].id;
  }
- if(kind.startsWith('edit_'))assert(task.status==='active'&&canEdit(actor,task),403,'Редактирование доступно постановщику или руководителю по задаче в работе.');
+ if(kind.startsWith('edit_'))assert((await taskEditAccess(actor,task,db)).canEdit,403,'Редактирование доступно постановщику, администратору, владельцу или исполнителю с разрешением.');
  if(kind==='delegate')assert(canManage(actor)&&task.status==='active',403,'Делегирование доступно руководителю по задаче в работе.');
  if(kind==='reminder'||kind==='reminder_once')assert(task.status!=='completed',409,'Задача уже завершена.');
  if(kind==='undo'){

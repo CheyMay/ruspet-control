@@ -39,7 +39,8 @@ import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
 import {ownerTimeRouter} from './owner-time.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
-import {createTask,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
+import {createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
+import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import type { User } from '../shared/types.js';
 declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
@@ -212,6 +213,18 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   await toggleProcess(req.actor,z.uuid().parse(req.params.id),change.enabled,change.expectedRevision);res.json({ok:true});
  });
  app.post('/api/tasks',async(req,res)=>res.status(201).json(await createTask(req.actor,taskInput.parse(req.body))));
+ app.post('/api/tasks/:id/copy',async(req,res)=>{
+  const {requestId,...input}=taskInput.extend({requestId:z.uuid()}).parse(req.body);
+  res.status(201).json(await createTaskCopy(req.actor,String(req.params.id),requestId,input));
+ });
+ app.post('/api/tasks/:id/edit-permissions',async(req,res)=>{
+  const {expectedVersion,reason}=z.object({expectedVersion:z.number().int().positive(),reason:z.string().trim().min(5).max(4000)}).parse(req.body);
+  res.status(201).json(await requestTaskEdit(req.actor,String(req.params.id),expectedVersion,reason));
+ });
+ app.post('/api/tasks/:id/edit-permissions/:requestId/decision',async(req,res)=>{
+  const {decision,comment}=z.object({decision:z.enum(['approve','reject']),comment:z.string().trim().max(4000).default('')}).parse(req.body);
+  res.json(await decideTaskEdit(req.actor,String(req.params.id),z.uuid().parse(req.params.requestId),decision,comment));
+ });
  app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));});
  app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});
  app.get('/api/tasks/:id',async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));

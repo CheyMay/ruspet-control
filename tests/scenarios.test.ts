@@ -324,7 +324,7 @@ test('bot supports optional positive review comment and applies acceptance only 
  const detail=(await request('director',`/tasks/${id}`)).data;assert.equal(detail.task.status,'completed');assert.equal(detail.submissions[0].remark,'Результат проверен и принят');
 });
 
-test('task editing is restricted to creator or scoped manager; bot edits are versioned, audited and confirmed once',async()=>{
+test('the task creator can edit in the bot with version checks, audit and one confirmation',async()=>{
  const {botView,botClick,botText}=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,admin=users.find(u=>u.id==='admin')!;
  const foreign=(await request('admin','/tasks',taskInput)).data.id;
  assert.equal((await request('anna',`/tasks/${foreign}`,{...taskInput,expectedVersion:1,reason:'Попытка изменить чужую постановку'},'PUT')).status,403);
@@ -344,6 +344,73 @@ test('task editing is restricted to creator or scoped manager; bot edits are ver
  detail=await service.detail(admin,id);assert.equal(detail.task.assignee_id,'ivan');assert.equal(detail.task.version,4);
  assert.equal((await request('anna',`/tasks/${id}`,{...taskInput,expectedVersion:4,deadline:new Date(Date.now()+20*86400000).toISOString(),reason:'Прямой перенос без согласования'},'PUT')).status,400);
  const queue=(await db.pool.query('SELECT task_version FROM task_sync_queue WHERE task_id=$1 ORDER BY task_version',[id])).rows;assert.deepEqual(queue.map(r=>r.task_version),[1,2,3,4]);
+});
+
+test('an assignee needs a version-specific edit permission in the API and bot',async()=>{
+ const {botView,botClick,botText}=await import('../server/bot.js');
+ const anna=users.find(u=>u.id==='anna')!,director=users.find(u=>u.id==='director')!;
+ const id=(await request('director','/tasks',taskInput)).data.id,path='/tasks/'+id,channel='edit-permission-fixture';
+ const reason='Уточнить описание и номер заказа';
+ const put=(actor:string,version:number,changes:object={})=>request(actor,path,{...taskInput,...changes,expectedVersion:version,reason},'PUT');
+ assert.equal((await put('lead-msk',1)).status,403);
+ assert.equal((await put(anna.id,1)).status,403);
+ assert.equal((await request(anna.id,path+'/assignees')).status,403);
+ await assert.rejects(()=>botView(anna,channel,{op:'edit',id}),/Нет права/);
+
+ const more=await botView(anna,channel,{op:'task_more',id});
+ const permission=await botClick(anna,channel,botButton(more,'Запросить редактирование'));
+ await botClick(anna,channel,botButton(permission,'Запросить разрешение'));
+ const preview=await botText(anna,channel,reason,crypto.randomUUID());
+ await botClick(anna,channel,botButton(preview,'Подтвердить и отправить'));
+ const requestId=(await request(anna.id,path)).data.editAccess.request.id;
+ const decision=path+'/edit-permissions/'+requestId+'/decision';
+ assert.equal((await request(anna.id,path+'/edit-permissions',{expectedVersion:1,reason})).status,409);
+ assert.equal((await request('lead-msk',decision,{decision:'approve'})).status,403);
+ assert.equal((await request(anna.id,decision,{decision:'approve'})).status,403);
+ const inbox=await botView(director,channel,{op:'inbox'});
+ assert.match(inbox.text,/Решить запрос на редактирование/);
+ const screen=await botView(director,channel,{op:'task_edit_permission',id});
+ const confirm=await botClick(director,channel,botButton(screen,'Разрешить'));
+ await botClick(director,channel,botButton(confirm,'Подтвердить и отправить'));
+ assert.equal((await request('admin',decision,{decision:'approve'})).status,409);
+ assert.equal((await request(anna.id,path+'/assignees')).status,200);
+ assert.equal((await put(anna.id,1,{deadline:null})).status,400);
+ assert.equal((await request(anna.id,path)).data.editAccess.canEdit,true);
+ const edits=await Promise.all([put(anna.id,1,{description:'Первая правка'}),put(anna.id,1,{description:'Вторая правка'})]);
+ assert.deepEqual(edits.map(edit=>edit.status).sort(),[200,409]);
+ assert.equal((await put(anna.id,2)).status,403);
+ const saved=await request(anna.id,path);
+ assert.equal(saved.data.task.version,2);
+ assert.equal(saved.data.events.filter((e:any)=>e.kind==='task_edited').length,1);
+ assert.equal(saved.data.events.find((e:any)=>e.kind==='task_edited').data.editPermissionId,requestId);
+
+ const second=await request(anna.id,path+'/edit-permissions',{expectedVersion:2,reason});
+ assert.equal(second.status,201);
+ assert.equal((await put('admin',2,{description:'Параметры изменены администратором'})).status,200);
+ assert.equal((await request(director.id,path+'/edit-permissions/'+second.data.id+'/decision',{decision:'approve'})).status,409);
+ assert.equal((await put(anna.id,3)).status,403);
+});
+
+test('creating a copy saves the edited draft once and starts an independent task',async()=>{
+ const input={...taskInput,customFields:[{label:'Номер партии',value:'28-В'}],plannedStart:'2026-11-15T09:00:00+03:00',plannedEnd:'2026-11-15T12:00:00+03:00'};
+ const id=(await request('director','/tasks',input)).data.id,path='/tasks/'+id;
+ await request('anna',path+'/comments',{body:'Комментарий остаётся на исходной задаче'});
+ await request('anna',path+'/review',{action:'submit',comment:'Только исходный результат',expectedVersion:1});
+ await request('director',path+'/review',{action:'accept',comment:'',expectedVersion:2});
+ const draft={...input,title:'РЗМ* Копия проверки процесса',assigneeId:'ivan',requestId:crypto.randomUUID()};
+ assert.equal((await request('olga',path+'/copy',draft)).status,404);
+ assert.equal((await request('anna',path+'/copy',draft)).status,403);
+ const saves=await Promise.all([request('director',path+'/copy',draft),request('director',path+'/copy',draft)]);
+ assert.deepEqual(saves.map(save=>save.status),[201,201]);assert.equal(saves[0].data.id,saves[1].data.id);
+ assert.equal((await request('director',path+'/copy',{...draft,title:'Другая редакция'})).status,409);
+ const copied=(await request('ivan','/tasks/'+saves[0].data.id)).data;
+ assert.equal(copied.task.title,draft.title);assert.equal(copied.task.assignee_id,'ivan');
+ assert.equal(copied.task.description,input.description);assert.equal(Number(copied.task.price),input.price);
+ assert.equal(copied.task.deadline,input.deadline);assert.equal(copied.task.planned_start,new Date(input.plannedStart).toISOString());
+ assert.deepEqual(copied.task.custom_fields,input.customFields);assert.equal(copied.task.status,'active');
+ assert.equal(copied.task.delegated_from_id,null);assert.equal(copied.submissions.length,0);assert.equal(copied.comments.length,0);
+ assert.equal(copied.events[0].data.copiedFrom,id);
+ assert.equal((await request('director',path)).data.task.status,'completed');
 });
 
 test('written rules reject unsupported prose and check every task; planning checks follow the display setting',async()=>{
@@ -631,9 +698,10 @@ test('approval discussion is linked to its request, shared with panel and journa
 test('concurrent undo applies once and a changed parent hierarchy cannot be restored into a cycle',async()=>{
  const id=(await request('admin','/tasks',taskInput)).data.id;await request('anna',`/tasks/${id}/comments`,{body:'Проверка повторной отмены'});const a=(await request('anna','/undo/last')).data;
  const replies=await Promise.all([request('anna','/undo',{id:a.id,confirmed:true}),request('anna','/undo',{id:a.id,confirmed:true})]);assert.deepEqual(replies.map(r=>r.status).sort(),[200,409]);
- const parent=(await request('admin','/tasks',taskInput)).data.id,child=(await request('admin','/tasks',{...taskInput,parentId:parent})).data.id;
- await request('admin',`/tasks/${child}`,{...taskInput,parentId:null,reason:'Убрать родительскую связь',expectedVersion:1},'PUT');const edit=(await request('admin','/undo/last')).data;
- await request('director',`/tasks/${parent}`,{...taskInput,parentId:child,reason:'Новая родительская связь',expectedVersion:1},'PUT');
+ const parent=(await request('director','/tasks',taskInput)).data.id,child=(await request('admin','/tasks',{...taskInput,parentId:parent})).data.id;
+ assert.equal((await request('admin',`/tasks/${child}`,{...taskInput,parentId:null,reason:'Убрать родительскую связь',expectedVersion:1},'PUT')).status,200);
+ const edit=(await request('admin','/undo/last')).data;
+ assert.equal((await request('director',`/tasks/${parent}`,{...taskInput,parentId:child,reason:'Новая родительская связь',expectedVersion:1},'PUT')).status,200);
  assert.equal((await request('admin','/undo',{id:edit.id,confirmed:true})).status,409);
 });
 

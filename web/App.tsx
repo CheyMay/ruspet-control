@@ -1,7 +1,7 @@
 import {StaffOnboarding} from './StaffOnboarding.js';
 import {BitrixArchiveStatus} from './BitrixArchiveStatus.js';
 import {PilotReadiness} from './PilotReadiness.js';
-import {TaskIntegration} from './TaskIntegration.js';
+import {TaskCardFields,TaskEditPanel} from './TaskCardSections.js';
 import {DelegationInbox,OrgWorkspace} from './OrgWorkspace.js';
 import {TaskDelegation} from './TaskDelegation.js';
 import {CompanyReference} from './TaskComposeTools.js';
@@ -30,7 +30,7 @@ import {ActionWorkspace} from './ActionWorkspace.js';
 import {BotWorkspace} from './BotWorkspace.js';
 import {actionItems} from '../shared/actions.js';
 import { lazy, Suspense, useEffect, useState, useRef, useSyncExternalStore, type ReactNode, type FormEvent } from 'react';
-import { LayoutDashboard, ListTodo, GitPullRequest, ShieldCheck, BarChart3, Users, History, Settings2, Search, ArrowUpRight, ArrowRight, ChevronRight, Check, Clock3, X, Bell, Download, RefreshCw, Filter, MessageSquare, ChevronDown, PanelLeftClose, CircleHelp, CheckCheck, AlertCircle, Send, CalendarDays, ExternalLink } from 'lucide-react';
+import { LayoutDashboard, ListTodo, GitPullRequest, ShieldCheck, BarChart3, Users, History, Settings2, Search, ArrowUpRight, ArrowRight, ChevronRight, Check, Clock3, X, Bell, Download, RefreshCw, Filter, MessageSquare, ChevronDown, PanelLeftClose, CircleHelp, CheckCheck, AlertCircle, Send, CalendarDays, ExternalLink, Copy, Pencil } from 'lucide-react';
 import { businessDay, taskQueue, elapsedToday, plannedToday } from '../shared/queues.js';
 import { Dashboard } from './Dashboard.js';
 import {Appearance} from './Appearance.js';
@@ -64,21 +64,40 @@ export function App(){
  const page=data&&!canOpenWorkspacePage(data.user,requestedPage)&&!(requestedPage==='reports'&&reportOpen)?'overview':requestedPage;
  const [selected,setSelected]=useState<string|null>(null),[detail,setDetail]=useState<TaskDetail|null>(null),[drawerTab,setDrawerTab]=useState('info'),[requestType,setRequestType]=useState<'deadline'|'completion'|null>(null),[mobileMenu,setMobileMenu]=useState(false);
  const [demo,setDemo]=useState(true),[processDraft,setProcessDraft]=useState<ProcessDraft|null>(null);
- const [editor,setEditor]=useState<{task:Task|null;companyId?:string}|null>(null);
+ const [editor,setEditor]=useState<{task:Task|null;copyOf?:Task;companyId?:string}|null>(null);
  const [okbCompany,setOkbCompany]=useState<string|null>(null);
  const refreshGeneration=useRef(0),detailGeneration=useRef(0),toastTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
  const showToast=(message:string)=>{setToast(message);if(toastTimer.current)clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(''),5000);};
  async function refresh(){const generation=++refreshGeneration.current;const d=await api<Bootstrap>('/bootstrap');if(generation===refreshGeneration.current)setData(d);return d;}
- async function openTask(id:string,tab='info'){const generation=++detailGeneration.current;setSelected(id);setDrawerTab(tab);setDetail(null);window.history.replaceState(null,'',`#task=${encodeURIComponent(id)}`);try{const result=await api<TaskDetail>(`/tasks/${id}`);if(generation===detailGeneration.current)setDetail(result);}catch(e){if(generation===detailGeneration.current)setError((e as Error).message);}}
+ async function refreshDetail(id:string){
+  const generation=detailGeneration.current;
+  const next=await api<TaskDetail>('/tasks/'+encodeURIComponent(id));
+  if(generation===detailGeneration.current)setDetail(next);
+ }
+ async function openTask(id:string,tab='info'){const generation=++detailGeneration.current;setSelected(id);setDrawerTab(tab);setDetail(null);setError('');window.history.replaceState(null,'',`#task=${encodeURIComponent(id)}`);try{const result=await api<TaskDetail>(`/tasks/${id}`);if(generation===detailGeneration.current)setDetail(result);}catch(e){if(generation===detailGeneration.current)setError((e as Error).message);}}
  function closeTask(){detailGeneration.current++;setSelected(null);setDetail(null);setRequestType(null);window.history.replaceState(null,'',window.location.pathname+window.location.search);}
  async function login(id:string){refreshGeneration.current++;setBusy(true);setError('');try{await api('/demo/login','POST',{userId:id});closeTask();setEditor(null);setTablePage(0);setSearch('');setLinkedIds(null);setWorkDay(null);setProcessDraft(null);setOkbCompany(null);await refresh();showToast('Пользователь переключён. Права доступа применены.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
- async function act(path:string,body?:unknown,method='POST',message='Изменения сохранены'){if(viewingEmployee)return false;setBusy(true);setError('');try{const result=await api<{state?:string;count?:number}>(path,method,body);await refresh();if(selected){const generation=detailGeneration.current;const d=await api<TaskDetail>(`/tasks/${selected}`);if(generation===detailGeneration.current)setDetail(d);}showToast(result?.state==='stale'?'Задача изменилась. Создайте новый запрос.':typeof result?.count==='number'?`Обработано уведомлений: ${result.count}`:message);return true;}catch(e){setError((e as Error).message);return false;}finally{setBusy(false);}}
+ async function act(path:string,body?:unknown,method='POST',message='Изменения сохранены',onSaved?:(id:string)=>void){
+  if(viewingEmployee)return false;
+  const generation=detailGeneration.current;
+  setBusy(true);setError('');
+  try{
+   const result=await api<{id?:string;state?:string;count?:number}>(path,method,body);
+   await refresh().catch(e=>setError(e.message));
+   if(result?.id&&onSaved)onSaved(result.id);
+   else if(selected&&generation===detailGeneration.current)await refreshDetail(selected).catch(e=>setError(e.message));
+   showToast(result?.state==='stale'?'Задача изменилась. Создайте новый запрос.':typeof result?.count==='number'?`Обработано уведомлений: ${result.count}`:message);
+   return true;
+  }catch(e){setError((e as Error).message);return false;}
+  finally{setBusy(false);}
+ }
  useEffect(()=>{let live=true;(async()=>{try{if(viewingEmployee){setDemo(false);const d=await api<Bootstrap>('/bootstrap');if(live){setData(d);const task=new URLSearchParams(location.hash.slice(1)).get('task');if(task)void openTask(task);}return;}const mode=await api<{demo:boolean}>('/auth/mode');if(!live)return;setDemo(mode.demo);if(mode.demo){const list=await api<User[]>('/demo/users');if(!live)return;setUsers(list);try{const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}catch{await api('/demo/login','POST',{userId:'director'});const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}}else{try{await api('/auth/me');const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}catch{if(live)setData(null);}}const task=new URLSearchParams(window.location.hash.slice(1)).get('task');if(task&&live&&window.location.hash)void openTask(task);}catch(e){if(live)setError((e as Error).message);}finally{if(live)setLoading(false);}})();return()=>{live=false;};},[]);
  useEffect(()=>{setTablePage(0);},[filter,search,owner,branch,sort,priceFilter,fromDate,toDate]);
+ useEffect(()=>{if(editor)setError('');},[editor]);
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'){if(editor)setEditor(null);else if(requestType)setRequestType(null);else closeTask();}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[requestType,editor]);
  function go(next:Page,taskFilter?:string){if((viewingEmployee&&!previewSections.has(next))||(data&&!canOpenWorkspacePage(data.user,next)))return;if(next!=='okb')setOkbCompany(null);if(next!=='processes')setProcessDraft(null);setTablePage(0);setPage(next);setMobileMenu(false);if(next!=='tasks'){setLinkedIds(null);setWorkDay(null);}if(taskFilter){setSearch('');setFromDate('');setToDate('');setWorkDay(null);setLinkedIds(null);setPriceFilter('all');setFilter(taskFilter);setOwner('all');setBranch('all');}}
  const userById=(id:string)=>data?.users.find(u=>u.id===id);
- useEffect(()=>{if(!data||busy||editor||requestType)return;const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh().catch(()=>{});},60000);return()=>clearInterval(timer);},[Boolean(data),busy,editor,requestType]);
+ useEffect(()=>{if(!data||busy||editor||requestType)return;const timer=setInterval(()=>{if(document.visibilityState==='visible'){void refresh().catch(()=>{});if(selected)void refreshDetail(selected).catch(()=>{});}},60000);return()=>clearInterval(timer);},[Boolean(data),busy,editor,requestType,selected]);
  useEffect(()=>{if(data&&!data.rules.showPlanning&&filter==='planned_today')setFilter('all');},[data?.rules.showPlanning,filter]);
  const appliedLink=useRef('');
  useEffect(()=>{if(!data)return;const marker=data.user.id+':'+location.search;if(appliedLink.current===marker)return;appliedLink.current=marker;const q=new URLSearchParams(location.search);if(q.get('view')==='notifications'){setPage('notifications');return;}if(q.get('view')==='reports'){if(!q.get('report')&&!canOpenWorkspacePage(data.user,'reports'))return;setPage('reports');setReportOpen(q.get('report'));setReportPdf(q.get('format')==='pdf');return;}if(q.get('view')!=='tasks')return;setPage('tasks');setTablePage(0);setSearch('');setBranch('all');setFromDate('');setToDate('');setLinkedIds(null);setFilter(q.get('filter')||'all');setOwner(q.get('owner')||'all');setWorkDay(q.get('day'));if(['deadline','title','transfers','price_desc','work_priority'].includes(q.get('sort')||''))setSort(q.get('sort')!);setPriceFilter(q.get('price')||'all');if(q.get('task'))void openTask(q.get('task')!);const reportId=q.get('report');if(reportId)void api<import('../shared/types.js').Report>('/reports/'+encodeURIComponent(reportId)).then(r=>{const subset=q.get('subset'),s=r.summary,at=new Date(s?.to||r.created_at);const ids=subset==='expected'?s?.front.expectedIds:subset==='front_closed'?s?.front.closedIds:subset==='processed'?s?.activity.processedIds:subset==='closed'?s?.activity.closedIds:subset==='remaining'?s?.front.remainingIds:subset==='tomorrow'?s?.tomorrow.ids:subset==='late'?s?.lateIds:r.rows.filter(t=>!subset||subset==='all'||taskQueue(t,at)===subset).map(t=>t.id);setLinkedIds(ids||[]);setFilter('all');}).catch(e=>setError(e.message));},[data?.user.id]);
@@ -136,15 +155,94 @@ export function App(){
    ]:[])
   ]}/>}
   <footer className="main-footer"><span>РУСПЭТ · Контроль и согласование задач</span><span>Локальный MVP · v0.2</span></footer></main></div>
-  {selected&&<div className="drawer-backdrop" onMouseDown={e=>{if(e.target===e.currentTarget)closeTask();}}><div className="drawer" role="dialog" aria-modal="true" aria-label="Карточка задачи"><div className="drawer-top"><span>ЗАДАЧА #{selected}</span><div><button className="icon-button" aria-label="Скопировать ссылку" onClick={()=>void navigator.clipboard.writeText(location.href).then(()=>showToast('Ссылка скопирована')).catch(()=>setError('Не удалось скопировать ссылку. Скопируйте адрес страницы.'))}><ExternalLink size={17}/></button><button autoFocus className="icon-button" aria-label="Закрыть карточку" onClick={closeTask}><X size={21}/></button></div></div>{detail?<><div className="drawer-heading"><Badge state={taskState(detail.task)}>{taskState(detail.task)==='overdue'?'Просрочена':undefined}</Badge><h2>{detail.task.title}</h2><p>{detail.task.branch_id} · {detail.task.code} · Версия {detail.task.version}</p></div><Tabs value={drawerTab} onChange={setDrawerTab} items={[{id:'info',label:'Информация'},{id:'discussion',label:'Обсуждение',count:detail.comments.length},{id:'history',label:'История',count:detail.events.length},{id:'approvals',label:'Согласования',count:detail.approvals.length}]}/><div className="drawer-body">{!viewingEmployee&&<UndoAction taskId={selected} refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>} {error&&<div className="alert error" role="alert">{error}</div>}{drawerTab==='info'&&<><TaskIntegration id={selected} version={detail.task.version}/><div className="task-facts"><div><span>Ответственный</span><div className="person"><Avatar small user={userById(detail.task.assignee_id)}/><strong>{userById(detail.task.assignee_id)?.name}</strong></div></div><div><span>Цена задачи</span><strong>{formatPrice(detail.task)} · {priceLabels[priceBand(detail.task)]}</strong></div><div><span>Постановщик</span><strong>{userById(detail.task.creator_id)?.name}</strong></div><div><span>Текущий крайний срок</span><strong className={overdue(detail.task)?'red-text':''}>{date(detail.task.deadline,true)} МСК</strong></div><div><span>Отказов в согласовании</span><strong>{detail.approvals.filter(a=>a.state==='rejected').length}</strong></div><div><span>Возвратов с приёмки</span><strong>{detail.submissions.filter(s=>s.state==='returned').length}</strong></div><div><span>Переносов после импорта</span><strong>{detail.task.transfer_count}</strong></div><div><span>Важная задача</span><strong>{detail.task.important===null?'Не указано':detail.task.important?'Да':'Нет'}</strong></div></div>{data.rules.showPlanning&&<div className="planning-facts"><strong>Плановое выполнение · МСК</strong><p>Начало: {date(detail.task.planned_start||null,true)} · Окончание: {date(detail.task.planned_end,true)}</p></div>}{!viewingEmployee&&detail.task.company_id&&canUseOkb(data.user)&&<CompanyReference key={detail.task.company_id} id={detail.task.company_id} open={id=>{closeTask();go('okb');setOkbCompany(id);}}/>}{!!detail.task.custom_fields?.length&&<dl className="task-extra">{detail.task.custom_fields.map(f=><div key={f.label}><dt>{f.label}</dt><dd>{f.value||'—'}</dd></div>)}</dl>}<TaskDelegation readOnly={viewingEmployee} key={detail.task.id} task={detail.task} user={data.user} users={data.users} open={openTask}
-   onCreated={()=>{const generation=detailGeneration.current;void api<TaskDetail>('/tasks/'+encodeURIComponent(detail.task.id))
-   .then(next=>{if(generation===detailGeneration.current)setDetail(next);}).catch(e=>{if(generation===detailGeneration.current)setError(e.message);});void refresh().catch(()=>{});}}/><h3>Описание задачи</h3>{!viewingEmployee&&managed(data.user)&&data.user.id!==detail.task.assignee_id&&<p className="manager-action-note">Действие руководителя будет записано от вашего имени. Вы можете изменить параметры задачи, предложить новый крайний срок, передать результат на приёмку или принять/вернуть результат, если задача доступна вам по роли. Изменение срока применится только после согласования.</p>}{!viewingEmployee&&detail.task.status==='active'&&(detail.task.creator_id===data.user.id||managed(data.user))&&<button className="text-button" disabled={busy} onClick={()=>setEditor({task:detail.task})}>Редактировать параметры</button>}<p className="description">{detail.task.description||'Описание в выгрузке отсутствует.'}</p>{detail.task.source_fields&&<details className="source-fields"><summary>Исходные поля выгрузки</summary><dl>{Object.entries(detail.task.source_fields).filter(([key])=>data.rules.showPlanning||!/план/iu.test(key)).map(([key,value])=><div style={{display:'contents'}} key={key}><dt>{key}</dt><dd>{value===null?'Не заполнено':String(value)}</dd></div>)}</dl></details>}{data.findings.filter(f=>f.task_id===selected).length>0&&<div className="findings-box"><h3><AlertCircle size={17}/>Требует внимания</h3>{data.findings.filter(f=>f.task_id===selected).map(f=><p key={f.id}>{f.message}</p>)}</div>}{!viewingEmployee&&detail.task.status!=='completed'&&allowedRequest(data.user,detail.task)&&<div className="drawer-actions"><button disabled={busy||detail.approvals.some(a=>a.state==='pending')} className="button primary" onClick={()=>setRequestType('deadline')}><CalendarDays size={16}/>Предложить новый срок</button></div>}{detail.approvals.some(a=>a.state==='pending')&&<p className="inline-note">Есть активный запрос. Решения доступны во вкладке «Согласования».</p>}<TaskReminders readOnly={viewingEmployee} key={detail.task.id+data.user.id} task={detail.task} user={data.user} users={data.users}/><section className="submission-history">{detail.submissions.map(s=><article key={s.id}><strong>{s.restored_from?'Приёмка восстановлена после отмены':s.automatic?'Автоматическая сдача после приёмки поручений':'Сдача №'+s.round} · {({review:'Ожидает приёмки',returned:'Возвращена',accepted:'Принята'} as Record<string,string>)[s.state]}</strong><small>{userById(s.author_id)?.name} · {date(s.submitted_at,true)}</small><p>{s.result}</p>{s.remark&&<blockquote><strong>{userById(s.reviewer_id||'')?.name}: </strong>{s.remark}</blockquote>}</article>)}</section>{!viewingEmployee&&<ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} busy={busy} pending={detail.approvals.some(a=>a.state==='pending')} act={act}/>} {!viewingEmployee&&data.user.role==='admin'&&<div className="demo-action"><p>Проверка защиты от устаревшего решения</p><button className="text-button" disabled={busy} onClick={()=>void act(`/tasks/${selected}/mock-change`,{expectedVersion:detail.task.version})}>Изменить описание в mock-источнике <ArrowUpRight size={14}/></button></div>}</>}
+  {selected&&<div className="drawer-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)closeTask();}}>
+   <div className="drawer task-card" role="dialog" aria-modal="true" aria-label="Карточка задачи">
+    <div className="drawer-top"><span>ЗАДАЧА #{selected}</span>
+     <div className="task-card-toolbar">
+      {detail&&!viewingEmployee&&<>
+       {detail.editAccess.canEdit?<button type="button" className="button secondary" disabled={busy} onClick={()=>setEditor({task:detail.task})}><Pencil size={15}/>Редактировать</button>:
+        (detail.editAccess.canRequest||detail.editAccess.request)&&<button type="button" className="button secondary" onClick={()=>setDrawerTab('approvals')}>
+         {detail.editAccess.request?.state==='pending'?'Запрос отправлен':'Запросить редактирование'}
+        </button>}
+       <button type="button" className="button secondary" disabled={busy} onClick={()=>setEditor({task:null,copyOf:detail.task})}><Copy size={15}/>Создать копию</button>
+      </>}
+      <button type="button" className="icon-button" aria-label="Скопировать ссылку" onClick={()=>void navigator.clipboard.writeText(location.href).then(()=>showToast('Ссылка скопирована')).catch(()=>setError('Не удалось скопировать ссылку. Скопируйте адрес страницы.'))}><ExternalLink size={17}/></button>
+      <button type="button" autoFocus className="icon-button" aria-label="Закрыть карточку" onClick={closeTask}><X size={21}/></button>
+     </div>
+    </div>
+    {detail?<><div className="drawer-heading">
+     <Badge state={taskState(detail.task)}>{taskState(detail.task)==='overdue'?'Просрочена':undefined}</Badge>
+     <h2>{detail.task.title}</h2>
+     <p>{[detail.task.branch_id,detail.task.code,'Версия '+detail.task.version].filter(Boolean).join(' · ')}</p>
+    </div>
+    <Tabs value={drawerTab} onChange={setDrawerTab} items={[
+     {id:'info',label:'Обзор'},{id:'result',label:'Результат',count:detail.submissions.length||undefined},
+     {id:'fields',label:'Поля'},{id:'discussion',label:'Обсуждение',count:detail.comments.length||undefined},
+     {id:'approvals',label:'Согласования',count:detail.approvals.length+(detail.editAccess.request?.state==='pending'?1:0)||undefined},
+     {id:'links',label:'Связи и напоминания'},{id:'history',label:'История'}
+    ]}/>
+    <div className="drawer-body" key={drawerTab} role="tabpanel">
+    {error&&<div className="alert error" role="alert">{error}</div>}
+    {drawerTab==='info'&&<div className="task-card-overview">
+     <div>
+      {detail.editAccess.canDecide&&!viewingEmployee&&<section className="task-card-section">
+       <h3>Исполнитель просит разрешение на редактирование</h3>
+       <button type="button" className="button primary" onClick={()=>setDrawerTab('approvals')}>Рассмотреть запрос</button>
+      </section>}
+      <section className="task-card-section"><h3>Описание задачи</h3>
+       <p className="description">{detail.task.description||'Описание задачи не заполнено.'}</p>
+      </section>
+      {data.findings.some(f=>f.task_id===selected)&&<div className="findings-box">
+       <h3><AlertCircle size={17}/>Требует внимания</h3>
+       {data.findings.filter(f=>f.task_id===selected).map(f=><p key={f.id}>{f.message}</p>)}
+      </div>}
+     </div>
+     <aside>
+      <section className="task-card-section"><h3>Ответственные и срок</h3>
+       <div className="task-facts">
+        <div><span>Исполнитель</span><div className="person"><Avatar small user={userById(detail.task.assignee_id)}/><strong>{userById(detail.task.assignee_id)?.name}</strong></div></div>
+        <div><span>Постановщик</span><strong>{userById(detail.task.creator_id)?.name}</strong></div>
+        <div><span>Крайний срок</span><strong className={overdue(detail.task)?'red-text':''}>{date(detail.task.deadline,true)}{detail.task.deadline?' МСК':''}</strong></div>
+        <div><span>Цена задачи</span><strong>{formatPrice(detail.task)}</strong><small>{priceLabels[priceBand(detail.task)]}</small></div>
+       </div>
+       <div className="task-card-buttons">
+        {detail.approvals.some(a=>a.state==='pending')?<button type="button" className="button secondary" onClick={()=>setDrawerTab('approvals')}>Открыть согласование</button>:
+         !viewingEmployee&&detail.task.status!=='completed'&&allowedRequest(data.user,detail.task)&&<button type="button" disabled={busy} className="button secondary" onClick={()=>setRequestType('deadline')}><CalendarDays size={15}/>Предложить новый срок</button>}
+        {detail.task.status==='review'&&<button type="button" className="button primary" onClick={()=>setDrawerTab('result')}>К приёмке</button>}
+        {!viewingEmployee&&detail.task.status==='active'&&allowedRequest(data.user,detail.task)&&<button type="button" className="button secondary" onClick={()=>setDrawerTab('result')}>Сдать результат</button>}
+       </div>
+      </section>
+      <section className="task-card-section"><h3>Изменения и возвраты</h3>
+       <dl className="task-card-fields">
+        <div><dt>Переносов срока</dt><dd>{detail.task.transfer_count}</dd></div>
+        <div><dt>Отказов в согласовании</dt><dd>{detail.approvals.filter(a=>a.state==='rejected').length}</dd></div>
+        <div><dt>Возвратов с приёмки</dt><dd>{detail.submissions.filter(s=>s.state==='returned').length}</dd></div>
+       </dl>
+      </section>
+     </aside>
+    </div>}
+    {drawerTab==='fields'&&<TaskCardFields task={detail.task} showPlanning={!!data.rules.showPlanning} date={date}/>}
+    {drawerTab==='links'&&<section className="task-card-section">
+     {!viewingEmployee&&detail.task.company_id&&canUseOkb(data.user)&&<CompanyReference key={detail.task.company_id} id={detail.task.company_id} open={id=>{closeTask();go('okb');setOkbCompany(id);}}/>}
+     <TaskDelegation readOnly={viewingEmployee} key={detail.task.id} task={detail.task} user={data.user} users={data.users} open={openTask}
+      onCreated={()=>{void refreshDetail(detail.task.id).catch(e=>setError(e.message));void refresh().catch(()=>{});}}/>
+     <TaskReminders readOnly={viewingEmployee} key={detail.task.id+data.user.id} task={detail.task} user={data.user} users={data.users}/>
+    </section>}
+    {drawerTab==='result'&&<>
+     {!viewingEmployee&&managed(data.user)&&data.user.id!==detail.task.assignee_id&&<p className="manager-action-note">Действие за исполнителя будет записано от вашего имени.</p>}
+     {!viewingEmployee&&<ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} busy={busy} pending={detail.approvals.some(a=>a.state==='pending')} act={act}/>}
+     {detail.submissions.length?<section className="submission-history">{detail.submissions.map(s=><article key={s.id}>
+      <strong>{s.restored_from?'Приёмка восстановлена после отмены':s.automatic?'Автоматическая сдача после приёмки поручений':'Сдача №'+s.round} · {({review:'Ожидает приёмки',returned:'Возвращена',accepted:'Принята'})[s.state]}</strong>
+      <small>{userById(s.author_id)?.name} · {date(s.submitted_at,true)}</small><p>{s.result}</p>
+      {s.remark&&<blockquote><strong>{userById(s.reviewer_id||'')?.name}: </strong>{s.remark}</blockquote>}
+     </article>)}</section>:<p className="muted">Результат пока не сдавали.</p>}
+    </>}
   {drawerTab==='discussion'&&<>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="comment"/>}{!viewingEmployee&&detail.controls.filter(c=>['waiting','escalated'].includes(c.state)&&(data.user.id===c.assignee_id||data.user.role==='admin')).map(c=><ExplanationForm key={c.id} min={data.rules.responseMinLength} busy={busy} submit={body=>act(`/controls/${c.id}/answer`,body)}/>)}{detail.comments.map(c=><div className="comment" key={c.id}><Avatar small user={userById(c.author_id)}/><div><strong>{userById(c.author_id)?.name}<small>{date(c.created_at,true)}</small></strong><p>{c.body}</p></div></div>)}{!detail.comments.length&&<p className="muted">Комментариев пока нет.</p>}{!viewingEmployee&&<form className="comment-form" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const f=new FormData(form),body=String(f.get('body')),approvalId=String(f.get('approvalId')||'')||undefined;if(await act(`/tasks/${selected}/comments`,{body,approvalId}))form.reset();}}><label>К чему относится сообщение<select name="approvalId"><option value="">К задаче в целом</option>{detail.approvals.filter(a=>!a.canceled_at).map(a=><option key={a.id} value={a.id}>{a.type==='deadline'?'Перенос':'Закрытие'} от {date(a.created_at,true)}</option>)}</select></label><label>Комментарий<textarea name="body" required maxLength={4000} placeholder="Добавьте уточнение или результат работы…"/></label><button className="button primary" disabled={busy}><Send size={15}/>Отправить</button></form>}</>}
-  {drawerTab==='history'&&<><TaskHistory showPlanning={!!data.rules.showPlanning} events={detail.events} users={data.users}/>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="history"/>}</>}
-  {drawerTab==='approvals'&&<>{detail.approvals.map(a=><div key={a.id}><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask} inDrawer/>{detail.decisions.filter(d=>d.approval_id===a.id).map(d=><div className="decision-record" key={d.id}><Check size={14}/><div>{userById(d.actor_id)?.name} · {({approve:'Согласовал',reject:'Отказал',later:'Вернётся позже',clarify:'Запросил уточнение'} as Record<string,string>)[d.decision]}<small>{d.retracted?'Отменено · ':''}{date(d.created_at,true)}{d.comment&&` · ${d.comment}`}</small></div></div>)}</div>)}{!detail.approvals.length&&<Empty>Запросите перенос или закрытие во вкладке «Информация».</Empty>}</>}
-  </div></>:<div className="empty">Загружаем карточку…{error&&<p role="alert">{error}</p>}</div>}</div></div>}
+  {drawerTab==='history'&&<>{!viewingEmployee&&<UndoAction taskId={selected} refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}<TaskHistory showPlanning={!!data.rules.showPlanning} events={detail.events} users={data.users}/>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="history"/>}{!viewingEmployee&&data.user.role==='admin'&&<div className="demo-action"><p>Проверка защиты от устаревшего решения</p><button className="text-button" disabled={busy} onClick={()=>void act('/tasks/'+selected+'/mock-change',{expectedVersion:detail.task.version})}>Изменить описание в mock-источнике <ArrowUpRight size={14}/></button></div>}</>}
+  {drawerTab==='approvals'&&<>{!viewingEmployee&&<TaskEditPanel key={selected} task={detail.task} access={detail.editAccess} users={data.users} busy={busy} act={act}/>}<div className='task-card-approvals'>{detail.approvals.map(a=><div key={a.id}><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask} inDrawer/>{detail.decisions.filter(d=>d.approval_id===a.id).map(d=><div className="decision-record" key={d.id}><Check size={14}/><div>{userById(d.actor_id)?.name} · {({approve:'Согласовал',reject:'Отказал',later:'Вернётся позже',clarify:'Запросил уточнение'} as Record<string,string>)[d.decision]}<small>{d.retracted?'Отменено · ':''}{date(d.created_at,true)}{d.comment&&` · ${d.comment}`}</small></div></div>)}</div>)}{!detail.approvals.length&&<Empty>Запросить перенос крайнего срока можно в обзоре.</Empty>}</div></>}
+    </div></>:<div className="empty">Загружаем карточку…{error&&<p role="alert">{error}</p>}</div>}</div></div>}
   {requestType&&detail&&<RequestModal type={requestType} task={detail.task} min={data.rules.responseMinLength} busy={busy} error={error} close={()=>setRequestType(null)} submit={async body=>{if(await act(`/tasks/${detail.task.id}/approvals`,body)){setRequestType(null);setDrawerTab('approvals');}}}/>}
-  {editor&&<TaskEditor task={editor.task} companyId={editor.companyId} canLink={canUseOkb(data.user)} availableTasks={data.tasks} showPlanning={!!data.rules.showPlanning} users={data.users} user={data.user} busy={busy} save={act} close={()=>setEditor(null)} onConditional={canUseOkb(data.user)?draft=>{setProcessDraft(draft);setEditor(null);go('processes');}:undefined}/>}
+  {editor&&<TaskEditor key={editor.task?.id||editor.copyOf?.id||editor.companyId||'new'} task={editor.task} copyOf={editor.copyOf} companyId={editor.companyId} canLink={canUseOkb(data.user)} availableTasks={data.tasks} showPlanning={!!data.rules.showPlanning} users={data.users} user={data.user} busy={busy} saveError={error} save={(path,body,method,message)=>act(path,body,method,message,editor.copyOf?id=>void openTask(id):undefined)} close={()=>setEditor(null)} onConditional={canUseOkb(data.user)?draft=>{setProcessDraft(draft);setEditor(null);go('processes');}:undefined}/>}
   {toast&&<div className="toast" role="status"><CheckCheck size={18}/>{toast}</div>}
  </div>;
 }
