@@ -4,8 +4,9 @@ import type {Bootstrap} from '../shared/types.js';
 type Request={id:string;url:string;image:string;code:string;expiresAt:string};
 export function TelegramLogin({onLogin}:{onLogin:(data:Bootstrap)=>void}){
  const [available,setAvailable]=useState<boolean|null>(null),[request,setRequest]=useState<Request|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[state,setState]=useState(''),[seconds,setSeconds]=useState(120);
+ const [connectUrl,setConnectUrl]=useState<string|null>(null);
  const generation=useRef(0);
- useEffect(()=>{let live=true;void api<{available:boolean}>('/auth/qr/config').then(r=>{if(live)setAvailable(r.available)}).catch(()=>{if(live)setAvailable(false)});return()=>{live=false;generation.current++}},[]);
+ useEffect(()=>{let live=true;void api<{available:boolean;connectUrl?:string|null}>('/auth/qr/config').then(r=>{if(live){setAvailable(r.available);setConnectUrl(r.connectUrl??null);}}).catch(()=>{if(live)setAvailable(false)});return()=>{live=false;generation.current++}},[]);
  async function create(){
   if(busy)return;const version=++generation.current;setBusy(true);setError('');setRequest(null);setState('');
   try{const result=await api<Request>('/auth/qr','POST',{});if(version===generation.current){setRequest(result);setSeconds(120);setState('pending');}}
@@ -39,5 +40,10 @@ export function TelegramLogin({onLogin}:{onLogin:(data:Bootstrap)=>void}){
   {error&&<p role="alert" className="login-error">{error}</p>}
   {available===false&&<p>Telegram сейчас недоступен. Войдите по логину и паролю.</p>}
   {available!==false&&<button className="button secondary" type="button" disabled={busy||available===null} onClick={()=>void create()}>{busy?'Создаём QR-код…':request?'Обновить QR-код':'Показать QR-код'}</button>}
+  <details className="login-no-access"><summary>Нет доступа</summary>
+   {connectUrl?<><p>Откройте бота, нажмите «Старт», укажите имя и фамилию и поделитесь своим номером. Если нужна проверка, заявка придёт администратору. После подключения можно войти через QR.</p>
+    <a className="button secondary" href={connectUrl} target="_blank" rel="noreferrer">Подключить Telegram</a></>:
+    <p>Обратитесь к администратору РУСПЭТ, чтобы получить доступ.</p>}
+  </details>
  </section>;
 }

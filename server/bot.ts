@@ -23,6 +23,7 @@ import {summarize} from '../shared/analytics.js';
 import type {User} from '../shared/types.js';
 import {taskInput} from './task-input.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
+import {setApprovalWatch} from './approval-hierarchy.js';
 type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};
 const taskScreens=['task','history','discussion','task_details','task_fields','task_edit_permission','task_result','task_approval','task_more'];
 async function saveDialog(db:Db,u:User,ch:string,dialog:Dialog,minutes=60){
@@ -209,7 +210,8 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   await readNotifications(u,p.noticeIds||[]);
   return botView(u,ch,{op:'notices'});
  }
- if(!['form','confirm','cancel','accept_prepare','assignee_prepare','undo_prepare'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
+ if(p.op==='approval_watch'){await setApprovalWatch(u,p.id!,p.values?.enabled==='true');return botView(u,ch,{op:'task_more',id:p.id,list:p.list});}
+ if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','assignee_prepare','undo_prepare'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
   const record=(await db.query('SELECT * FROM bot_buttons WHERE token=$1 FOR UPDATE',[token])).rows[0];if(record.receipt)return record.receipt as BotScreen;assert(!record.revoked,409,'Этот ввод отменён или заменён новым. Откройте актуальную задачу.');
@@ -221,6 +223,10 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   }
   if(p.op==='assignee_prepare'){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');const person=(await db.query('SELECT name FROM users WHERE id=$1',[p.target])).rows[0];assert(person,400,'Исполнитель не найден.');return screen(u,ch,'Назначить исполнителем: '+person.name+'?',[[button('Указать причину','form',{kind:'edit_assignee',id:p.id,version:p.version,target:p.target})],[button('Отмена','cancel')]],db);}
   if(p.op==='accept_prepare')return screen(u,ch,`Принять результат по задаче #${p.id} без комментария?`,[[button('Да, принять результат','confirm',{kind:'accept',id:p.id,list:p.list,version:p.version,values:{comment:''}})],[button('Отмена','cancel')]],db);
+  if(p.op==='approval_accept_prepare')return screen(u,ch,`Принять результат по задаче #${p.id} без комментария?`,[
+   [button('Да, принять результат','confirm',{...p,op:'confirm',values:{comment:''}})],
+   [button('К согласованию','task_approval',{id:p.id,list:p.list})]
+  ],db);
   if(p.op==='undo_prepare'){const last=await lastUndo(u,undefined,db);assert(last&&last.id===p.target,409,'Отмена недоступна: действие изменилось или прошло пять минут.');return screen(u,ch,`Отменить «${last.label}» по задаче #${last.task_id}? История сохранится, участники получат уточнение.`,[[button('Да, отменить действие','confirm',{kind:'undo',id:last.task_id,list:p.list,target:last.id})],[button('Оставить действие','cancel')]],db);}
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;

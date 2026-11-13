@@ -1,15 +1,22 @@
 .mobile-workspace {
  max-width: 700px; min-height: 100dvh; margin: 0 auto; padding-bottom: calc(82px + env(safe-area-inset-bottom));
+ padding-top:calc(62px + env(safe-area-inset-top));
  color: var(--theme-text); background: var(--theme-surface-soft);
 }
 .mobile-workspace-header {
- position: sticky; top: 0; z-index: 10; display: flex; align-items: center; justify-content: space-between;
- gap: 12px; min-height: 62px; padding: max(10px,env(safe-area-inset-top)) 16px 10px;
+ position: fixed; inset:0 0 auto; z-index: 21; display: flex; align-items: center; justify-content: space-between;
+ width:min(700px,100%); margin-inline:auto; box-sizing:border-box;
+ gap: 8px; height:calc(62px + env(safe-area-inset-top)); padding: calc(10px + env(safe-area-inset-top)) 12px 10px;
  border-bottom: 1px solid var(--theme-border); background: var(--theme-surface);
 }
 .mobile-workspace-name { display: flex; align-items: center; gap: 9px; min-width: 0; }
 .mobile-workspace-name .cap-mark { width: 33px; height: 33px; flex: 0 0 33px; }
 .mobile-workspace-name small { display: block; overflow: hidden; text-overflow: ellipsis; color: var(--theme-text-secondary); }
+.mobile-workspace-name>div { min-width:0; }
+.mobile-menu-link { width:34px; min-height:40px; justify-content:center; }
+.mobile-conversation .bot-preview,.mobile-conversation .bot-preview>[aria-live] { scroll-margin-top:calc(70px + env(safe-area-inset-top)); }
+@media(max-width:390px){.mobile-workspace-name .cap-mark{display:none;}}
+@media(max-width:760px){.workspace-main>.topbar{position:sticky;top:0;z-index:18;}}
 .mobile-workspace-header a { display: inline-flex; gap: 4px; align-items: center; flex-shrink: 0; }
 .mobile-conversation .bot-preview { padding: 14px 12px 0; margin: 0; }
 .mobile-conversation .bot-message {

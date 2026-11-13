@@ -1,4 +1,4 @@
-import {ArrowUpRight,Bell} from 'lucide-react';
+import {ArrowUpRight,Bell,Menu} from 'lucide-react';
 import type {User} from '../shared/types.js';
 import {BotConversation} from './BotConversation.js';
 import {CapMark} from './CapMark.js';
@@ -8,7 +8,7 @@ export function MobileWorkspace({user,refresh,unread}:{user:User;refresh:()=>Pro
  const notices=new URLSearchParams(location.search).get('view')==='notifications';
  return <main className="mobile-workspace">
   <header className="mobile-workspace-header">
-   <div className="mobile-workspace-name"><CapMark/><div><strong>РУСПЭТ</strong><small>{user.name}</small></div></div>
+   <div className="mobile-workspace-name"><a href="/mobile" className="icon-button mobile-menu-link" aria-label="Меню"><Menu size={20}/></a><CapMark/><div><strong>РУСПЭТ</strong><small>{user.name}</small></div></div>
    <div className="mobile-workspace-links">
     <a href="/mobile?view=notifications" className="icon-button notification-button" aria-label="Уведомления"><Bell size={18}/>{unread&&<i/>}</a>
     <a href="/?view=full" className="text-button">Полная версия <ArrowUpRight size={14}/></a>

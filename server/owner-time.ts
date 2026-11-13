@@ -1,4 +1,5 @@
 import {readFileSync} from 'node:fs';
+import {fileURLToPath} from 'node:url';
 import {Router} from 'express';
 import {z} from 'zod';
 import {pool,transaction,type Db} from './db.js';
@@ -67,6 +68,8 @@ const csvCell=(value:string)=>'"'+(/^[\s]*[=+@-]/.test(value)?"'":"")+value.repl
 export function ownerTimeRouter(){
  const router=Router();
  router.use((req,_res,next)=>{assert(req.actor?.root_access,403,'Планер доступен владельцу.');next();});
+ router.get('/ruspet-release-skill',(_req,res)=>res.download(
+  fileURLToPath(new URL('../.agents/skills/ruspet-release/SKILL.md',import.meta.url)),'ruspet-release-SKILL.md'));
  router.get('/month',async(req,res)=>{
   const days=await monthDays(req.actor.id,req.query.month);
   const [today]=moscowTime(new Date());

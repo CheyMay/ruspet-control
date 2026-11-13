@@ -43,6 +43,7 @@ export function NotificationCenter({items,readOnly,open,refresh}:{items:Notifica
      <div className="notice-actions">
       {latest.task_id&&<button className="text-button" onClick={()=>open(latest.task_id!)}>Открыть #{latest.task_id}</button>}
       {latest.task_notice?.taskIds.slice(0,3).map(id=><button key={id} className="text-button" onClick={()=>open(id)}>#{id}</button>)}
+      {latest.staff_review&&!readOnly&&<a className="text-button" href="/?view=registrations">Открыть заявки</a>}
       {!readOnly&&rows.some(row=>!row.read_at)&&<button className="text-button" disabled={busy} onClick={()=>void mark(rows)}>Прочитано</button>}
      </div>
     </div>

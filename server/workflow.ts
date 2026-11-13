@@ -1,12 +1,13 @@
 import {lockDelegationChain} from './delegation-lock.js';
 import {taskEditAccess,useTaskEditPermission} from './task-edit-permissions.js';
+import {approvalHierarchy,hierarchyRoute} from './approval-hierarchy.js';
 import {findDelegationClients,resolveCompanyResponsibility} from './company-responsibility.js';
 import {actingManager,delegatesFor} from './org.js';
 import {recordTaskAction,recordTaskBarrier} from './undo-record.js';
 import {createHash,randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {assert,canRequest,canSee,canManage,globalAccess} from './domain.js';
-import {event,notify,notifyTaskAssignment,refreshTaskFindings} from './service.js';
+import {config,event,notify,notifyTaskAssignment,refreshTaskFindings} from './service.js';
 import {getCompany} from './okb.js';
 import {MockTaskProvider} from './providers.js';
 import type {Task,User} from '../shared/types.js';
@@ -139,7 +140,8 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
 });}
 async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return',comment:string,version:number){return transaction(async db=>{
  const before=(await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0] as Task;assert(before&&canSee(u,before),404,'Задача недоступна.');assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
- const reviewer=u.id===before.creator_id||u.role==='admin'||u.role==='director'||(canManage(u)&&(globalAccess(u)||u.branch_id===before.branch_id));
+ const hierarchy=before.delegated_from_id?null:await approvalHierarchy(db);
+ const reviewer=u.id===before.creator_id||u.role==='admin'||u.role==='director'||(canManage(u)&&(globalAccess(u)||u.branch_id===before.branch_id||!!u.company_branch_access));
  if(action==='submit'){assert(canRequest(u,before),403,'Нет права сдавать задачу.');assert(before.status==='active',409,'Задача уже передана или завершена.');}
  else {assert(reviewer,403,'Решение принимает постановщик или руководитель.');assert(before.status==='review',409,'Задача не ожидает приёмки.');assert(u.id!==before.assignee_id,403,'Нельзя принимать собственную работу.');}
  if(action!=='accept')assert(comment.trim().length>=5,400,'Укажите результат или причину возврата, минимум 5 символов.');
@@ -154,7 +156,14 @@ async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return'
  await event(db,id,u.id,action==='accept'?'task_completed':action==='submit'?'review_submitted':'review_returned',labels[action],{before,after,comment});
  await refreshTaskFindings(db,after,u);
  if(action==='accept')await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);
- await notify(db,id,action==='submit'?before.creator_id:before.assignee_id,`${labels[action]} · #${id}${comment.trim()?': '+comment:''}`,`review:${id}:${after.version}`);return {state:status};
+ if(action==='submit'&&hierarchy){
+  const route=await hierarchyRoute(db,hierarchy,after,u.id,'completion'),approvalId=randomUUID(),cfg=await config(db);
+  await db.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version)
+   VALUES($1,$2,$3,'completion',$4,$5,$6,'pending',$7,$8)`,[approvalId,id,u.id,'Результат передан на приёмку',comment,after.version,JSON.stringify(route),cfg.version]);
+  await event(db,id,u.id,'approval_requested','Результат направлен по маршруту согласования',{approvalId,route,plan:comment});
+  await notify(db,id,route[0].userId,'Проверьте результат по задаче #'+id,`approval:${approvalId}:0`);
+ }else await notify(db,id,action==='submit'?before.creator_id:before.assignee_id,`${labels[action]} · #${id}${comment.trim()?': '+comment:''}`,`review:${id}:${after.version}`);
+ return {state:status};
 });}
 
 export async function taskAssignees(u:User,id:string,db:Db=pool){

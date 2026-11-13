@@ -76,7 +76,8 @@ export async function delegatesFor(manager:User,db:Db=pool){
   if(p.manager_id||hasReports)return p.manager_id===manager.id;
   if(manager.role==='admin'||manager.role==='director')return true;
   if(manager.role==='sales_head')return p.role==='employee'||p.role==='branch_manager';
-  return manager.role==='branch_manager'&&p.role==='employee'&&manager.branch_id===p.branch_id&&!!manager.branch_id&&manager.branch_id!=='Не указан';
+  return manager.role==='branch_manager'&&p.role==='employee'&&(manager.company_branch_access||
+   manager.branch_id===p.branch_id&&!!manager.branch_id&&manager.branch_id!=='Не указан');
  });
 }
 export async function myDelegations(actor:User){

@@ -28,7 +28,12 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const approvalRows:ReturnType<typeof button>[][]=[];
  if(pending){
   if(waiting&&pending.requester_id===u.id)approvalRows.push([form('Ответить на уточнение','clarification',pending.id,pending.current_step)]);
-  if(!waiting&&pending.route[pending.current_step]?.userId===u.id)approvalRows.push([form('Согласовать','approve',pending.id,pending.current_step),form('Отклонить','reject',pending.id,pending.current_step)],[form('Уточнить','clarify',pending.id,pending.current_step),button('Напомнить через час','confirm',{...extra,kind:'later',target:pending.id,step:pending.current_step,revision:pending.action_revision,minutes:60,values:{}})]);
+  if(!waiting&&pending.route[pending.current_step]?.userId===u.id){
+   const resultReview=t.status==='review'&&pending.type==='completion';
+   approvalRows.push([...(resultReview?[button('Принять без комментария','approval_accept_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision})]:
+    [form('Согласовать','approve',pending.id,pending.current_step)]),form(resultReview?'Вернуть с замечаниями':'Отклонить','reject',pending.id,pending.current_step)],
+    [form('Уточнить','clarify',pending.id,pending.current_step),button('Напомнить через час','confirm',{...extra,kind:'later',target:pending.id,step:pending.current_step,revision:pending.action_revision,minutes:60,values:{}})]);
+  }
  }
  const reviewRows=t.status==='review'&&!pending&&canReview(u,t)?[
   [button('Принять без комментария','accept_prepare',{...extra,version:t.version})],
@@ -87,13 +92,17 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  }
  if(p.op==='task_more'){
   const rows:ReturnType<typeof button>[][]=[];
+  if(d.approvalWatch?.canChange&&t.status!=='completed'){
+   const watch=d.approvalWatch;
+   if(!watch.byCode)rows.push([button(watch.manual?'Снять с контроля':'Взять на контроль','approval_watch',{...extra,values:{enabled:String(!watch.manual)}})]);
+  }
   if(canEdit)rows.push([button('Редактировать задачу','edit',extra)]);
   if(canRequestEdit||request)rows.push([button(request?'Разрешение на редактирование':'Запросить редактирование','task_edit_permission',extra)]);
   if(!pending&&t.status==='active'&&canRequest(u,t))rows.push([form('Предложить новый срок','deadline')]);
   if(await canDelegateTask(u,t))rows.push([button('Делегировать задачу','delegate_list',extra)]);
   rows.push([button('Напоминания','task_reminders',extra)],[button('История','history',extra),button('Поля задачи','task_fields',extra)]);
   const lastAction=await lastUndo(u,t.id);if(lastAction)rows.push([button('Отменить последнее действие','undo_prepare',{...extra,target:lastAction.id})]);
-  return htmlScreen(u,ch,`<b>Ещё действия · #${h(t.id)}</b>\n${h(compactTaskTitle(t.title))}`,[...rows,back]);
+  return htmlScreen(u,ch,`<b>Ещё действия · #${h(t.id)}</b>\n${h(compactTaskTitle(t.title))}${d.approvalWatch?.byCode?'\nКонтроль руководителя продаж по коду В.':''}`,[...rows,back]);
  }
  const context:string[]=[];
  const rows:ReturnType<typeof button>[][]=[];

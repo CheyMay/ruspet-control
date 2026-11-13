@@ -9,7 +9,11 @@ export function StaffOnboarding({roles}:{roles:Record<string,string>}){
  const [queue,setQueue]=useState<Queue|null>(null),[total,setTotal]=useState(0),[file,setFile]=useState<File|null>(null),[preview,setPreview]=useState<Preview|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [selected,setSelected]=useState<Request|null>(null),[staffId,setStaffId]=useState(''),[userId,setUserId]=useState(''),[confirmed,setConfirmed]=useState(false);
  async function refresh(){try{const [q,s]=await Promise.all([api<Queue>('/system/registrations'),api<{total:number}>('/system/staff')]);setQueue(q);setTotal(s.total);}catch(e){setError((e as Error).message)}}
- useEffect(()=>{void refresh()},[]);
+ useEffect(()=>{
+  void refresh();
+  const timer=setInterval(()=>{if(document.visibilityState==='visible')void refresh()},30000);
+  return()=>clearInterval(timer);
+ },[]);
  async function upload(apply=false){
   if(!file||busy)return;setBusy(true);setError('');setNotice('');
   try{
@@ -24,7 +28,7 @@ export function StaffOnboarding({roles}:{roles:Record<string,string>}){
   catch(e){setError((e as Error).message)}finally{setBusy(false)}
  }
  return <section className="panel automation-settings staff-onboarding">
-  <div className="automation-heading"><div><h2>Знакомство сотрудников с ботом</h2><p className="muted">В справочнике: {total}. Сотрудник пишет /start, вводит имя и фамилию и делится своим номером через кнопку Telegram.</p></div><button className="button secondary" disabled={busy} onClick={()=>void refresh()}>Обновить заявки</button></div>
+  <div className="automation-heading"><div><h2>Заявки на подключение</h2><p className="muted">В справочнике: {total}. Сотрудник пишет /start, вводит имя и фамилию и делится своим номером через кнопку Telegram.</p></div><button className="button secondary" disabled={busy} onClick={()=>void refresh()}>Обновить заявки</button></div>
   <p className="muted">Уникальное совпадение имени и собственного номера подтверждается автоматически. Если номер другой, есть тёзки или прежнюю привязку отключали — нужна проверка администратора. Роли существующих сотрудников сохраняются; новые получают роль сотрудника.</p>
   {error&&<p className="alert error" role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
   <label>Справочник сотрудников (.xlsx)<input ref={fileInput} type="file" accept=".xlsx" disabled={busy} onChange={e=>{setFile(e.target.files?.[0]||null);setPreview(null);setNotice('')}}/></label>

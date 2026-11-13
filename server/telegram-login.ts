@@ -41,7 +41,10 @@ async function browserRequest(db:Db,id:string,req:express.Request,lock=false){
 }
 export function telegramLoginRouter(){
  const router=express.Router(),limits=new Map<string,{at:number;n:number}>();
- router.get('/config',async(_req,res)=>res.json({available:(await availability()).available}));
+ router.get('/config',async(_req,res)=>{
+  const config=await availability();
+  res.json({available:config.available,...(config.username?{connectUrl:`https://t.me/${config.username}`}:{})});
+ });
  router.post('/',async(req,res)=>{
   const now=Date.now();for(const [key,value]of limits)if(now-value.at>60000)limits.delete(key);
   const key=req.ip||'unknown',limit=limits.get(key)||{at:now,n:0};assert(limit.n<30&&limits.size<2000,429,'Слишком часто. Обновите QR через минуту.');limit.n++;limits.set(key,limit);

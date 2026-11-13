@@ -42,6 +42,7 @@ import {ownerTimeRouter} from './owner-time.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
+import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
 import type { User } from '../shared/types.js';
 declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
@@ -226,6 +227,18 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const {requestId,...input}=taskInput.extend({requestId:z.uuid()}).parse(req.body);
   res.status(201).json(await createTaskCopy(req.actor,String(req.params.id),requestId,input));
  });
+ app.put('/api/tasks/:id/approval-watch',async(req,res)=>{
+  const {enabled}=z.object({enabled:z.boolean()}).parse(req.body);
+  res.json(await setApprovalWatch(req.actor,String(req.params.id),enabled));
+ });
+ app.get('/api/approval-hierarchy',async(req,res)=>{
+  assert(req.actor.role==='admin',403,'Маршрут настраивает администратор.');
+  res.json(await approvalHierarchy(pool));
+ });
+ app.put('/api/approval-hierarchy',async(req,res)=>{
+  const input=z.object({branchId:z.string().min(1).max(100),salesId:z.string().min(1).max(100)}).parse(req.body);
+  res.json(await setApprovalHierarchy(req.actor,input.branchId,input.salesId));
+ });
  app.post('/api/tasks/:id/edit-permissions',async(req,res)=>{
   const {expectedVersion,reason}=z.object({expectedVersion:z.number().int().positive(),reason:z.string().trim().min(5).max(4000)}).parse(req.body);
   res.status(201).json(await requestTaskEdit(req.actor,String(req.params.id),expectedVersion,reason));
@@ -248,7 +261,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/reports',async(req,res)=>{const input=z.object({kind:z.string().max(40).optional(),from:z.iso.date().optional(),to:z.iso.date().optional(),page:z.coerce.number().int().min(0).max(100000).default(0)}).parse(req.query);assert(!input.from||!input.to||input.from<=input.to,400,'Дата начала позже даты окончания.');res.json(await service.listReports(req.actor,input));});
  app.get('/api/reports/:id',async(req,res)=>res.json(await service.getReport(req.actor,z.uuid().parse(req.params.id))));
  app.put('/api/rules',async(req,res)=>{const data=z.object({rules,expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await service.saveRules(req.actor,data.rules,data.expectedVersion));});
- app.post('/api/tasks/:id/mock-change',async(req,res)=>{await service.simulateExternalChange(req.actor,String(req.params.id),z.object({expectedVersion:z.number().int().positive()}).parse(req.body).expectedVersion);res.json({ok:true});});
+ app.post('/api/tasks/:id/mock-change',async(req,res)=>{assert(process.env.DEMO_AUTH!=='false',404,'Действие недоступно.');await service.simulateExternalChange(req.actor,String(req.params.id),z.object({expectedVersion:z.number().int().positive()}).parse(req.body).expectedVersion);res.json({ok:true});});
  app.get('/api/reports/:id/pdf',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const bytes=await reportPdf(report);res.setHeader('Content-Disposition',`inline; filename=ruspet-${report.day}.pdf`);res.type('application/pdf').send(bytes);});
  app.get('/api/reports/:id/print',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));res.type('html').send(printReport(report));});
  app.get('/api/reports/:id/csv',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const data={users:(await pool.query('SELECT id,name FROM users')).rows};const cell=(v:unknown)=>{let s=String(v??'');if(/^[\s]*[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};const rows=[['ID','Задача','Ответственный','Цена','Категория цены','Срок','Статус','Переносов'],...report.rows.map((t:any)=>[t.id,t.title,report.analysis?.team.find((u:{id:string;name:string})=>u.id===t.assignee_id)?.name||data.users.find(u=>u.id===t.assignee_id)?.name||t.assignee_id,formatPrice(t),priceLabels[priceBand(t)],t.deadline?new Date(t.deadline).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}):'Без срока',({active:'В работе',review:'На приёмке',completed:'Завершена'} as Record<string,string>)[t.status],t.transfer_count])];res.setHeader('Content-Disposition',`attachment; filename="ruspet-${report.day}.csv"`);res.type('text/csv').send('\uFEFF'+rows.map(row=>row.map(cell).join(';')).join('\r\n'));});

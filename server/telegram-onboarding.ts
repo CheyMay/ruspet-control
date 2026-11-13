@@ -5,8 +5,19 @@ import {namesMatch,nameParts,normalPhone} from './staff-import.js';
 import {suggestedLogin} from './account-access.js';
 import type {User} from '../shared/types.js';
 import type {BotScreen} from './bot.js';
+import {notify} from './service.js';
 const screen=(text:string,replyKeyboard:'contact'|'remove'='remove'):BotScreen=>({text,buttons:[],replyKeyboard});
 const askContact=()=>screen('Подтвердите личность: нажмите «Поделиться своим номером». Бот сравнит номер вашего Telegram со справочником сотрудников. Вводить номер вручную не нужно. Если номер отличается от рабочего — отправьте /manual для проверки администратором.','contact');
+async function notifyStaffReview(db:Db,id:string,name:string){
+ const admins=(await db.query<{id:string}>("SELECT id FROM users WHERE role='admin' AND NOT root_access")).rows;
+ for(const admin of admins)await notify(db,null,admin.id,'Заявка на подключение · '+name,'staff-review:'+id+':'+admin.id);
+}
+export async function staffReviewNotices(db:Db=pool){
+ const pending=(await db.query<{id:string;entered_name:string}>(`SELECT r.id,r.entered_name FROM telegram_registrations r
+  WHERE r.state='review' AND r.expires_at>now()
+   AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.dedupe_key LIKE 'staff-review:'||r.id||':%')`)).rows;
+ for(const request of pending)await notifyStaffReview(db,request.id,request.entered_name);
+}
 export async function ensureLinkedAccount(user:User){
  if(user.root_access)return;
  await transaction(async db=>{
@@ -75,7 +86,8 @@ export async function onboardingMessage(message:any):Promise<BotScreen|null>{
    await db.query("UPDATE telegram_registrations SET entered_name=$2,state='contact' WHERE id=$1",[request.id,text]);return askContact();
   }
   if(text==='/manual'||text==='Не могу поделиться номером'){
-   await db.query("UPDATE telegram_registrations SET state='review' WHERE id=$1",[request.id]);return screen('Заявка передана администратору. Он подтвердит личность и выберет сотрудника. После подтверждения отправьте /start.');
+   await db.query("UPDATE telegram_registrations SET state='review' WHERE id=$1",[request.id]);await notifyStaffReview(db,request.id,request.entered_name);
+   return screen('Заявка передана администратору. Он подтвердит личность и выберет сотрудника. После подтверждения отправьте /start.');
   }
   const contact=message.contact;
   if(!contact||String(contact.user_id)!==chat||message.forward_origin||message.forward_date||message.via_bot)return askContact();
@@ -89,6 +101,7 @@ export async function onboardingMessage(message:any):Promise<BotScreen|null>{
    catch(e){if(!(e instanceof AppError))throw e;}
   }
   await db.query("UPDATE telegram_registrations SET state='review',staff_id=$2 WHERE id=$1",[request.id,candidate?.id||null]);
+  await notifyStaffReview(db,request.id,request.entered_name);
   return screen('Автоматическое подтверждение не завершено. Заявка передана администратору; после проверки отправьте /start.');
  });
 }
@@ -109,6 +122,7 @@ export async function reviewRegistration(actor:User,id:string,input:{action:'app
    const staff=(await db.query('SELECT * FROM staff_directory WHERE id=$1',[input.staffId||request.staff_id])).rows[0];
    await finish(db,request,staff,actor,input.userId,input.forceNew);
   }
+  await db.query("UPDATE outbox SET read_at=now() WHERE dedupe_key LIKE $1 AND read_at IS NULL",['staff-review:'+id+':%']);
   return {ok:true};
  });
 }

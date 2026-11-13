@@ -413,6 +413,48 @@ test('creating a copy saves the edited draft once and starts an independent task
  assert.equal((await request('director',path)).data.task.status,'completed');
 });
 
+test('launch routing sends every new request to the branch manager and adds the sales head only for watched or В-coded tasks',async()=>{
+ const branch='lead-msk',sales='director',assignee='olga';
+ assert.equal((await request(sales,'/approval-hierarchy',{branchId:branch,salesId:sales},'PUT')).status,403);
+ assert.equal((await request('admin','/approval-hierarchy',{branchId:branch,salesId:sales},'PUT')).status,200);
+ const make=async(title:string)=>(await request('admin','/tasks',{...taskInput,title,assigneeId:assignee})).data.id as string;
+ const simple=await make('РЗМ* В названии, но не в коде'),coded=await make('РВМ* Код с В'),marked=await make('РЗМ* Отметка контроля');
+ const task=(id:string)=>'/tasks/'+id;
+ const propose=(id:string)=>request(assignee,task(id)+'/approvals',{type:'deadline',reason:'Проверяем перенос крайнего срока',plan:'Уточнить данные и закончить работу',proposedDeadline:new Date(Date.now()+9*86400000).toISOString(),expectedVersion:1});
+ const decide=(actor:string,id:string,decision:string,comment:string)=>request(actor,'/approvals/'+id+'/decision',{decision,comment});
+ try{
+  assert.equal((await request(branch,task(simple))).status,200);
+  assert.equal((await request(assignee,task(marked)+'/approval-watch',{enabled:true},'PUT')).status,403);
+  assert.equal((await request(sales,task(marked)+'/approval-watch',{enabled:true},'PUT')).status,200);
+  assert.equal((await request(sales,task(marked))).data.approvalWatch.manual,true);
+  assert.equal((await request(sales,task(coded))).data.approvalWatch.byCode,true);
+  for(const [id,expected] of [[simple,[branch]],[coded,[branch,sales]],[marked,[branch,sales]]] as const){
+   const approval=await propose(id);assert.equal(approval.status,201);
+   const view=await request(assignee,task(id));
+   assert.deepEqual(view.data.approvals[0].route.map((step:any)=>step.userId),expected);
+   assert.equal((await decide(sales,approval.data.id,'approve','Одобряю перенос')).status,403);
+   const first=await decide(branch,approval.data.id,'approve','Согласен с новым сроком');assert.equal(first.status,200);
+   assert.equal(first.data.state,expected.length===1?'approved':'pending');
+   if(expected.length===2)assert.equal((await decide(sales,approval.data.id,'approve','Подтверждаю новый срок')).data.state,'approved');
+  }
+  const result=await make('РВМ* Работа на приёмку');
+  assert.equal((await request(assignee,task(result)+'/review',{action:'submit',comment:'Проверили готовый результат',expectedVersion:1})).status,200);
+  const first=(await request(assignee,task(result))).data.approvals[0].id;
+  assert.equal((await decide(branch,first,'approve','')).data.state,'pending');
+  assert.equal((await decide(sales,first,'reject','Уточните результат')).data.state,'rejected');
+  const returned=(await request(assignee,task(result))).data;
+  assert.equal(returned.task.status,'active');assert.equal(returned.submissions[0].state,'returned');
+  assert.equal((await request(assignee,task(result)+'/review',{action:'submit',comment:'Обновлённый результат готов',expectedVersion:returned.task.version})).status,200);
+  const second=(await request(assignee,task(result))).data.approvals[0].id;
+  assert.equal((await decide(branch,second,'approve','')).data.state,'pending');
+  assert.equal((await decide(sales,second,'approve','')).data.state,'approved');
+  assert.equal((await request(assignee,task(result))).data.task.status,'completed');
+ }finally{
+  await db.pool.query('DELETE FROM approval_hierarchy WHERE id=1');
+  await db.pool.query('UPDATE users SET company_branch_access=false WHERE id=$1',[branch]);
+ }
+});
+
 test('written rules reject unsupported prose and check every task; planning checks follow the display setting',async()=>{
  const {evaluate}=await import('../server/domain.js'),{parseWrittenRule}=await import('../shared/written-rules.js');const admin=users.find(u=>u.id==='admin')!;
  const id=(await request('anna','/tasks',{...taskInput,title:'Без буквенного кода',assigneeId:'anna',description:'Кратко'})).data.id;const task=(await service.detail(admin,id)).task;

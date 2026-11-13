@@ -1,12 +1,14 @@
 import {useId,useRef,useState,type ReactNode,type KeyboardEvent} from 'react';
 import {useRememberedFilter} from './remembered-filter.js';
 export type SettingsSection={id:string;label:string;content:ReactNode};
-export function SettingsSections({userId,items,initial='rules'}:{userId:string;items:SettingsSection[];initial?:string}){
+export function SettingsSections({userId,items,initial='rules',initialSelection}:{userId:string;items:SettingsSection[];initial?:string;initialSelection?:string}){
  const [stored,setStored]=useRememberedFilter(userId,'settings.section',initial);
- const active=items.some(item=>item.id===stored)?stored:items[0]?.id;
+ const [selected,setSelected]=useState(initialSelection);
+ const current=selected??stored;
+ const active=items.some(item=>item.id===current)?current:items[0]?.id;
  const [visited,setVisited]=useState(()=>new Set([active]));
  const prefix=useId(),buttons=useRef<(HTMLButtonElement|null)[]>([]);
- function select(id:string){setStored(id);setVisited(old=>new Set([...old,id]));}
+ function select(id:string){setSelected(id);setStored(id);setVisited(old=>new Set([...old,id]));}
  function navigate(event:KeyboardEvent,index:number){
   let next=index;
   if(event.key==='ArrowRight')next=(index+1)%items.length;else if(event.key==='ArrowLeft')next=(index+items.length-1)%items.length;

@@ -25,10 +25,11 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
   if(active.current)return;
   active.current=true;setBusy(true);setError('');
   try{
-   setView(await api<BotScreen>(path+query,'POST',body));setText('');
+   const next=await api<BotScreen>(path+query,'POST',body);
+   setView(next);setText('');
    if(focus)window.requestAnimationFrame(()=>field.current?.focus());
-   else if(mobile)message.current?.scrollIntoView({block:'nearest'});
-   void refresh().catch(()=>{});
+   else if(mobile)window.requestAnimationFrame(()=>message.current?.scrollIntoView({block:'start'}));
+   if(next.buttons.flat().some(button=>button.text==='Отменить последнее действие'||button.text==='К задаче'))void refresh().catch(()=>{});
   }catch(e){setError((e as Error).message);}
   finally{active.current=false;setBusy(false);}
  }

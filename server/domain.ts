@@ -7,7 +7,7 @@ import { taskQueue, elapsedToday, taskCode, businessDay } from '../shared/queues
 export class AppError extends Error { constructor(public status: number, message: string) { super(message); } }
 export function assert(condition: unknown, status: number, message: string): asserts condition { if(!condition) throw new AppError(status,message); }
 export const globalAccess = (u:User) => ['director','admin','sales_head'].includes(u.role);
-export const canAccess = (u:User,t:Task) => globalAccess(u) || (u.role==='branch_manager' && u.branch_id===t.branch_id) || t.assignee_id===u.id || t.creator_id===u.id;
+export const canAccess = (u:User,t:Task) => globalAccess(u) || (u.role==='branch_manager' && (u.company_branch_access||u.branch_id===t.branch_id)) || t.assignee_id===u.id || t.creator_id===u.id;
 export const canSee = (u:User,t:Task) => canAccess(u,t)&&!exclusionReason(t);
 export const canRequest = (u:User,t:Task) => u.id===t.assignee_id || u.id===t.creator_id || (canManage(u)&&canSee(u,t));
 export const canManageTaskReminders = (u:User,t:Task) => canSee(u,t)&&(t.creator_id===u.id||canManage(u));

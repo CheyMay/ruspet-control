@@ -21,7 +21,8 @@ export async function updateEmployeeProfile(actor:User,id:string,body:unknown){
    if(hasLogin)assert((await db.query("SELECT 1 FROM users u JOIN login_accounts a ON a.user_id=u.id WHERE u.role='admin' AND u.id<>$1 AND a.enabled LIMIT 1",[id])).rowCount,409,'Сначала обеспечьте вход в панель другому администратору.');
   }
   if(before.name===value.name&&before.position===value.position&&before.branch_id===value.branchId&&before.role===value.role)return {user:before,changed:false};
-  const after=(await db.query<User&{version:number}>('UPDATE users SET name=$2,position=$3,branch_id=$4,role=$5,version=version+1 WHERE id=$1 RETURNING *',[id,value.name,value.position,value.branchId,value.role])).rows[0];
+  const after=(await db.query<User&{version:number}>(`UPDATE users SET name=$2,position=$3,branch_id=$4,role=$5,
+   company_branch_access=company_branch_access AND $5='branch_manager',version=version+1 WHERE id=$1 RETURNING *`,[id,value.name,value.position,value.branchId,value.role])).rows[0];
   const related:Record<string,unknown>={};
   if(value.role==='employee'&&before.role!=='employee')related.reportingRemoved=(await db.query('DELETE FROM org_reporting WHERE manager_id=$1 RETURNING employee_id,manager_id',[id])).rows;
   if(before.role!==value.role||before.branch_id!==value.branchId){

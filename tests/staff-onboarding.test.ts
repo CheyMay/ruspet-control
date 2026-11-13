@@ -100,6 +100,9 @@ test('shared phones, duplicate names, mismatched names and disabled accounts go 
 test('no-phone employees can request review; missing confirmation, rejection, cancellation, expiry and attempt limits are enforced',async()=>{
  await identify(82007,'Игорь Безномеров');await onboard.onboardingMessage(msg(82007,'/manual'));
  const r=(await onboard.listRegistrations(admin)).requests.find(r=>r.chat_id==='82007')!;
+ await onboard.staffReviewNotices();
+ const notices=await (await http('/notifications','GET',cookie)).json();
+ assert.equal(notices.filter((notice:any)=>notice.staff_review&&notice.body.includes('Игорь Безномеров')).length,1);
  assert.equal((await http('/system/registrations/'+r.id,'POST',cookie,{action:'reject'})).status,400);
  assert.equal((await http('/system/registrations/'+r.id,'POST',cookie,{action:'reject',confirmed:true})).status,200);
  assert((await onboard.onboardingMessage(msg(82007,'/start')))?.text.includes('имя и фамилию'));
