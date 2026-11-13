@@ -27,7 +27,7 @@ export async function tickEventRefresh(request:BitrixRequest,maxRequests=1,actor
   await pool.query("UPDATE bitrix_refresh_queue SET state='pending' WHERE portal=$1 AND state='processing'",[run.portal]);
   let processed=0;
   for(;processed<maxRequests;processed++){
-   const item=(await pool.query("SELECT * FROM bitrix_refresh_queue WHERE portal=$1 AND generation>done_generation AND state IN ('pending','failed') AND (retry_at IS NULL OR retry_at<=now()) ORDER BY CASE resource WHEN 'task' THEN 0 WHEN 'task_comments' THEN 2 ELSE 1 END,updated_at LIMIT 1",[run.portal])).rows[0];
+   const item=(await pool.query("SELECT * FROM bitrix_refresh_queue WHERE portal=$1 AND resource NOT IN ('task_inbound','task_inbound_comments') AND generation>done_generation AND state IN ('pending','failed') AND (retry_at IS NULL OR retry_at<=now()) ORDER BY CASE resource WHEN 'task' THEN 0 WHEN 'task_comments' THEN 2 ELSE 1 END,updated_at LIMIT 1",[run.portal])).rows[0];
    if(!item)break;
    // Jobs and their cursors survive a process restart and a long chat history.
    let job=(await pool.query('SELECT * FROM bitrix_archive_jobs WHERE run_id=$1 AND resource=$2 AND external_id=$3',[run.id,item.resource,item.external_id])).rows[0];

@@ -38,17 +38,45 @@ async function saveEvent(db:Db,portal:string,event:string,data:unknown,key:strin
  return !!inserted;
 }
 export async function receiveBitrixEvent(input:any){
+ const inbound=process.env.BITRIX_INBOUND_TASKS==='true';
  const cfg=(await pool.query('SELECT * FROM bitrix_event_capture WHERE id=1')).rows[0];
- assert(cfg.enabled&&cfg.portal&&cfg.member_id,503,'Приём событий ещё не включён.');
+ assert(cfg.enabled&&cfg.portal&&(cfg.member_id||inbound&&cfg.mode==='online'),503,'Приём событий ещё не включён.');
  const file=process.env.BITRIX_EVENT_TOKEN_FILE;assert(file,503,'Не задан закрытый файл токена событий.');
- const info=await stat(file);assert(info.isFile()&&(info.mode&0o077)===0,503,'Файл токена событий должен иметь права 0600.');
- const token=(await readFile(file,'utf8')).trim(),supplied=input?.auth?.application_token;
+ const token=await readEventToken(file),supplied=input?.auth?.application_token;
  assert(token.length>=16&&typeof supplied==='string'&&timingSafeEqual(createHash('sha256').update(token).digest(),createHash('sha256').update(supplied).digest()),403,'Неверная подпись источника событий.');
- assert(input.auth.domain===cfg.portal&&input.auth.member_id===cfg.member_id,403,'Событие другого портала отклонено.');
+ const memberId=input.auth.member_id;
+ assert(input.auth.domain===cfg.portal&&typeof memberId==='string'&&(!inbound||/^[a-f0-9]{32}$/i.test(memberId))&&(!cfg.member_id||memberId===cfg.member_id),403,'Событие другого портала отклонено.');
  assert(typeof input.event==='string'&&requiredEvents.includes(input.event),400,'Неподдерживаемое событие.');
  assert(/^[0-9]{9,12}$/.test(String(input.ts)),400,'У события нет корректного времени.');
  // Never persist auth/access/refresh/application tokens from the request.
- return transaction(async db=>({accepted:await saveEvent(db,cfg.portal,input.event,input.data,digest({event:input.event,data:input.data,ts:input.ts,handler:input.event_handler_id}),new Date(Number(input.ts)*1000).toISOString())}));
+ const key=digest({event:input.event,data:input.data,ts:input.ts,handler:input.event_handler_id});
+ const when=new Date(Number(input.ts)*1000).toISOString();
+ if(!inbound)return transaction(async db=>({accepted:await saveEvent(db,cfg.portal,input.event,input.data,key,when)}));
+ assert(taskWebhookEvents.includes(input.event),400,'Исходящий вебхук настроен на события задач.');
+ const {id}=eventTargets(input.event,input.data)[0];
+ return transaction(async db=>{
+  const pinned=await db.query(`UPDATE bitrix_event_capture SET member_id=$2,verified_at=coalesce(verified_at,now())
+   WHERE id=1 AND enabled AND mode='online' AND portal=$1 AND (member_id IS NULL OR member_id=$2)`,[cfg.portal,memberId]);
+  assert(pinned.rowCount,403,'Событие другого портала отклонено.');
+  const known=await db.query(`SELECT 1 FROM tasks WHERE id=$1 AND source_fields->>'ID'=id
+   UNION ALL SELECT 1 FROM bitrix_task_links WHERE external_id=$1::bigint AND NOT live_enabled`,[id]);
+  if(!known.rowCount)return {accepted:false,ignored:true};
+  const inserted=await db.query(`INSERT INTO bitrix_event_inbox(portal,dedupe_key,event,data,occurred_at)
+   VALUES($1,$2,$3,jsonb_build_object('taskId',$4::text),$5) ON CONFLICT DO NOTHING`,[cfg.portal,key,input.event,id,when]);
+  if(inserted.rowCount){
+   await queueRefresh(db,cfg.portal,'task_inbound',id,input.event==='ONTASKDELETE');
+   if(input.event==='ONTASKCOMMENTADD')await queueRefresh(db,cfg.portal,'task_inbound_comments',id);
+  }
+  return {accepted:!!inserted.rowCount};
+ });
+}
+export const taskWebhookEvents=['ONTASKADD','ONTASKUPDATE','ONTASKDELETE','ONTASKCOMMENTADD'];
+export async function readEventToken(file:string){
+ const info=await stat(file).catch(()=>null);
+ assert(info?.isFile()&&(info.mode&0o077)===0,503,'Файл токена событий должен быть доступен службе с правами 0600.');
+ const token=(await readFile(file,'utf8')).trim();
+ assert(token.length>=16,503,'Не настроен токен исходящего вебхука.');
+ return token;
 }
 export async function bindArchiveEvents(request:BitrixRequest,mode:'offline'|'online',handler?:string){
  assert(request.mode==='application'&&request.portal&&request.memberId,409,'Для event.bind нужна авторизация отдельного приложения OAuth. Входящий вебхук не подходит.');

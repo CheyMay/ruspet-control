@@ -1,6 +1,6 @@
 import {before,after,beforeEach,test} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {readFile,writeFile,mkdtemp,rm,stat} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -54,6 +54,54 @@ const request:BitrixRequest=Object.assign(async<T>(method:BitrixMethod,params:an
  throw Error('Unexpected fixture method '+method);
 },{portal,mode:'webhook' as const});
 async function configureCapture(){await db.pool.query("UPDATE bitrix_event_capture SET enabled=true,portal=$1,member_id='fixture-member',verified_at=now(),started_at=now(),mode='offline' WHERE id=1",[portal]);}
+test('outgoing webhook refreshes exported tasks one way and preserves concurrent local edits',async()=>{
+ const inbound=await import('../server/bitrix-inbound.js');
+ const id='8001',member='f'.repeat(32);
+ const baseline={id,title:'Старая задача',description:'Из выгрузки',deadline:null,status:'active',
+  assignee_id:employee.id,creator_id:admin.id,created_at:'2026-11-01T10:00:00.000Z'};
+ const send=async(auth:Record<string,string>,taskId=id,ts='1793872800')=>api(admin,'/bitrix/events',{
+  event:'ONTASKUPDATE',data:{FIELDS_AFTER:{ID:taskId}},ts,auth});
+ const auth={domain:portal,member_id:member,application_token:'fixture-event-token-only'};
+ const methods:BitrixMethod[]=[];
+ const inboundRequest:BitrixRequest=Object.assign(async<T>(method:BitrixMethod):Promise<T>=>{
+  methods.push(method);
+  if(method==='user.get')return [{ID:'202',NAME:employee.name},{ID:'201',NAME:admin.name}] as T;
+  assert.equal(method,'tasks.task.get');
+  return {task:{...task(id),title:'Актуальная задача',description:'Из Битрикс24',createdDate:baseline.created_at}} as T;
+ },{portal,mode:'webhook' as const});
+ process.env.BITRIX_INBOUND_TASKS='true';
+ try{
+  await db.pool.query("UPDATE bitrix_event_capture SET enabled=true,portal=$1,member_id=NULL,mode='online' WHERE id=1",[portal]);
+  await db.pool.query(`INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,deadline,status,priority,code,created_at,source_fields)
+   VALUES($1,$2,$3,$4,$5,$6,NULL,'active','normal','ТЕСТ',$7,jsonb_build_object('ID',$1::text))`,
+   [id,baseline.title,'Локальная правка',employee.branch_id,employee.id,admin.id,baseline.created_at]);
+  await db.pool.query('INSERT INTO mock_provider_tasks(id,snapshot,revision) SELECT id,to_jsonb(tasks),version FROM tasks WHERE id=$1',[id]);
+  await db.pool.query("INSERT INTO task_events(id,task_id,kind,message,data) VALUES($1,$2,'imported','Из выгрузки',$3)",[randomUUID(),id,JSON.stringify({initialSnapshot:baseline})]);
+  await db.pool.query(`INSERT INTO staff_directory(id,source_key,name,name_key,organisation,department,emails,phones,bitrix_id,user_id)
+   SELECT $1,$2,name,name,'Фикстура','Фикстура','{}','{}','202',id FROM users WHERE id=$3`,[randomUUID(),'fixture-inbound',employee.id]);
+  await db.pool.query("INSERT INTO bitrix_user_links(user_id,external_id) VALUES($1,201)",[admin.id]);
+  assert.equal((await send({...auth,application_token:'wrong'})).status,403);
+  assert.equal((await db.pool.query('SELECT member_id FROM bitrix_event_capture WHERE id=1')).rows[0].member_id,null);
+  assert.equal((await send(auth)).body.accepted,true);
+  assert.equal((await send(auth)).body.accepted,false);
+  assert.equal((await send({...auth,member_id:'a'.repeat(32)})).status,403);
+  assert.equal((await send(auth,'9001')).body.ignored,true);
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,id);
+  const result=(await db.pool.query("SELECT title,description,status,version,transfer_count FROM tasks WHERE id=$1",[id])).rows[0];
+  assert.deepEqual(result,{title:'Актуальная задача',description:'Локальная правка',status:'completed',version:2,transfer_count:0});
+  const link=(await db.pool.query('SELECT live_enabled,conflict FROM bitrix_task_links WHERE task_id=$1',[id])).rows[0];
+  assert.equal(link.live_enabled,false);
+  assert.match(link.conflict,/description/);
+  assert.deepEqual(methods,['tasks.task.get','user.get']);
+  assert.equal((await db.pool.query('SELECT count(*)::int AS n FROM bitrix_operations')).rows[0].n,0);
+  assert.equal(await inbound.tickInboundTasks(inboundRequest),null);
+ }finally{
+  delete process.env.BITRIX_INBOUND_TASKS;
+  await db.pool.query('DELETE FROM bitrix_task_links WHERE task_id=$1',[id]);
+  await db.pool.query('DELETE FROM bitrix_user_links WHERE user_id=ANY($1)',[[admin.id,employee.id]]);
+  await db.pool.query("DELETE FROM staff_directory WHERE source_key='fixture-inbound'");
+ }
+});
 async function runFull(capture=false){
  if(capture)await configureCapture();const made=await archive.startInitialArchive(admin,portal,false);
  for(let i=0;i<20;i++){const result=await archive.tickInitialArchive(request,made.id,100);if(result.state==='captured')break;}

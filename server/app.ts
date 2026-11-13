@@ -76,7 +76,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   next();
  });
  app.use('/api/integrations/v1/companies/batch',express.json({limit:'512kb'})); app.use(express.json({limit:'32kb'}));
- app.post('/api/bitrix/events',express.urlencoded({extended:true,limit:'128kb',parameterLimit:1000}),async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await receiveBitrixEvent(req.body));});
+ app.post('/api/bitrix/events',express.urlencoded({extended:true,limit:'128kb',parameterLimit:1000}),express.json({limit:'128kb'}),async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await receiveBitrixEvent(req.body));});
  const loginAttempts=new Map<string,{count:number;since:number}>();
  app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'");next();});
  app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.get('origin')){const allowed=[`http://${req.get('host')}`,'http://127.0.0.1:5173','http://localhost:5173'];if(process.env.PUBLIC_ORIGIN)allowed.push(new URL(process.env.PUBLIC_ORIGIN).origin);if(!allowed.includes(req.get('origin')!))return res.status(403).json({error:'Запрос с другого сайта запрещён.'});}next();});

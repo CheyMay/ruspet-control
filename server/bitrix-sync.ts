@@ -28,7 +28,7 @@ export function planFields(base:Values,local:Values,remote:Values){
  const inbound=keys.filter(k=>remote[k]!==base[k]&&local[k]===base[k]);
  return {conflict,outbound,inbound};
 }
-async function stage(task:Remote,db:Db=pool,raw:Record<string,unknown>|null=null){
+export async function stage(task:Remote,db:Db=pool,raw:Record<string,unknown>|null=null){
  await db.query(`INSERT INTO bitrix_task_snapshots(external_id,snapshot,raw) VALUES($1,$2,$3)
  ON CONFLICT(external_id) DO UPDATE SET snapshot=excluded.snapshot,raw=coalesce(excluded.raw,bitrix_task_snapshots.raw),fetched_at=now()`,[task.id,JSON.stringify(task),raw?JSON.stringify(raw):null]);
 }
@@ -106,16 +106,17 @@ export async function syncLinkedTask(request:BitrixRequest,taskId:string,allowWr
   return plan;
  });
 }
-export async function syncActivity(request:BitrixRequest,taskId:string,olderThan?:string){
+export async function syncActivity(request:BitrixRequest,taskId:string,olderThan?:string,options:{task?:Remote;commentsOnly?:boolean}={}){
  const link=(await pool.query('SELECT external_id FROM bitrix_task_links WHERE task_id=$1',[taskId])).rows[0];
  if(!link)throw new BitrixError('Задача не связана с Битрикс24.');
- const task=await getRemote(request,String(link.external_id));
+ const task=options.task??await getRemote(request,String(link.external_id));
+ if(task.id!==String(link.external_id))throw new BitrixError('Битрикс24 вернул другой ID задачи.');
  if(!task.chatId&&process.env.BITRIX_LEGACY_COMMENTS!=='true')throw new BitrixError('Чат задачи не доступен. Проверьте версию карточки и права вебхука.');
  const result:{messages:Record<string,unknown>[];users:{id:number;name:string}[]}=task.chatId?
   await request<{messages:Record<string,unknown>[];users:{id:number;name:string}[]}>('im.dialog.messages.get',{DIALOG_ID:'chat'+task.chatId,LIMIT:50,...(olderThan?{LAST_ID:olderThan}:{})}):
   {messages:(await request<Record<string,unknown>[]>('task.commentitem.getlist',{TASKID:task.id,ORDER:{POST_DATE:'desc'},FILTER:{}}))
     .map(row=>({id:row.ID,date:row.POST_DATE,text:row.POST_MESSAGE,author:row.AUTHOR_NAME})),users:[]};
- const history=await request<{list:Record<string,unknown>[]}>('tasks.task.history.list',{taskId:task.id});
+ const history=options.commentsOnly?{list:[]}:await request<{list:Record<string,unknown>[]}>('tasks.task.history.list',{taskId:task.id});
  if(!Array.isArray(result.messages)||!Array.isArray(history.list))throw new BitrixError('Не удалось прочитать обсуждение или историю.');
  await transaction(async db=>{
   for(const [kind,records] of [['comment',result.messages],['history',history.list]] as const){

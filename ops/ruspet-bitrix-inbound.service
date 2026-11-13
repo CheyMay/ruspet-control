@@ -1,0 +1,23 @@
+[Unit]
+Description=RUSPET Bitrix24 incoming task synchronization
+After=network-online.target postgresql.service
+Wants=network-online.target
+
+[Service]
+User=ruspet
+Group=ruspet
+WorkingDirectory=/opt/ruspet
+EnvironmentFile=/opt/ruspet/.env
+EnvironmentFile=/etc/ruspet/bitrix-inbound.env
+ExecStart=/usr/bin/node --import tsx scripts/bitrix-inbound.ts watch
+Restart=on-failure
+RestartSec=20
+TimeoutStopSec=360
+CPUQuota=35%
+UMask=0077
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectHome=yes
+
+[Install]
+WantedBy=multi-user.target

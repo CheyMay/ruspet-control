@@ -6,6 +6,7 @@ import {createBitrixTransport,BitrixTransportError,type BitrixSendOptions} from 
 
 export type BitrixMethod='tasks.task.list'|'tasks.task.get'|'tasks.task.update'|'tasks.task.history.list'|'im.dialog.messages.get'|'task.commentitem.getlist'|'tasks.task.getFields'|'user.get'|'tasks.task.complete'|'tasks.task.approve'|'tasks.task.disapprove'|'tasks.task.renew'|'tasks.task.chat.message.send'|'task.commentitem.add'|'crm.company.list'|'crm.company.get'|'crm.company.fields'|`crm.${'contact'|'deal'|'lead'}.${'list'|'get'|'fields'}`|'crm.company.contact.items.get'|'crm.timeline.comment.list'|'crm.activity.list'|'crm.status.list'|'crm.type.list'|'crm.item.list'|'crm.item.fields'|'crm.item.get'|'crm.requisite.list'|'crm.requisite.fields'|'crm.requisite.bankdetail.fields'|'crm.address.fields'|'crm.deal.contact.items.get'|'crm.lead.contact.items.get'|'crm.deal.productrows.get'|'crm.lead.productrows.get'|'sonet_group.user.get'|'crm.requisite.bankdetail.list'|'crm.address.list'|'department.get'|'sonet_group.get'|'task.checklistitem.getlist'|'task.elapseditem.getlist'|'tasks.task.result.list'|'disk.attachedObject.get'|'disk.file.get'|'event.bind'|'event.get'|'events'|'feature.get'|'user.admin'|'event.offline.get'|'event.offline.list'|'event.offline.clear';
 const knownErrors=new Set(['QUERY_LIMIT_EXCEEDED','OPERATION_TIME_LIMIT','NO_AUTH_FOUND','ACCESS_DENIED','OVERLOAD_LIMIT','ERROR_TASK_NOT_FOUND','WRONG_AUTH_TYPE','WRONG_LICENSE','ERROR_METHOD_NOT_FOUND','ERROR_NOT_FOUND','NOT_FOUND','insufficient_scope','expired_token','invalid_token']);
+const inboundMethods=new Set<BitrixMethod>(['tasks.task.get','tasks.task.getFields','user.get','im.dialog.messages.get','task.commentitem.getlist']);
 export class BitrixError extends Error {constructor(message:string,public disposition:'rejected'|'uncertain'='rejected',public code:string|null=null,public retryAt:string|null=null){super(message);}}
 
 export function webhookBase(secret:string,portal:string){
@@ -56,6 +57,9 @@ export async function bitrixClient(options:{application?:boolean}={}):Promise<Bi
  let transport:Awaited<ReturnType<typeof createBitrixTransport>>;
  try{transport=await createBitrixTransport(base.origin);}catch(e){throw new BitrixError(e instanceof BitrixTransportError?e.message:'Не удалось настроить транспорт Битрикс24.');}
  const request:BitrixRequest=async<T>(method:BitrixMethod,params:object,observe?:(metadata:BitrixMeta)=>void,options?:BitrixSendOptions):Promise<T>=>{
+  if(process.env.BITRIX_INBOUND_TASKS==='true'&&(application||transport.mode!=='balancer'||!inboundMethods.has(method))){
+   throw new BitrixError('В режиме входящей синхронизации разрешено только чтение задач через балансировщик.');
+  }
   const db=await acquirePortalLock();
   try{
    const pinned=(await db.query('UPDATE bitrix_rest_gate SET portal=$1 WHERE id=1 AND (portal IS NULL OR portal=$1) RETURNING id',[base.hostname])).rowCount;
