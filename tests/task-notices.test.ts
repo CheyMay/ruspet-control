@@ -1,6 +1,6 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {mkdtemp,readFile,writeFile,unlink,rmdir} from 'node:fs/promises';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
@@ -127,10 +127,58 @@ test('web push is opt-in per device, rejects internal URLs and sends one private
  const messages:string[]=[],send=webpush.sendNotification;
  try{
   webpush.sendNotification=async(_sub,payload)=>{messages.push(String(payload));return {statusCode:201,body:'',headers:{}};};
+  assert.equal((await api(other,'/notifications/push/test','POST',{endpoint:subscription.endpoint})).status,409);
+  assert.equal((await api(worker,'/notifications/push/test','POST',{endpoint:subscription.endpoint})).body.sent,true);
+  assert.match(messages.shift()!,/ruspet-push-test/);
   await Promise.all([push.deliverWebPush(time),push.deliverWebPush(time)]);
   assert.equal(messages.length,1);
   assert.match(messages[0],/Вам поставили новые задачи/);assert(!messages[0].includes('Содержимое задачи'));
  }finally{webpush.sendNotification=send;}
  await api(worker,'/auth/logout','POST',{});
  assert.equal((await db.pool.query('SELECT 1 FROM web_push_subscriptions WHERE user_id=$1',[worker.id])).rowCount,0);
+});
+
+test('branch inactivity is captured once and reaches the next working day report',async()=>{
+ const management=await import('../server/management-notices.js');
+ await db.pool.query("INSERT INTO users(id,name,role,branch_id,position,company_branch_access) VALUES('branch-fixture','Руководитель фикстуры','branch_manager','Тест','Рукфил',true)");
+ await db.pool.query("INSERT INTO approval_hierarchy(id,branch_manager_id,sales_head_id) VALUES(1,'branch-fixture',$1)",[director.id]);
+ const day='2035-01-05',now=at(day,'17:30');
+ const idle=await makeTask('Задача без действия',at('2035-01-04','11:30'),worker);
+ const worked=await makeTask('Задача с ответом',at('2035-01-04','11:30'),other);
+ await db.pool.query("INSERT INTO task_events(id,task_id,actor_id,kind,message,created_at) VALUES($1,$2,$3,'comment','Есть ответ',$4)",
+  [randomUUID(),worked,other.id,at(day,'14:00').toISOString()]);
+ await management.reviewInactivity(day,now);
+ await management.reviewInactivity(day,now);
+ const rows=(await db.pool.query("SELECT body FROM outbox WHERE recipient_id='branch-fixture' AND management_notice->>'kind'='inactivity'")).rows;
+ assert.equal(rows.length,1);assert(rows[0].body.includes(worker.name));assert(!rows[0].body.includes(other.name));assert(rows[0].body.includes('#'+idle));
+ await management.morningManagementReport('2035-01-08','fixture-report');
+ const morning=(await db.pool.query("SELECT body,management_notice FROM outbox WHERE recipient_id=$1 AND management_notice->>'kind'='morning-report'",[director.id])).rows[0];
+ assert(morning.body.includes(worker.name));assert.equal(morning.management_notice.reportId,'fixture-report');
+});
+
+test('director gets one batch for current requests and the admin cannot send it twice',async()=>{
+ const management=await import('../server/management-notices.js'),service=await import('../server/service.js');
+ const adminUser=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
+ const branch=(await db.pool.query<User>("SELECT * FROM users WHERE id='branch-fixture'")).rows[0];
+ const id=await makeTask('РВМ* Работа для проверки руководителями',null);
+ const first=await workflow.reviewTask(worker,id,'submit','Подготовили результат',1);
+ assert.equal(first.state,'review');
+ const a=(await db.pool.query('SELECT id FROM approvals WHERE task_id=$1',[id])).rows[0];
+ await service.decide(branch,a.id,{decision:'approve',comment:''});
+ assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE recipient_id=$1 AND dedupe_key LIKE $2",[director.id,'approval:'+a.id+':%'])).rows[0].n,0);
+ assert.equal((await management.directorBatchStatus(adminUser))?.total,1);
+ await assert.rejects(()=>management.sendDirectorBatch(worker),/администратору/);
+ const concurrent=await Promise.allSettled([management.sendDirectorBatch(adminUser),management.sendDirectorBatch(adminUser)]);
+ const sent=concurrent.flatMap(result=>result.status==='fulfilled'?[result.value]:[]);
+ assert.equal(sent.length,1);assert.equal(sent[0].count,1);
+ assert.equal((await management.directorBatchTasks(director,sent[0].id))[0].task_id,id);
+ await assert.rejects(()=>management.directorBatchTasks(worker,sent[0].id),/недоступен/);
+ assert.equal((await management.directorBatchStatus(adminUser))?.total,0);
+ const bot=await import('../server/bot.js');
+ const home=await bot.botView(director,'team-test');
+ assert(home.buttons.flat().some(button=>button.text==='Мои задачи'));
+ const team=await bot.botClick(director,'team-test',home.buttons.flat().find(button=>button.text==='Задачи команды')!.token);
+ assert(!team.text.includes('Работа для проверки руководителями'));
+ const personal=await bot.botClick(director,'team-test',team.buttons.flat().find(button=>button.text===worker.name)!.token);
+ assert(personal.text.includes(worker.name));assert(!personal.text.includes(other.name));
 });

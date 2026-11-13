@@ -5,7 +5,7 @@ import {pool} from './db.js';
 import {assert} from './domain.js';
 import {publicOrigin} from './report-content.js';
 import {generateWebTaskNotices} from './task-notices.js';
-import type {User} from '../shared/types.js';
+import type {ManagementNotice,User} from '../shared/types.js';
 
 function pushHost(value:string){
  try{
@@ -56,13 +56,33 @@ export async function removeWebPush(user:User,endpoint:string){
  return {active:false};
 }
 
-type PushRow={id:string;endpoint:string;p256dh:string;auth:string;staff_review:boolean;task_notice:{hasDeadlines:boolean;hasAssignments:boolean}|null};
+export async function testDevicePush(user:User,sessionHash:string,endpoint:string){
+ const config=vapidKeys();
+ assert(config,503,'Push-уведомления на сервере пока не настроены.');
+ const row=(await pool.query('SELECT p256dh,auth FROM web_push_subscriptions WHERE user_id=$1 AND session_hash=$2 AND endpoint=$3',
+  [user.id,sessionHash,endpoint])).rows[0];
+ assert(row,409,'Сначала включите уведомления на этом устройстве.');
+ try{
+  await webpush.sendNotification({endpoint,keys:row},JSON.stringify({body:'Уведомления на этом устройстве работают.',tag:'ruspet-push-test'}),
+   {vapidDetails:config,TTL:60,urgency:'normal',timeout:6000});
+ }catch(error){
+  const status=(error as {statusCode?:number}).statusCode;
+  if(status===404||status===410){
+   await removeWebPush(user,endpoint);
+   return {sent:false,expired:true};
+  }
+  assert(false,502,'Сервис уведомлений не подтвердил отправку. Попробуйте ещё раз.');
+ }
+ return {sent:true,expired:false};
+}
+
+type PushRow={id:string;endpoint:string;p256dh:string;auth:string;staff_review:boolean;management_notice:ManagementNotice|null;task_notice:{hasDeadlines:boolean;hasAssignments:boolean}|null};
 export async function deliverWebPush(now=new Date()){
  const config=vapidKeys();
  if(!config)return;
- const rows=(await pool.query<PushRow>(`SELECT o.id,s.endpoint,s.p256dh,s.auth,o.task_notice,o.dedupe_key LIKE 'staff-review:%' AS staff_review
+ const rows=(await pool.query<PushRow>(`SELECT o.id,s.endpoint,s.p256dh,s.auth,o.task_notice,o.management_notice,o.dedupe_key LIKE 'staff-review:%' AS staff_review
   FROM outbox o JOIN web_push_subscriptions s ON s.user_id=o.recipient_id AND o.created_at>=s.created_at
-  WHERE (o.task_notice IS NOT NULL OR o.dedupe_key LIKE 'staff-review:%') AND o.withdrawn_at IS NULL AND o.read_at IS NULL
+  WHERE (o.task_notice IS NOT NULL OR o.management_notice IS NOT NULL OR o.dedupe_key LIKE 'staff-review:%') AND o.withdrawn_at IS NULL AND o.read_at IS NULL
    AND o.created_at BETWEEN $1::timestamptz-interval '10 minutes' AND $1
    AND (o.dedupe_key NOT LIKE 'staff-review:%' OR EXISTS(SELECT 1 FROM telegram_registrations r
     WHERE r.id::text=split_part(o.dedupe_key,':',2) AND r.state='review' AND r.expires_at>$1))
@@ -79,9 +99,9 @@ export async function deliverWebPush(now=new Date()){
   if(!claim.rowCount)continue;
   try{
    const hasAssignments=row.task_notice?.hasAssignments,hasDeadlines=row.task_notice?.hasDeadlines;
-   const body=row.staff_review?'Поступила заявка на подключение.':hasAssignments&&hasDeadlines?'Проверьте сроки и новые задачи.':hasAssignments?'Вам поставили новые задачи.':'Проверьте крайние сроки задач.';
+   const body=row.management_notice?'Поступило рабочее уведомление.':row.staff_review?'Поступила заявка на подключение.':hasAssignments&&hasDeadlines?'Проверьте сроки и новые задачи.':hasAssignments?'Вам поставили новые задачи.':'Проверьте крайние сроки задач.';
    await webpush.sendNotification({endpoint:row.endpoint,keys:{p256dh:row.p256dh,auth:row.auth}},
-    JSON.stringify({body,tag:row.staff_review?'ruspet-staff-review':hasAssignments?'ruspet-assignments':'ruspet-deadlines'}),
+    JSON.stringify({body,tag:row.management_notice?'ruspet-management':row.staff_review?'ruspet-staff-review':hasAssignments?'ruspet-assignments':'ruspet-deadlines'}),
     {vapidDetails:config,TTL:600,urgency:'normal',timeout:6000});
    await pool.query("UPDATE web_push_deliveries SET state='sent' WHERE notification_id=$1 AND endpoint=$2",[row.id,row.endpoint]);
   }catch(error){

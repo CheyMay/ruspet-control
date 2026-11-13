@@ -161,7 +161,7 @@ async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return'
   await db.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version)
    VALUES($1,$2,$3,'completion',$4,$5,$6,'pending',$7,$8)`,[approvalId,id,u.id,'Результат передан на приёмку',comment,after.version,JSON.stringify(route),cfg.version]);
   await event(db,id,u.id,'approval_requested','Результат направлен по маршруту согласования',{approvalId,route,plan:comment});
-  await notify(db,id,route[0].userId,'Проверьте результат по задаче #'+id,`approval:${approvalId}:0`);
+  if(route[0].userId!==hierarchy.sales_head_id)await notify(db,id,route[0].userId,'Проверьте результат по задаче #'+id,`approval:${approvalId}:0`);
  }else await notify(db,id,action==='submit'?before.creator_id:before.assignee_id,`${labels[action]} · #${id}${comment.trim()?': '+comment:''}`,`review:${id}:${after.version}`);
  return {state:status};
 });}

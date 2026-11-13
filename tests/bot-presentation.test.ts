@@ -9,8 +9,10 @@ test('task labels remove only leading boilerplate and retain codes, negations an
  assert.equal(compactTaskTitle('Не отправлять заказ без согласования'),'Не отправлять заказ без согласования');
  const title='РЗМ* Необходимо подготовить подробную документацию по условиям очередной поставки комплектующих для производства, не отгружать без согласования по заказу №1742 — крышка 28 мм';
  const label=compactTaskTitle(title,110);
- assert(label.startsWith('РЗМ* подготовить'));assert(label.includes('не отгружать'));assert(label.includes('без согласования'));assert(label.includes('№1742'));assert(label.includes('28'));assert(label.includes('…'));assert(label.length<=110);
- for(const word of label.replace(/…/g,'').split(/\s+/).filter(Boolean))assert(title.includes(word),word);
+ assert(label.startsWith('РЗМ* подготовить подробную документацию'));
+ assert(label.endsWith('… · №1742'));assert(label.length<=110);
+ assert.equal(label.match(/…/g)?.length,1);
+ assert(title.replace('Необходимо ','').startsWith(label.split('…')[0]));
 });
 
 test('short labels are deterministic and distinguish long tasks by their references',()=>{

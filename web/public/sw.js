@@ -5,7 +5,7 @@ self.addEventListener('push',event=>{
  let message={};
  try{message=event.data?.json()??{};}catch{}
  const body=typeof message.body==='string'?message.body:'Откройте рабочие уведомления.';
- const tag=['ruspet-assignments','ruspet-staff-review'].includes(message.tag)?message.tag:'ruspet-deadlines';
+ const tag=['ruspet-assignments','ruspet-staff-review','ruspet-push-test','ruspet-management'].includes(message.tag)?message.tag:'ruspet-deadlines';
  event.waitUntil(Promise.all([
   self.registration.showNotification('РУСПЭТ',{body,tag,renotify:true,icon:'/app-icon-192.png'}),
   self.clients.matchAll({type:'window',includeUncontrolled:true}).then(clients=>{

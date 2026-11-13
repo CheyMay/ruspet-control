@@ -14,7 +14,7 @@ export function MobileWorkspace({user,refresh,unread}:{user:User;refresh:()=>Pro
     <a href="/?view=full" className="text-button">Полная версия <ArrowUpRight size={14}/></a>
    </div>
   </header>
-  <details className="mobile-device-notifications"><summary>Приложение и уведомления</summary><DeviceNotifications install userId={user.id}/></details>
+  <details className="mobile-device-notifications" open={notices||undefined}><summary>Установить приложение и включить push</summary><DeviceNotifications install userId={user.id}/></details>
   <BotConversation mobile initial={notices?'notices':'home'} refresh={refresh}/>
  </main>;
 }

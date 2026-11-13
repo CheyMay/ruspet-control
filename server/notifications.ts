@@ -4,7 +4,7 @@ import type {Notification,User} from '../shared/types.js';
 
 export async function personalNotifications(user:User,unread=false,db:Db=pool){
  const tasks=(await visibleTasks(user,db)).map(task=>task.id);
- return (await db.query<Notification>(`SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,dedupe_key LIKE 'staff-review:%' AS staff_review
+ return (await db.query<Notification>(`SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review
   FROM outbox WHERE recipient_id=$1 AND withdrawn_at IS NULL AND NOT task_assignment
    AND (task_id IS NULL OR task_id=ANY($2)) AND (NOT $3 OR read_at IS NULL)
   ORDER BY created_at DESC,id DESC LIMIT 150`,[user.id,tasks,unread])).rows;

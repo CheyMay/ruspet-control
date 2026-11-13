@@ -27,7 +27,7 @@ import {botView,botClick,botText,clearBotDraft,botVoiceDraft,savedVoiceDraft} fr
 import {browserAudioFormat,transcribeAudio,voiceEnabled} from './transcription.js';
 import {voiceMaxBytes} from '../shared/voice.js';
 import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
-import {removeWebPush,saveWebPush,webPushEndpoint,webPushStatus,webPushSubscription} from './web-push.js';
+import {removeWebPush,saveWebPush,webPushEndpoint,webPushStatus,webPushSubscription,testDevicePush} from './web-push.js';
 import {printReport} from './report-print.js';
 import express from 'express';
 import {verifyPassword} from './passwords.js';
@@ -43,6 +43,7 @@ import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
+import {directorBatchStatus,directorBatchTasks,sendDirectorBatch} from './management-notices.js';
 import type { User } from '../shared/types.js';
 declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
@@ -133,6 +134,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/notifications/push',async(req,res)=>res.json(await webPushStatus(req.actor,pushSession(req))));
  app.post('/api/notifications/push',async(req,res)=>res.json(await saveWebPush(req.actor,pushSession(req),webPushSubscription.parse(req.body))));
  app.delete('/api/notifications/push',async(req,res)=>res.json(await removeWebPush(req.actor,webPushEndpoint.parse(req.body).endpoint)));
+ app.post('/api/notifications/push/test',async(req,res)=>res.json(await testDevicePush(req.actor,pushSession(req),webPushEndpoint.parse(req.body).endpoint)));
  app.put('/api/notifications/preferences',async(req,res)=>{
   const {telegramDigest}=z.object({telegramDigest:z.boolean()}).parse(req.body);
   res.json(await saveNotificationPreference(req.actor,telegramDigest));
@@ -235,6 +237,9 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   assert(req.actor.role==='admin',403,'Маршрут настраивает администратор.');
   res.json(await approvalHierarchy(pool));
  });
+ app.get('/api/director-approval-batches',async(req,res)=>res.json(await directorBatchStatus(req.actor)));
+ app.post('/api/director-approval-batches',async(req,res)=>res.status(201).json(await sendDirectorBatch(req.actor)));
+ app.get('/api/director-approval-batches/:id',async(req,res)=>res.json(await directorBatchTasks(req.actor,z.uuid().parse(req.params.id))));
  app.put('/api/approval-hierarchy',async(req,res)=>{
   const input=z.object({branchId:z.string().min(1).max(100),salesId:z.string().min(1).max(100)}).parse(req.body);
   res.json(await setApprovalHierarchy(req.actor,input.branchId,input.salesId));

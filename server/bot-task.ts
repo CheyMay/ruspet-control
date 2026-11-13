@@ -126,7 +126,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  facts.push(t.assignee_id===u.id?'Вы исполнитель':'Исполнитель · '+name(t.assignee_id));
  const preview=botExcerpt(t.description,155);
  const text=[
-  `<b>${h(compactTaskTitle(t.title,110))}</b>\n#${h(t.id)} · <b>${h(status)}</b>${t.important?' · Важно':''}`,
+  `<b>${h(botExcerpt(t.title,300))}</b>\n#${h(t.id)} · <b>${h(status)}</b>${t.important?' · Важно':''}`,
   h(facts.join('\n')),
   ...(context.length?[h(context.join('\n'))]:[]),
   ...(preview&&preview!==botExcerpt(t.title,155)?[h(preview)]:[])

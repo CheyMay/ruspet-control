@@ -68,7 +68,7 @@ export async function bootstrap(user:User,light=false) {
  return {lastTaskChange,selection,user,users,tasks,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
  events:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
- notifications:(await db.query("SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY created_at DESC LIMIT 150",[user.id,ids])).rows,
+ notifications:(await db.query("SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY created_at DESC LIMIT 150",[user.id,ids])).rows,
  reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=$1 AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[scopeFor(user),!!cfg.config.showPlanning])).rows};
  });
 }
@@ -161,7 +161,8 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   const approvalId=randomUUID();
   await db.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,proposed_deadline,task_version,state,route,route_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10)",[approvalId,id,user.id,input.type,input.reason,input.plan,input.proposedDeadline||null,task.version,JSON.stringify(route),cfg.version]);
   await event(db,id,user.id,'approval_requested',input.type==='deadline'?'Запрошен перенос срока':'Запрошено закрытие задачи',{approvalId,oldDeadline:task.deadline,newDeadline:input.proposedDeadline,version:task.version,reason:input.reason,plan:input.plan,route});
-  await notify(db,id,route[0].userId,`Требуется решение по задаче #${id}: ${input.reason}`,`approval:${approvalId}:0`); await adapters.telegram.dispatch(db);
+  if(route[0].userId!==hierarchy?.sales_head_id)await notify(db,id,route[0].userId,`Требуется решение по задаче #${id}: ${input.reason}`,`approval:${approvalId}:0`);
+  await adapters.telegram.dispatch(db);
   return {id:approvalId};
  });
 }
@@ -209,7 +210,8 @@ async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'
   } else if(a.current_step<a.route.length-1) {
    await db.query('UPDATE approvals SET current_step=current_step+1,deferred_until=NULL WHERE id=$1',[id]);
    await event(db,task.id,user.id,'step_approved',`Этап согласован: ${a.route[a.current_step].label}`,{approvalId:id,comment:input.comment});
-   await notify(db,task.id,a.route[a.current_step+1].userId,`Требуется ваше решение по задаче #${task.id}`,`approval:${id}:${a.current_step+1}`);
+   const next=a.route[a.current_step+1],hierarchy=await approvalHierarchy(db);
+   if(next.userId!==hierarchy?.sales_head_id)await notify(db,task.id,next.userId,`Требуется ваше решение по задаче #${task.id}`,`approval:${id}:${a.current_step+1}`);
   } else {
    if(a.type==='deadline') assert(a.proposed_deadline&&new Date(a.proposed_deadline)>new Date(),409,'Предложенный срок уже прошёл. Откажите и создайте новый запрос.');
    const next=a.type==='deadline'?

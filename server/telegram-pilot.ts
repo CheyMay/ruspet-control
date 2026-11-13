@@ -16,9 +16,10 @@ import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {pool,transaction} from './db.js';
 import {assert,AppError} from './domain.js';
 import {botClick,botText,botView,clearBotDraft,alertScreen,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
+import {button,screen} from './bot-ui.js';
 import {voiceEnabled} from './transcription.js';
 import {transcribeTelegramVoice} from './telegram-voice.js';
-import type {User} from '../shared/types.js';
+import type {ManagementNotice,User} from '../shared/types.js';
 const digest=(v:string)=>createHash('sha256').update(v).digest('hex');
 const token=async()=>process.env.TELEGRAM_BOT_TOKEN||(await readFile(process.env.TELEGRAM_BOT_TOKEN_FILE||'.local/telegram-token','utf8')).trim();
 type Method=Exclude<TelegramMethod,'sendDocument'>;
@@ -142,7 +143,7 @@ export async function handlePilotUpdate(update:any){
 export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:string,limit:number|null=null,now=new Date()){
  const included=(await visibleTasks(user)).map(t=>t.id);
  return (await pool.query<{id:string;task_id:string|null;created_at:string;body:string}>(`SELECT o.* FROM outbox o
-  WHERE o.withdrawn_at IS NULL AND o.read_at IS NULL AND NOT o.task_assignment AND o.task_notice IS NULL AND o.dedupe_key NOT LIKE 'staff-review:%'
+  WHERE o.withdrawn_at IS NULL AND o.read_at IS NULL AND NOT o.task_assignment AND o.task_notice IS NULL AND o.management_notice IS NULL AND o.dedupe_key NOT LIKE 'staff-review:%'
    AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[]))
    AND o.created_at BETWEEN greatest($2::timestamptz,$3::timestamptz,$6::timestamptz-interval '2 days') AND $6
    AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text)
@@ -157,12 +158,13 @@ export async function deliver(now=new Date()){
  if(cfg.delivery||personal?.schedules)await tickTaskReminders(now);
  const bindings=(await pool.query(`SELECT b.*,u.name,u.role,u.branch_id,u.position,u.company_branch_access,COALESCE(p.telegram_digest,true) AS telegram_digest
   FROM telegram_binding b JOIN users u ON u.id=b.user_id LEFT JOIN notification_preferences p ON p.user_id=u.id
-  WHERE ($1 OR u.role='admin') AND (NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id)
+  WHERE ($1 OR u.role IN ('admin','branch_manager','sales_head','director')) AND (NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id)
    OR EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled))
   ORDER BY b.id`,[!!(hasAlerts||cfg.task_delivery)])).rows;
  for(const binding of bindings){
  const user={...binding,id:binding.user_id} as User;
  if(user.role==='admin'&&binding.telegram_digest)await deliverStaffReview(user,binding.chat_id,binding.paired_at,now);
+ if(['branch_manager','sales_head','director'].includes(user.role))await deliverManagementNotices(user,binding.chat_id,now);
  for(const alert of hasAlerts?await pendingAlerts(user,now,5,cfg.delivery):[]){
   const slot=Math.floor((now.getTime()-Date.parse(alert.due_at))/1800000);
   const claimed=await pool.query("INSERT INTO task_alert_deliveries(alert_id,slot,state,created_at) VALUES($1,$2,'sending',$3) ON CONFLICT DO NOTHING",[alert.id,slot,now.toISOString()]);if(!claimed.rowCount)continue;
@@ -203,6 +205,29 @@ export async function deliver(now=new Date()){
   await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id]);
  }
  catch{await pool.query("UPDATE telegram_delivery SET state='uncertain',error='Нет подтверждения Telegram. Автоповтор остановлен, чтобы не дублировать возможную доставку.' WHERE id=$1",[id])}
+ }
+}
+async function deliverManagementNotices(user:User,chatId:string,now:Date){
+ const rows=(await pool.query<{id:string;body:string;management_notice:ManagementNotice}>(`SELECT o.id,o.body,o.management_notice
+  FROM outbox o WHERE o.recipient_id=$1 AND o.management_notice IS NOT NULL AND o.withdrawn_at IS NULL
+  AND o.created_at BETWEEN $2::timestamptz-interval '24 hours' AND $2
+  AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text)
+  ORDER BY o.created_at LIMIT 5`,[user.id,now.toISOString()])).rows;
+ for(const row of rows){
+  const notice=row.management_notice;
+  const id=randomUUID();
+  await pool.query("INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state,created_at) VALUES($1,$2,$3,'sending',$4)",
+   [id,chatId,JSON.stringify([row.id]),now.toISOString()]);
+  try{
+   const path=notice.kind==='director-approvals'?'/?view=approvals&batch='+notice.batchId:
+    notice.kind==='morning-report'?'/?view=reports&report='+notice.reportId:'/?view=tasks&filter=overdue';
+   const buttons=notice.kind==='director-approvals'?(await screen(user,'telegram:'+chatId,'',[[button('Открыть пакет','director_batch',{target:notice.batchId})]])).buttons:[];
+   const sent=await send(chatId,{text:row.body,buttons,links:[{text:'Открыть в РУСПЭТ',url:new URL(path,publicOrigin()).href}]});
+   await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id]);
+  }catch(error){
+   await pool.query('UPDATE telegram_delivery SET state=$2,error=$3 WHERE id=$1',[id,error instanceof TelegramRejected?'failed':'uncertain',
+    error instanceof TelegramRejected?error.message:'Нет подтверждения Telegram. Событие доступно на сайте.']);
+  }
  }
 }
 async function deliverStaffReview(user:User,chatId:string,pairedAt:string,now:Date){

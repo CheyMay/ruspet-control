@@ -44,6 +44,9 @@ export function NotificationCenter({items,readOnly,open,refresh}:{items:Notifica
       {latest.task_id&&<button className="text-button" onClick={()=>open(latest.task_id!)}>Открыть #{latest.task_id}</button>}
       {latest.task_notice?.taskIds.slice(0,3).map(id=><button key={id} className="text-button" onClick={()=>open(id)}>#{id}</button>)}
       {latest.staff_review&&!readOnly&&<a className="text-button" href="/?view=registrations">Открыть заявки</a>}
+      {latest.management_notice?.kind==='director-approvals'&&<a className="text-button" href={'/?view=approvals&batch='+latest.management_notice.batchId}>Открыть пакет</a>}
+      {latest.management_notice?.kind==='morning-report'&&<a className="text-button" href={'/?view=reports&report='+latest.management_notice.reportId}>Открыть отчёт</a>}
+      {latest.management_notice?.kind==='inactivity'&&<a className="text-button" href="/?view=tasks&filter=overdue">Проверить просрочки</a>}
       {!readOnly&&rows.some(row=>!row.read_at)&&<button className="text-button" disabled={busy} onClick={()=>void mark(rows)}>Прочитано</button>}
      </div>
     </div>

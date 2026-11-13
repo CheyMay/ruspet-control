@@ -4,6 +4,7 @@ import {businessDay} from '../shared/queues.js';
 import {remind,makeReport,event} from './service.js';
 import type {User} from '../shared/types.js';
 import {nextRuns,jobLabel} from '../shared/schedule.js';
+import {morningManagementReport,reviewInactivity} from './management-notices.js';
 export async function operationsStatus(){
  const config=(await pool.query('SELECT * FROM automation_config WHERE id=1')).rows[0];
  const runs=(await pool.query("SELECT * FROM job_runs WHERE job_key NOT LIKE 'reminders:%' ORDER BY updated_at DESC LIMIT 20")).rows.map(r=>({...r,label:jobLabel(r.job_key)}));
@@ -25,7 +26,16 @@ export async function tick(now=new Date()){
   const hhmm=shifted.toISOString().slice(11,16),day=businessDay(now),actor=(await pool.query("SELECT * FROM users WHERE id='admin'")).rows[0] as User;
   const batch=async(kinds:string[],slot:string)=>{const ids:string[]=[];for(const kind of kinds)ids.push((await makeReport(actor,kind,slot,now)).id);return ids;};
   const jobs:{key:string;run:()=>Promise<string[]>}[]=[];
-  if(workday&&hhmm>=cfg.morning)jobs.push({key:`reports-v5:morning:${day}`,run:async()=>{return batch(['snapshot'],'scheduled-morning');}});
+  if(workday&&hhmm>=cfg.morning)jobs.push({key:`reports-v5:morning:${day}`,run:()=>batch(['snapshot'],'scheduled-morning')});
+  if(workday&&hhmm>=cfg.morning&&hhmm<'12:00')jobs.push({key:`management:morning:${day}`,run:async()=>{
+   const ids=await batch(['snapshot'],'scheduled-morning');
+   await morningManagementReport(day,ids[0]);
+   return ids;
+  }});
+  if(workday&&hhmm>='17:30'&&hhmm<'19:00')jobs.push({key:`inactivity:${day}`,run:async()=>{
+   await reviewInactivity(day,now);
+   return [];
+  }});
   if(workday&&hhmm>=cfg.evening)jobs.push({key:`reports-v5:evening:${day}`,run:()=>batch(['daily'],'scheduled-evening')});
   if(workday&&hhmm>=cfg.morning&&hhmm<cfg.evening)jobs.push({key:`reminders:${day}:${Math.floor(now.getTime()/60000)}`,run:async()=>{await remind(actor);return [];}});
   for(const job of jobs){const previous=(await pool.query('SELECT * FROM job_runs WHERE job_key=$1',[job.key])).rows[0];

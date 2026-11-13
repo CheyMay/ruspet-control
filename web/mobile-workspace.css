@@ -69,4 +69,13 @@
 .device-notifications { margin-top:12px; }
 .device-notification-row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
 .device-notification-row small { display:block; margin-top:4px; line-height:1.45; }
+.director-approval-panel { margin-bottom:16px; padding:16px; }
+.director-approval-heading { display:flex; flex-wrap:wrap; align-items:flex-start; justify-content:space-between; gap:12px; }
+.director-approval-panel h2 { margin:0 0 6px; font-size:18px; }
+.director-approval-panel p { margin:0 0 10px; }
+.director-approval-panel small { display:block; margin-top:10px; }
+.director-approval-table { overflow-x:auto; }
+.director-approval-table table { width:100%; }
+.director-approval-table th,.director-approval-table td { padding:8px; text-align:left; white-space:nowrap; }
+.device-notification-actions { display:flex; flex-wrap:wrap; gap:6px; }
 .notice-group p { white-space:pre-wrap; }
