@@ -2,7 +2,7 @@ import {businessDay} from '../shared/queues.js';
 
 export type VoiceKind='create_task'|'comment'|'submit'|'deadline'|'accept'|'return'|'approve'|'reject'|'clarify'|'clarification'|'answer'
  |'edit_title'|'edit_description'|'edit_price'|'edit_assignee'|'delegate'|'reminder_once'|'reminder'|'reminder_cancel_voice'|'undo';
-export type VoiceIntent={id?:string;kind:VoiceKind;values:Record<string,string>};
+export type VoiceIntent={id?:string;lookup?:string;kind:VoiceKind;values:Record<string,string>};
 
 const taskPrefix=String.raw`(?:(?:к|по|для|в|у)\s+)?(?:(?:эту|этой)\s+)?(?:задач[ауеиё]\s*)?(?:номер\s*)?[#№]?\s*`;
 const idPattern=String.raw`(L[-– ]?[0-9a-f]{8}|\d{1,3}(?:[ \u00a0\u202f]\d{3})+|\d{1,18})`;
@@ -150,8 +150,27 @@ const actions:{kind:VoiceKind;pattern:string}[]=[
  {kind:'reminder_once',pattern:'напомни(?:те)?(?: мне)?|(?:создай(?:те)?|поставь(?:те)?) напоминание'},
 ];
 
+function spokenTarget(rest:string,kind:VoiceKind){
+ const marker=/^(?:(?:к|по|для|в)\s+)?задач[ауеиё]\s+(?:(?:по|для|про)\s+)?|^(?:по|для)\s+/iu.exec(rest);
+ const client=/^(?:клиент[ауе]?|компани[яию])\s+/iu.exec(rest.slice(marker?.[0].length??0));
+ const text=rest.slice((marker?.[0].length??0)+(client?.[0].length??0));
+ const quoted=/^[«"“]([^»"”]+)[»"”]/u.exec(text);
+ const deadline=/\s+(?=(?:на|до|к|в)\s+(?:сегодня|завтра|послезавтра|понедельник|вторник|среду|четверг|пятницу|субботу|воскресенье|\d)|(?:сегодня|завтра|послезавтра|через|кажд\p{L}*|по\s+будням)(?:\s|$))/iu;
+ const detail=/\s+(?=(?:причина|план|сделано|комментарий|результат|вопрос|поручение)\s*[:—–-])/iu;
+ const separator=/[:;!?]|\.(?=\s|$)|,\s| \s*[—–]\s*/u;
+ const breaks=[text.search(separator),text.search(detail)];
+ if(kind==='deadline'||kind==='reminder_once')breaks.push(text.search(deadline));
+ if(kind==='edit_assignee'||kind==='edit_title'||kind==='edit_description'||kind==='edit_price')breaks.push(text.search(/\s+на\s+/iu));
+ const end=quoted?.[0].length??Math.min(...breaks.filter(index=>index>=0),text.length);
+ if(!marker&&!client&&!quoted&&!(end<text.length&&/^[:—–]/u.test(text.slice(end).trim())))return null;
+ const lookup=stripPeriod(quoted?.[1]??text.slice(0,end)).trim();
+ if(!lookup||/^(?:номер|этой|эту|текущей)(?:\s|$)/iu.test(lookup)||
+  /^(?:на|до|в)\s+(?:сегодня|завтра|послезавтра|\d)/iu.test(lookup))return null;
+ return {lookup:lookup.slice(0,150),tail:clean(text.slice(end))};
+}
+
 export function parseVoiceIntent(transcript:string,now=new Date(),currentTaskId?:string):VoiceIntent|null{
- const text=transcript.trim().replace(/^(?:пожалуйста[,\s]+|можешь[,\s]+)+/iu,'');
+ const text=transcript.trim().replace(/^(?:пожалуйста[,\s]+|можешь[,\s]+)+/iu,'').replace(/^(поставь|создай|добавь|оставь|сдай|перенеси|закрой|напомни),\s+пожалуйста[,\s]+/iu,'$1 ');
  if(!text||text.length>4000)return null;
  const creation=createIntent(text,now);if(creation)return creation;
  for(const action of actions){
@@ -159,12 +178,12 @@ export function parseVoiceIntent(transcript:string,now=new Date(),currentTaskId?
   if(!command)continue;
   const rest=clean(text.slice(command[0].length));
   const target=rest.match(taskId);
-  if(!target&&/^(?:(?:к|по|для|в)\s+)?(?:задач[ауеиё]\s+(?:номер\s+)?|номер\s+|[#№]\s*)\S/iu.test(rest))continue;
+  const named=target||/^(?:(?:по|к|для|в)\s+)?(?:эту|этой|текущей)\s+задач[ауеи]/iu.test(rest)?null:spokenTarget(rest,action.kind);
+  if(!target&&!named&&/^(?:(?:к|по|для|в)\s+)?(?:задач[ауеиё]\s+номер\s+|номер\s+|[#№]\s*)\S/iu.test(rest))continue;
   const id=target?.[1]?.replace(/[ \u00a0\u202f]/g,'');
   const explicit=id?.toLowerCase().startsWith('l')?'L-'+id.slice(1).replace(/^[-–]/,'').toLowerCase():id;
-  const chosen=explicit||currentTaskId;
-  if(!chosen)continue;
-  let tail=clean(target?rest.slice(target[0].length):rest.replace(/^(?:(?:по|к|для)\s+)?(?:эту|этой|текущей)\s+задач[ауеи](?=$|[\s,.;:])/iu,''));
+  const chosen=explicit||(named?undefined:currentTaskId);
+  let tail=named?.tail??clean(target?rest.slice(target[0].length):rest.replace(/^(?:(?:по|к|для)\s+)?(?:эту|этой|текущей)\s+задач[ауеи](?=$|[\s,.;:])/iu,''));
   if(/^и\s+(?:задачу\s+)?[#№]?\d/iu.test(tail)&&action.kind!=='comment')return null;
   let kind=action.kind;
   const values:Record<string,string>={};
@@ -190,7 +209,7 @@ export function parseVoiceIntent(transcript:string,now=new Date(),currentTaskId?
   if(kind==='edit_title'||kind==='edit_description')values.value=stripPeriod(labeled.initial.replace(/^на\s+/iu,''));
   if(kind==='edit_price')values.price=spokenPrice(labeled.initial.replace(/^на\s+/iu,''));
   if(kind==='edit_assignee'||kind==='delegate')values.assignee=stripPeriod(labeled.initial.replace(/^(?:на|для)\s+/iu,''));
-  return {id:chosen,kind,values};
+  return {id:chosen,...(named?{lookup:named.lookup}:{}),kind,values};
  }
  return null;
 }

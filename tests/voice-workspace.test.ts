@@ -80,6 +80,54 @@ test('Telegram voice uses the same transcription adapter after a bounded binary 
  assert.equal(requests.length,2);
 });
 
+test('voice resolves inflected customer names, preserves the draft and shows only accessible tasks',async()=>{
+ const bot=await import('../server/bot.js');
+ const {parseVoiceIntent}=await import('../server/voice-intent.js');
+ const actor=(await db.pool.query("SELECT * FROM users WHERE id='anna'")).rows[0];
+ const ids=(await db.pool.query<{id:string}>("SELECT id FROM tasks WHERE assignee_id='anna' AND status='active' ORDER BY id LIMIT 2")).rows.map(row=>row.id);
+ assert.equal(ids.length,2);
+ await db.pool.query("UPDATE tasks SET source_fields=jsonb_build_object('Компания','ООО «Ладога»') WHERE id=ANY($1)",[[...ids,foreign]]);
+ const command='Добавь комментарий к задаче по клиенту Ладоге: клиент подтвердил объём.';
+ const channel='voice-customer';
+ await bot.botView(actor,channel,{op:'task',id:own});
+ const first=await bot.botVoiceDraft(actor,channel,command,'customer-1');
+ assert.match(first.text,/Выберите задачу/);
+ assert(!first.buttons.flat().some(button=>button.text.startsWith('#'+foreign+' ·')));
+ assert.deepEqual(await bot.botVoiceDraft(actor,channel,command,'customer-1'),first);
+ const choice=first.buttons.flat().find(button=>button.text.startsWith('#'+ids[1]+' ·'))!;
+ assert(choice);
+ await assert.rejects(()=>bot.botClick(actor,'other-channel',choice.token),/устарела/);
+ const draft=await bot.botClick(actor,channel,choice.token);
+ assert.match(draft.text,/клиент подтвердил объём/i);
+ assert(draft.text.includes('#'+ids[1]));
+ const confirmation=draft.buttons.flat().find(button=>button.text==='Подтвердить и отправить')!;
+ const count=async()=>(await db.pool.query("SELECT count(*)::int n FROM comments WHERE task_id=$1 AND body='клиент подтвердил объём.'",[ids[1]])).rows[0].n;
+ assert.equal(await count(),0);
+ assert.deepEqual(await bot.botClick(actor,channel,choice.token),draft);
+ await bot.botClick(actor,channel,confirmation.token);
+ await bot.botClick(actor,channel,confirmation.token);
+ assert.equal(await count(),1);
+ const parsed=parseVoiceIntent('Перенеси задачу по компании Ладоге на завтра в 15:00. Причина: ждём оплату. План: подготовлю документы.');
+ assert.equal(parsed?.lookup,'Ладоге');
+ assert.match(parsed?.values.deadline||'',/15:00$/);
+ assert.equal(parsed?.values.reason,'ждём оплату');
+ assert.equal(parsed?.values.plan,'подготовлю документы');
+ assert.equal(parseVoiceIntent('Добавь комментарий Ладога: клиент подтвердил объём.')?.lookup,'Ладога');
+});
+
+test('an unknown customer can be corrected without repeating the voice message',async()=>{
+ const bot=await import('../server/bot.js');
+ const actor=(await db.pool.query("SELECT * FROM users WHERE id='anna'")).rows[0];
+ const channel='voice-retry';
+ const missing=await bot.botVoiceDraft(actor,channel,'Добавь комментарий по клиенту Ненайденный: макет принят заказчиком.','missing-client');
+ assert.match(missing.text,/подходящих задач не нашёл/);
+ const button=missing.buttons.flat().find(item=>item.text==='Отмена')!;
+ const recovered=await bot.botText(actor,channel,own,'corrected-id');
+ assert.match(recovered.text,/макет принят заказчиком/);
+ assert(recovered.text.includes('#'+own));
+ await assert.rejects(()=>bot.botClick(actor,channel,button.token),/отменён или заменён/);
+});
+
 test('voice creates a personal task once and carries a partial deadline into the next answer',async()=>{
  const bot=await import('../server/bot.js'),channel='mobile-creation';
  const actor=(await db.pool.query("SELECT * FROM users WHERE id='anna'")).rows[0];

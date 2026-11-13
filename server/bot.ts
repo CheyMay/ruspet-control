@@ -2,7 +2,9 @@ import {button,date,screen,type BotScreen,type Payload} from './bot-ui.js';
 import {renderBotTask} from './bot-task.js';
 import {renderBotNavigation} from './bot-navigation.js';
 import {readNotifications} from './notifications.js';
-import {parseVoiceIntent} from './voice-intent.js';
+import {findVoiceTasks} from './voice-task-search.js';
+import {botDue,botTaskStatus} from './bot-presentation.js';
+import {parseVoiceIntent,type VoiceIntent} from './voice-intent.js';
 import {normalizeActionField,prepareVoiceAction,taskActionFields,voiceLabels,type Field} from './bot-voice-actions.js';
 import {voiceExample} from '../shared/voice.js';
 import {compactTaskTitle} from '../shared/task-title.js';
@@ -25,7 +27,8 @@ import type {User} from '../shared/types.js';
 import {taskInput} from './task-input.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {setApprovalWatch} from './approval-hierarchy.js';
-type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>};
+type VoiceSelection={key:string;intent:VoiceIntent;at:string;ids:string[]};
+type Dialog={payload:Payload;fields:Field[];index:number;values:Record<string,string>;voice?:VoiceSelection};
 const taskScreens=['task','history','discussion','task_details','task_fields','task_edit_permission','task_result','task_approval','task_more'];
 async function saveDialog(db:Db,u:User,ch:string,dialog:Dialog,minutes=60){
  await db.query("INSERT INTO bot_sessions(actor_id,channel,data,expires_at) VALUES($1,$2,$3,now()+$4*interval '1 minute') ON CONFLICT(actor_id,channel) DO UPDATE SET data=excluded.data,expires_at=excluded.expires_at",[u.id,ch,JSON.stringify(dialog),minutes]);
@@ -170,6 +173,82 @@ async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading=d.payload.id
   [...(d.fields.length?[button('Ввести заново','form',redo)]:[]),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]
  ],db);
 }
+async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Date):Promise<BotScreen>{
+ let response:BotScreen;
+ const {payload,title}=await prepareVoiceAction(u,intent,db);
+ const kind=payload.kind as typeof intent.kind;
+ if(intent.values.dueDay)payload.values={dueDay:intent.values.dueDay};
+ const fields=kind==='accept'&&!intent.values.comment?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
+ const values:Record<string,string>={};
+ if(kind==='create_task'){
+  if(u.role==='employee'&&!intent.values.assignee)values.assignee=u.id;
+  if(!intent.values.deadline)values.deadline='none';
+  if(!intent.values.description)values.description='';
+ }
+ let client='';
+ if(kind==='delegate'){
+  if(!intent.values.instruction)values.instruction='';
+  if(!intent.values.assignee||/^(?:менеджер[ау]? клиента|ответственн\p{L}* клиента)$/iu.test(intent.values.assignee)){
+   const {responsibility}=await delegationTargets(u,payload.id!,undefined,db);
+   if(responsibility.managerId){
+    Object.assign(values,{assignee:responsibility.managerId,assignment:'auto',responsibilityToken:responsibility.token!});
+    client='\nКлиент: '+responsibility.companyName+' · '+responsibilityLabels[responsibility.source!];
+   }
+  }
+ }
+ const draft:Dialog={payload,fields,index:0,values};
+ for(const f of fields){
+  const value=intent.values[f.key];if(!value||(f.key==='assignee'&&values.assignment==='auto'))continue;
+  try{values[f.key]=await normalizeActionField(u,payload,f,value,db,stamp=>parseMoscowInput(stamp,at),at);}
+  catch(error){if(!(error instanceof AppError)||error.status!==400)throw error;}
+ }
+ const heading=voiceLabels[kind]+(payload.id?' · #'+payload.id+'\n'+title.slice(0,180):'')+client;
+ await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);
+ await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch]);
+ nextMissing(draft);
+ if(kind==='reminder_cancel_voice'){
+  const reminders=await listTaskReminders(u,payload.id!);
+  const choices=[
+   ...reminders.oneTime.map(r=>[button('Отменить '+date(r.due_at),'confirm',{id:payload.id,kind:'reminder_cancel_once',target:r.id})]),
+   ...reminders.schedules.filter(r=>r.enabled&&r.recipient_id===u.id).map(r=>[button('Выключить '+r.times.join(', '),'confirm',{id:payload.id,kind:'reminder_cancel',target:r.id})])
+  ];
+  response=await screen(u,ch,choices.length?heading+'\nВыберите напоминание.':'Активных личных напоминаний по этой задаче нет.',[...choices,[button('К задаче','task',{id:payload.id})]],db);
+ }else if(draft.index===fields.length)response=await confirmation(u,ch,draft,db,heading);
+ else{
+  await saveDialog(db,u,ch,draft);
+  const summary=(await draftSummary(draft,db)).slice(0,2500);
+  response=await screen(u,ch,heading+(summary?'\n\n'+summary:'')+'\n\n'+missingLabel(draft),[
+   ...(kind==='delegate'&&!values.assignee?[[button('Найти клиента в ОКБ','form',{id:payload.id,kind:'delegate_client'})]]:[]),
+   [button('Отменить ввод','cancel',{id:payload.id})]
+  ],db);
+ }
+ return response;
+}
+
+async function chooseVoiceTask(u:User,ch:string,selection:VoiceSelection,db:Db,page=0,allowDirect=true){
+ const {intent,key}=selection;
+ const query=intent.lookup?.trim()??'';
+ const now=new Date();
+ const found=query?await findVoiceTasks(u,query,intent.kind,db):[];
+ const rows=found.slice(page*5,page*5+5);
+ if(allowDirect&&found.length===1&&found[0].score>=95){
+  try{return await voiceActionDraft(u,ch,{...intent,id:found[0].task.id},db,new Date(selection.at));}
+  catch(error){if(!(error instanceof AppError)||![403,404,409].includes(error.status))throw error;}
+ }
+ selection.ids=rows.map(item=>item.task.id);
+ await saveDialog(db,u,ch,{payload:{op:'voice_lookup'},fields:[],index:0,values:{},voice:selection},15);
+ const label=voiceLabels[intent.kind];
+ const listing=rows.map(({task,company,pending})=>
+  '#'+task.id+' · '+compactTaskTitle(task.title,128)+'\n'+[company.slice(0,65),botTaskStatus(task,now,pending),task.status==='completed'?'':botDue(task,now)].filter(Boolean).join(' · ')).join('\n\n');
+ const help=query?'По «'+query+'» подходящих задач не нашёл. Напишите название клиента, часть названия задачи или её номер.':
+  'Напишите название клиента, часть названия задачи или её номер.';
+ return screen(u,ch,label+'\n\n'+(rows.length?'Выберите задачу'+(found.length>5?' · '+(page*5+1)+'–'+(page*5+rows.length)+' из '+found.length:'')+'\n\n'+listing+'\n\nМожно уточнить поиск сообщением.':help),[
+  ...rows.map(({task})=>[button('#'+task.id+' · '+compactTaskTitle(task.title,39),'voice_select',{id:task.id,target:key})]),
+  [...(page>0?[button('← Назад','voice_page',{target:key,page:page-1})]:[]),
+   ...((page+1)*5<found.length?[button('Дальше →','voice_page',{target:key,page:page+1})]:[])],
+  [button('Отмена','cancel')]
+ ],db);
+}
 export async function savedVoiceDraft(u:User,ch:string,inputId:string,db:Db=pool){
  return (await db.query('SELECT screen FROM bot_inputs WHERE actor_id=$1 AND channel=$2 AND input_id=$3',[u.id,ch,'voice:'+inputId])).rows[0]?.screen as BotScreen|undefined;
 }
@@ -183,55 +262,12 @@ export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:s
   if(!intent&&existing&&!['context','search'].includes(existing.payload.op))return handleBotText(db,u,ch,transcript,'voice:'+inputId);
   let response:BotScreen;
   if(!intent){
-   response=await screen(u,ch,'Распознал: '+transcript.slice(0,600)+'\n\nНазовите действие и номер задачи. Например: «'+voiceExample+'»',[[button('Мои задачи','tasks'),button('Меню','home')]],db);
+   response=await screen(u,ch,'Распознал: '+transcript.slice(0,600)+'\n\nНазовите действие и клиента или номер задачи. Например: «'+voiceExample+'»',[[button('Мои задачи','tasks'),button('Меню','home')]],db);
+  }else if(intent.id||intent.kind==='create_task'){
+   response=await voiceActionDraft(u,ch,intent,db,at);
   }else{
-   const {payload,title}=await prepareVoiceAction(u,intent,db);
-   const kind=payload.kind as typeof intent.kind;
-   if(intent.values.dueDay)payload.values={dueDay:intent.values.dueDay};
-   const fields=kind==='accept'&&!intent.values.comment?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
-   const values:Record<string,string>={};
-   if(kind==='create_task'){
-    if(u.role==='employee'&&!intent.values.assignee)values.assignee=u.id;
-    if(!intent.values.deadline)values.deadline='none';
-    if(!intent.values.description)values.description='';
-   }
-   let client='';
-   if(kind==='delegate'){
-    if(!intent.values.instruction)values.instruction='';
-    if(!intent.values.assignee||/^(?:менеджер[ау]? клиента|ответственн\p{L}* клиента)$/iu.test(intent.values.assignee)){
-     const {responsibility}=await delegationTargets(u,payload.id!,undefined,db);
-     if(responsibility.managerId){
-      Object.assign(values,{assignee:responsibility.managerId,assignment:'auto',responsibilityToken:responsibility.token!});
-      client='\nКлиент: '+responsibility.companyName+' · '+responsibilityLabels[responsibility.source!];
-     }
-    }
-   }
-   const draft:Dialog={payload,fields,index:0,values};
-   for(const f of fields){
-    const value=intent.values[f.key];if(!value||(f.key==='assignee'&&values.assignment==='auto'))continue;
-    try{values[f.key]=await normalizeActionField(u,payload,f,value,db,stamp=>parseMoscowInput(stamp,at),at);}
-    catch(error){if(!(error instanceof AppError)||error.status!==400)throw error;}
-   }
-   const heading=voiceLabels[kind]+(payload.id?' · #'+payload.id+'\n'+title.slice(0,180):'')+client;
-   await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);
    await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch]);
-   nextMissing(draft);
-   if(kind==='reminder_cancel_voice'){
-    const reminders=await listTaskReminders(u,payload.id!);
-    const choices=[
-     ...reminders.oneTime.map(r=>[button('Отменить '+date(r.due_at),'confirm',{id:payload.id,kind:'reminder_cancel_once',target:r.id})]),
-     ...reminders.schedules.filter(r=>r.enabled&&r.recipient_id===u.id).map(r=>[button('Выключить '+r.times.join(', '),'confirm',{id:payload.id,kind:'reminder_cancel',target:r.id})])
-    ];
-    response=await screen(u,ch,choices.length?heading+'\nВыберите напоминание.':'Активных личных напоминаний по этой задаче нет.',[...choices,[button('К задаче','task',{id:payload.id})]],db);
-   }else if(draft.index===fields.length)response=await confirmation(u,ch,draft,db,heading);
-   else{
-    await saveDialog(db,u,ch,draft);
-    const summary=(await draftSummary(draft,db)).slice(0,2500);
-    response=await screen(u,ch,heading+(summary?'\n\n'+summary:'')+'\n\n'+missingLabel(draft),[
-     ...(kind==='delegate'&&!values.assignee?[[button('Найти клиента в ОКБ','form',{id:payload.id,kind:'delegate_client'})]]:[]),
-     [button('Отменить ввод','cancel',{id:payload.id})]
-    ],db);
-   }
+   response=await chooseVoiceTask(u,ch,{key:randomBytes(12).toString('hex'),intent,at:at.toISOString(),ids:[]},db);
   }
   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,'voice:'+inputId,JSON.stringify(response)]);
   return response;
@@ -244,10 +280,26 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   return botView(u,ch,{op:'notices'});
  }
  if(p.op==='approval_watch'){await setApprovalWatch(u,p.id!,p.values?.enabled==='true');return botView(u,ch,{op:'task_more',id:p.id,list:p.list});}
- if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','assignee_prepare','undo_prepare'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
+ if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','assignee_prepare','undo_prepare','voice_select','voice_page'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
   const record=(await db.query('SELECT * FROM bot_buttons WHERE token=$1 FOR UPDATE',[token])).rows[0];if(record.receipt)return record.receipt as BotScreen;assert(!record.revoked,409,'Этот ввод отменён или заменён новым. Откройте актуальную задачу.');
+  if(p.op==='voice_select'||p.op==='voice_page'){
+   const current=(await db.query('SELECT data FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now()',[u.id,ch])).rows[0]?.data as Dialog|undefined;
+   const selection=current?.voice;
+   assert(selection&&selection.key===p.target,409,'Этот список задач устарел. Используйте последний ответ бота.');
+   if(p.op==='voice_page')return chooseVoiceTask(u,ch,selection,db,p.page??0,false);
+   assert(p.id&&selection.ids.includes(p.id),409,'Эта задача больше не в текущем списке.');
+   let response:BotScreen;
+   try{response=await voiceActionDraft(u,ch,{...selection.intent,id:p.id},db,new Date(selection.at));}
+   catch(error){
+    if(!(error instanceof AppError)||![403,404,409].includes(error.status))throw error;
+    const next=await chooseVoiceTask(u,ch,selection,db,0,false);
+    return {...next,text:error.message+'\n\n'+next.text};
+   }
+   await db.query('UPDATE bot_buttons SET receipt=$2 WHERE token=$1',[token,JSON.stringify(response)]);
+   return response;
+  }
   if(p.op==='cancel'||p.op==='form')await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch]);
   if(p.op==='cancel'){
    await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);
@@ -319,6 +371,13 @@ async function handleBotText(db:Db,u:User,ch:string,text:string,inputId:string):
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);const old=(await db.query('SELECT screen FROM bot_inputs WHERE actor_id=$1 AND channel=$2 AND input_id=$3',[u.id,ch,inputId])).rows[0];if(old)return old.screen;
   const row=(await db.query('SELECT * FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now() FOR UPDATE',[u.id,ch])).rows[0];
   const d=row?.data as Dialog|undefined;
+  if(d?.voice){
+   const selection={...d.voice,key:randomBytes(12).toString('hex'),intent:{...d.voice.intent,lookup:text.trim().slice(0,150)}};
+   await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op'='cancel'",[u.id,ch]);
+   const response=await chooseVoiceTask(u,ch,selection,db);
+   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,inputId,JSON.stringify(response)]);
+   return response;
+  }
   if(!d||['search','context'].includes(d.payload.op)){
    const response=await renderBotNavigation(u,ch,{op:'search',query:text.trim()},db);
    if(d)await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);
