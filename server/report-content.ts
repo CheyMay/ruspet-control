@@ -1,13 +1,14 @@
 import type {Report} from '../shared/types.js';
-import {reportKindLabels} from '../shared/report-parameters.js';
+import {reportKindLabels,reportViewLabels} from '../shared/report-parameters.js';
 import {priceLabels} from '../shared/pricing.js';
 import {taskLink,reportLink,type ReportLink} from '../shared/report-links.js';
 export function publicOrigin(){const url=new URL(process.env.PUBLIC_ORIGIN||'https://cheymay.ru');if(!['https:','http:'].includes(url.protocol))throw Error('Invalid PUBLIC_ORIGIN');return url.origin;}
 const date=(s:string)=>new Date(s).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'});
 export function reportText(r:Report,includeTeam=true){
- const s=r.summary;if(!s)return {text:`${reportKindLabels[r.kind||'snapshot']}\nСоздан: ${date(r.created_at)} МСК\nВсего: ${r.metrics.total}\nПросрочки: ${r.metrics.overdue}\nСегодня: ${r.metrics.today}\nПриёмка: ${r.metrics.review}`,links:[] as ReportLink[]};
- if(!s.stateAvailable)return {text:`${reportKindLabels[r.kind||'snapshot']}\n${date(s.from)} — ${date(s.to)} МСК\nСостояние задач на выбранное время недоступно. Числовые показатели не рассчитаны.\n${s.notes.join('\n')}`,links:[] as ReportLink[]};
- const lines=[reportKindLabels[r.kind||'snapshot'],`${date(s.from)} — ${date(s.to)} МСК`,s.previous?'Предыдущий отчёт: '+date(s.previous.at)+' МСК':'Предыдущего отчёта с такими параметрами за этот день нет.',`Просрочки: ${r.metrics.overdue}`,`Сегодня: ${r.metrics.today}`,`Истекло сегодня: ${s.elapsedToday}`,`Приёмка: ${r.metrics.review}`,`Без срока: ${r.analysis?.counts.no_deadline||0}`,`Обработано: ${s.activity.processed}`,`Закрыто за период: ${s.activity.closed}`,`Сдано на приёмку: ${s.activity.submitted}`,`Переносов срока: ${s.activity.transfers}`];
+ const title=reportKindLabels[r.kind||'snapshot']+(r.parameters?.view?' · '+reportViewLabels[r.parameters.view]:'');
+ const s=r.summary;if(!s)return {text:`${title}\nСоздан: ${date(r.created_at)} МСК\nВсего: ${r.metrics.total}\nПросрочки: ${r.metrics.overdue}\nСегодня: ${r.metrics.today}\nПриёмка: ${r.metrics.review}`,links:[] as ReportLink[]};
+ if(!s.stateAvailable)return {text:`${title}\n${date(s.from)} — ${date(s.to)} МСК\nСостояние задач на выбранное время недоступно. Числовые показатели не рассчитаны.\n${s.notes.join('\n')}`,links:[] as ReportLink[]};
+ const lines=[title,`${date(s.from)} — ${date(s.to)} МСК`,s.previous?'Предыдущий отчёт: '+date(s.previous.at)+' МСК':'Предыдущего отчёта с такими параметрами за этот день нет.',`Просрочки: ${r.metrics.overdue}`,`Сегодня: ${r.metrics.today}`,`Истекло сегодня: ${s.elapsedToday}`,`Приёмка: ${r.metrics.review}`,`Без срока: ${r.analysis?.counts.no_deadline||0}`,`Обработано: ${s.activity.processed}`,`Закрыто за период: ${s.activity.closed}`,`Сдано на приёмку: ${s.activity.submitted}`,`Переносов срока: ${s.activity.transfers}`];
  const named=Object.entries(s.filters||{}).filter(([,value])=>value).map(([label,value])=>label+': '+String(value).slice(0,70));if(named.length)lines.splice(2,0,...named);
  const links:ReportLink[]=[];const base={owner:r.parameters?.assigneeId,report:r.id};
  for(const [text,subset] of [[`Просрочки: ${r.metrics.overdue}`,'overdue'],[`Сегодня: ${r.metrics.today}`,'today'],[`Приёмка: ${r.metrics.review}`,'review'],[`Без срока: ${r.analysis?.counts.no_deadline||0}`,'no_deadline'],[`Обработано: ${s.activity.processed}`,'processed'],[`Закрыто за период: ${s.activity.closed}`,'closed']] as const)links.push({text,url:taskLink(publicOrigin(),{...base,subset})});

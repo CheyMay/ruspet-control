@@ -4,8 +4,9 @@ import {approvalHierarchy,approvalWatch,hierarchyRoute} from './approval-hierarc
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
 import {enqueueBitrixOperation} from './bitrix-live.js';
-import {generateReport} from './reports-v5.js';
-import type {ReportParameters} from '../shared/report-parameters.js';
+import {teamMemberIds} from './org.js';
+import {generateReport,reportScopes} from './reports-v5.js';
+import type {ReportParameters,ReportView} from '../shared/report-parameters.js';
 import {parseWrittenRule} from '../shared/written-rules.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {reportAnalysis} from '../shared/reporting.js';
@@ -61,15 +62,16 @@ export async function bootstrap(user:User,light=false) {
  const controls=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const people=new Set([...tasks.flatMap(t=>[t.assignee_id,t.creator_id]),...approvals.flatMap((a:Approval)=>a.route.map(step=>step.userId))]);
  const users=(await db.query<User>('SELECT * FROM users ORDER BY name')).rows.filter(u=>globalAccess(user)||u.branch_id===user.branch_id||u.id===user.id||people.has(u.id));
- if(light)return {user,users,tasks,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
+ const teamIds=await teamMemberIds(user,db);
+ if(light)return {user,users,tasks,teamIds,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
  const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
  const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
  const lastTaskChange=(await db.query("SELECT max(created_at) AS at FROM task_events WHERE task_id=ANY($1) AND (kind=ANY($2) OR (data ? 'before' AND data ? 'after'))",[ids,['created','task_edited','task_completed','deadline_changed','review_submitted','review_returned','action_undone']])).rows[0].at;
- return {lastTaskChange,selection,user,users,tasks,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
+ return {lastTaskChange,selection,user,users,tasks,teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
  events:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
  notifications:(await db.query("SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY created_at DESC LIMIT 150",[user.id,ids])).rows,
- reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=$1 AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[scopeFor(user),!!cfg.config.showPlanning])).rows};
+ reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=ANY($1) AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[reportScopes(user),!!cfg.config.showPlanning])).rows};
  });
 }
 export async function detail(user:User,id:string,db:Db=pool) {
@@ -263,19 +265,18 @@ export async function remind(user:User,now=new Date()) {
   await adapters.telegram.dispatch(db);return {count};
  });
 }
-function scopeFor(user:User) { return globalAccess(user)?'company':user.role==='branch_manager'?`branch:${user.branch_id}`:`user:${user.id}`; }
 export async function makeReport(user:User,kind='snapshot',slot='manual',capturedAt=new Date(),parameters:ReportParameters={}) {return generateReport(user,kind,slot,capturedAt,parameters);}
-export async function listReports(user:User,input:{kind?:string;from?:string;to?:string;page:number}){
+export async function listReports(user:User,input:{kind?:string;from?:string;to?:string;view?:ReportView;page:number}){
  return transaction(async db=>{
   await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
-  const args=[scopeFor(user),input.kind||null,input.from||null,input.to||null,!!(await config(db)).config.showPlanning];
-  const condition='scope=$1 AND ($2::text IS NULL OR kind=$2) AND ($3::date IS NULL OR day>=$3) AND ($4::date IS NULL OR day<=$4) AND ($5::boolean OR kind<>\'nextday\')';
+  const args=[reportScopes(user,input.view),input.kind||null,input.from||null,input.to||null,!!(await config(db)).config.showPlanning];
+  const condition='scope=ANY($1) AND ($2::text IS NULL OR kind=$2) AND ($3::date IS NULL OR day>=$3) AND ($4::date IS NULL OR day<=$4) AND ($5::boolean OR kind<>\'nextday\')';
   const total=Number((await db.query('SELECT count(*) n FROM reports WHERE '+condition,args)).rows[0].n);
   const items=(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE '+condition+' ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET $6',[...args,input.page*20])).rows;
   return {items,total,page:input.page,pageSize:20};
  });
 }
-export async function getReport(user:User,id:string){const report=(await pool.query('SELECT * FROM reports WHERE id=$1 AND scope=$2',[id,scopeFor(user)])).rows[0];assert(report,404,'Отчёт не найден или недоступен.');return report;}
+export async function getReport(user:User,id:string){const report=(await pool.query('SELECT * FROM reports WHERE id=$1 AND scope=ANY($2)',[id,reportScopes(user)])).rows[0];assert(report,404,'Отчёт не найден или недоступен.');return report;}
 export async function saveRules(user:User,rules:Rules,expectedVersion:number) {
  assert(user.role==='admin',403,'Настройки меняет администратор.');
  for(const rule of rules.writtenRules||[])assert(parseWrittenRule(rule.text),400,'Неизвестная формулировка письменного правила: выберите поддерживаемый шаблон.');

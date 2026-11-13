@@ -78,4 +78,7 @@
 .director-approval-table table { width:100%; }
 .director-approval-table th,.director-approval-table td { padding:8px; text-align:left; white-space:nowrap; }
 .device-notification-actions { display:flex; flex-wrap:wrap; gap:6px; }
+.task-scope-actions { display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
+.personal-intro h2 { margin:0 0 5px; }
+.company-overview-heading { margin-top:16px; }
 .notice-group p { white-space:pre-wrap; }

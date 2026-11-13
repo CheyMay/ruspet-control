@@ -160,6 +160,7 @@ test('director gets one batch for current requests and the admin cannot send it 
  const management=await import('../server/management-notices.js'),service=await import('../server/service.js');
  const adminUser=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
  const branch=(await db.pool.query<User>("SELECT * FROM users WHERE id='branch-fixture'")).rows[0];
+ await db.pool.query("INSERT INTO org_reporting(employee_id,manager_id) VALUES($1,$2),($2,$3)",[worker.id,branch.id,director.id]);
  const id=await makeTask('РВМ* Работа для проверки руководителями',null);
  const first=await workflow.reviewTask(worker,id,'submit','Подготовили результат',1);
  assert.equal(first.state,'review');
@@ -179,6 +180,32 @@ test('director gets one batch for current requests and the admin cannot send it 
  assert(home.buttons.flat().some(button=>button.text==='Мои задачи'));
  const team=await bot.botClick(director,'team-test',home.buttons.flat().find(button=>button.text==='Задачи команды')!.token);
  assert(!team.text.includes('Работа для проверки руководителями'));
+ assert(!team.buttons.flat().some(button=>button.text===other.name));
  const personal=await bot.botClick(director,'team-test',team.buttons.flat().find(button=>button.text===worker.name)!.token);
  assert(personal.text.includes(worker.name));assert(!personal.text.includes(other.name));
+});
+
+test('personal, team and company reports are independent and use the reporting hierarchy',async()=>{
+ const service=await import('../server/service.js');
+ const branch=(await db.pool.query<User>("SELECT * FROM users WHERE id='branch-fixture'")).rows[0];
+ const deadline=at('2035-01-09','11:30'),now=at('2035-01-09','15:00');
+ const mine=await makeTask('Личная задача руководителя',deadline,branch);
+ const team=await makeTask('Подчинённый в отчёте',deadline,worker);
+ const outside=await makeTask('Другой сотрудник компании',deadline,other);
+ const requests={queue:'today' as const};
+ const personal=await service.makeReport(branch,'snapshot','scope-personal',now,requests);
+ const group=await service.makeReport(branch,'snapshot','scope-team',now,{...requests,view:'team'});
+ const company=await service.makeReport(director,'snapshot','scope-company',now,requests);
+ assert.deepEqual(personal.rows.map(task=>task.id),[mine]);
+ assert.deepEqual(group.rows.map(task=>task.id),[team]);
+ assert.deepEqual(new Set(company.rows.map(task=>task.id)),new Set([mine,team,outside]));
+ assert.equal((await service.getReport(branch,group.id)).id,group.id);
+ await assert.rejects(()=>service.getReport(director,personal.id),/недоступен/);
+ await assert.rejects(()=>service.makeReport(branch,'snapshot','scope-forbidden',now,{view:'company'}),/недоступен/);
+ assert.deepEqual((await service.listReports(branch,{view:'mine',page:0})).items.map(report=>report.id),[personal.id]);
+ assert.deepEqual((await service.listReports(branch,{view:'team',page:0})).items.map(report=>report.id),[group.id]);
+ const bot=await import('../server/bot.js');
+ const entry=await bot.botView(branch,'team-reports');
+ const archive=await bot.botClick(branch,'team-reports',entry.buttons.flat().find(button=>button.text==='Мои отчёты')!.token);
+ assert.match(archive.text,/Отчёты · Мои задачи/);
 });

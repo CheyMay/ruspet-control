@@ -20,6 +20,7 @@ import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerC
 import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
+import {defaultReportView,reportViews,reportViewLabels,type ReportView} from '../shared/report-parameters.js';
 import type {User} from '../shared/types.js';
 import {taskInput} from './task-input.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
@@ -44,12 +45,24 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
  if(taskScreens.includes(p.op))return renderBotTask(u,ch,p);
  if(p.op==='report_pdf'){const report=await getReport(u,p.id!);return {text:'PDF · '+new Date(report.created_at).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}),buttons:[],document:{reportId:report.id}};}
  if(p.op==='reports'){
+  const view=(p.filter||defaultReportView(u)) as ReportView;
+  assert(reportViews(u).includes(view),403,'Этот раздел отчётов недоступен.');
   const page=p.page||0,report=p.id?await getReport(u,p.id):null;
   const rows:ReturnType<typeof button>[][]=[];
-  if(report){const content=reportText(report);rows.push([button('PDF отчёта','report_pdf',{id:report.id})],[button('К архиву','reports',{page})],[button('Меню','home')]);const result=await screen(u,ch,content.text.slice(0,3900),rows);return {...result,text:linkedText(content.text.length>3500?content.text.slice(0,3400)+'\nПолная сводка — в PDF и на сайте.':content.text,content.links),format:'HTML',links:[{text:'Отчёт на сайте',url:reportLink(publicOrigin(),report.id)}]};}
-  const archive=await listReports(u,{page:Math.floor(page/2)});
-  for(const r of archive.items.slice((page%2)*10,(page%2)*10+10))rows.push([button(date(r.summary?.to||r.created_at)+' · '+({snapshot:'Общий',daily:'Итоги и завтра',period:'За период',today:'Сегодня',overdue:'Просрочки',review:'Приёмка',nextday:'План'} as Record<string,string>)[r.kind||'snapshot'],'reports',{id:r.id,page})]);
-  rows.push([...(page?[button('← Назад','reports',{page:page-1})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1})]:[])],[button('Общий отчёт сейчас','report_now')],[button('Итоги дня и завтра','report_evening')],[button('Меню','home')]);return screen(u,ch,'Отчёты · '+archive.total+'\nВыберите снимок или сформируйте новый. Каждый отчёт сохраняет время и параметры.',rows);
+  if(report){
+   const content=reportText(report);
+   rows.push([button('PDF отчёта','report_pdf',{id:report.id})],
+    [button('К архиву','reports',{page,filter:report.parameters?.view||view})],[button('Меню','home')]);
+   const result=await screen(u,ch,content.text.slice(0,3900),rows);
+   return {...result,text:linkedText(content.text.length>3500?content.text.slice(0,3400)+'\nПолная сводка — в PDF и на сайте.':content.text,content.links),
+    format:'HTML',links:[{text:'Отчёт на сайте',url:reportLink(publicOrigin(),report.id)}]};
+  }
+  const archive=await listReports(u,{view,page:Math.floor(page/2)});
+  for(const r of archive.items.slice((page%2)*10,(page%2)*10+10))rows.push([button(date(r.summary?.to||r.created_at)+' · '+({snapshot:'Снимок',daily:'Итоги и завтра',period:'За период',today:'Сегодня',overdue:'Просрочки',review:'Приёмка',nextday:'План'} as Record<string,string>)[r.kind||'snapshot'],'reports',{id:r.id,page,filter:view})]);
+  rows.push([...(page?[button('← Назад','reports',{page:page-1,filter:view})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1,filter:view})]:[])],
+   [button('Отчёт сейчас','report_now',{filter:view}),button('Итоги дня','report_evening',{filter:view})],
+   reportViews(u).filter(mode=>mode!==view).map(mode=>button(reportViewLabels[mode],'reports',{filter:mode})),[button('Меню','home')]);
+  return screen(u,ch,'Отчёты · '+reportViewLabels[view]+'\nСохранённых снимков: '+archive.total,rows);
  }
  if(p.op==='delegate_list'||p.op==='delegate_preview'){
   const companyId=p.values?.companyId;
@@ -88,12 +101,32 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
  if(p.op==='assignee_list'){const d=await detail(u,p.id!);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');const people=await taskAssignees(u,p.id!);const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/8)-1));return screen(u,ch,'Выберите исполнителя · страница '+(page+1),[...people.slice(page*8,page*8+8).map(person=>[button(person.name,'assignee_prepare',{id:p.id,version:d.task.version,target:person.id})]),[...(page?[button('← Назад','assignee_list',{id:p.id,page:page-1})]:[]),...((page+1)*8<people.length?[button('Далее →','assignee_list',{id:p.id,page:page+1})]:[])],[button('К задаче','task',{id:p.id,list:p.list})]]);}
  if(p.op==='brief'){
   assert(u.role!=='employee',403,'Сводка команды доступна руководителям.');
+  const view=(p.filter||'team') as ReportView;
+  assert(reportViews(u).includes(view),403,'Этот раздел отчётов недоступен.');
   const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(person=>person.id===id)?.name||id;
-  const s=summarize(data.tasks,now),pending=data.approvals.filter(a=>a.state==='pending').length;
-  const urgent=data.tasks.filter(t=>taskQueue(t,now)==='overdue').sort((a,b)=>Number(!!b.customer_risk)-Number(!!a.customer_risk)||(a.deadline||'').localeCompare(b.deadline||'')).slice(0,3);
-  return screen(u,ch,`📊 РУСПЭТ · сводка руководителя\n${date(data.serverTime)} МСК · ваша область доступа\n\nВсего задач: ${s.total}\nПросрочены ранее: ${s.overdue}\nПоследний день сегодня: ${s.today}\nСрок впереди: ${s.upcoming}\nБез срока: ${s.no_deadline}\nНа приёмке: ${s.review}\nЗавершены: ${s.completed}\n\nОтдельно: ${pending} согласований — входят в задачи выше.\n\nВ первую очередь\n${urgent.map(t=>`• #${t.id} ${t.title.slice(0,110)}\n  ${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n')||'Просрочек с прошлых дней нет.'}\n\nЧек-листы и анализ невыполненных задач исключены. Это текущая сводка; сохранённые снимки — в архиве.`,[[button('Обновить сводку','brief')],[button('Архив отчётов','reports')],...urgent.map(t=>[button('Открыть #'+t.id,'task',{id:t.id})]),[button('В меню','home')]]);
+  const team=new Set(data.teamIds);
+  const tasks=data.tasks.filter(task=>view==='company'||(view==='mine'?task.assignee_id===u.id:team.has(task.assignee_id)));
+  const ids=new Set(tasks.map(task=>task.id)),s=summarize(tasks,now);
+  const pending=data.approvals.filter(a=>a.state==='pending'&&ids.has(a.task_id)).length;
+  const urgent=tasks.filter(t=>taskQueue(t,now)==='overdue').sort((a,b)=>Number(!!b.customer_risk)-Number(!!a.customer_risk)||(a.deadline||'').localeCompare(b.deadline||'')).slice(0,3);
+  const breakdown=data.users.map(person=>({person,...summarize(tasks.filter(task=>task.assignee_id===person.id),now)}))
+   .filter(row=>row.unfinished).sort((a,b)=>b.overdue-a.overdue||b.today-a.today);
+  const lines=breakdown.slice(0,6).map(row=>row.person.name+': '+row.overdue+' просрочено · '+row.today+' сегодня · '+row.unfinished+' открыто');
+  const summary=`Открыто: ${s.unfinished} · Завершено: ${s.completed}\nПросрочено: ${s.overdue} · Срок сегодня: ${s.today}\nНа приёмке: ${s.review} · Без срока: ${s.no_deadline}\nСогласований: ${pending}`;
+  const priority=urgent.map(t=>`#${t.id} · ${compactTaskTitle(t.title,105)}\n${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n\n');
+  const result=await screen(u,ch,[reportViewLabels[view]+' · '+date(data.serverTime)+' МСК',summary,lines.join('\n'),
+   breakdown.length>6?'Ещё исполнителей: '+(breakdown.length-6):'',priority].filter(Boolean).join('\n\n'),[
+   [button('Отчёты','reports',{filter:view}),...(view==='team'?[button('По сотрудникам','team')]:[])],
+   ...urgent.map(t=>[button('Открыть #'+t.id,'task',{id:t.id,list:{op:'brief',filter:view}})]),[button('Меню','home')]
+  ]);
+  if(view==='company')result.links=[{text:'Аналитика компании на сайте',url:new URL('/?view=overview',publicOrigin()).href}];
+  return result;
  }
- if(p.op==='report_now'||p.op==='report_evening'){const report=await (await import('./service.js')).makeReport(u,p.op==='report_now'?'snapshot':'daily','bot:'+randomBytes(12).toString('hex'));return botView(u,ch,{op:'reports',id:report.id});}
+ if(p.op==='report_now'||p.op==='report_evening'){
+  const view=(p.filter||defaultReportView(u)) as ReportView;
+  const report=await (await import('./service.js')).makeReport(u,p.op==='report_now'?'snapshot':'daily','bot:'+randomBytes(12).toString('hex'),new Date(),{view});
+  return botView(u,ch,{op:'reports',id:report.id,filter:view});
+ }
  return renderBotNavigation(u,ch,p);
 }
 export function parseMoscowInput(value:string,now=new Date()){

@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {assert} from './domain.js';
 import {approvalHierarchy} from './approval-hierarchy.js';
+import {teamMemberIds} from './org.js';
 import {event,visibleTasks} from './service.js';
 import {businessDay,taskQueue} from '../shared/queues.js';
 import {workKinds} from '../shared/report-summary.js';
@@ -87,8 +88,9 @@ export async function reviewInactivity(day:string,now:Date){
   if(!hierarchy)return;
   const branch=(await db.query<User>('SELECT * FROM users WHERE id=$1',[hierarchy.branch_manager_id])).rows[0];
   if(branch?.role!=='branch_manager')return;
-  const tasks=await visibleTasks(branch,db);
-  const people=(await db.query<User>("SELECT * FROM users WHERE role='employee'")).rows;
+  const team=await teamMemberIds(branch,db);
+  const tasks=(await visibleTasks(branch,db)).filter(task=>team.includes(task.assignee_id));
+  const people=(await db.query<User>("SELECT * FROM users WHERE role='employee' AND id=ANY($1)",[team])).rows;
   const byId=new Map<string,Task>(tasks.map(task=>[task.id,task]));
   const actions=(await db.query<{actor_id:string;task_id:string;assignee:string|null}>(`SELECT e.actor_id,e.task_id,
    coalesce(e.data->'before'->>'assignee_id',e.data->'after'->>'assignee_id') AS assignee

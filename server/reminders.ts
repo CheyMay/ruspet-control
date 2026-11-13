@@ -1,6 +1,6 @@
 import {makeReport} from './service.js';
 import {reportText} from './report-content.js';
-import {reportScope} from './reports-v5.js';
+import {reportScopes} from './reports-v5.js';
 import type {ReportLink} from '../shared/report-links.js';
 import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
@@ -53,7 +53,7 @@ export async function acknowledgeAlert(u:User,id:string){return transaction(asyn
  if(!r.acknowledged_at){await db.query('UPDATE task_alerts SET acknowledged_at=now() WHERE id=$1',[id]);await event(db,r.task_id,u.id,'reminder_acknowledged','Подтверждено получение напоминания. Это не выполнение задачи.',{alertId:id,dueAt:r.due_at,kind:r.kind});}
  return {ok:true};
 });}
-export async function userAlerts(u:User){const allowed=(await visibleTasks(u)).map(t=>t.id);return (await pool.query('SELECT a.id,task_id,kind,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=$3)) ORDER BY due_at DESC LIMIT 100',[u.id,allowed,reportScope(u)])).rows;}
+export async function userAlerts(u:User){const allowed=(await visibleTasks(u)).map(t=>t.id);return (await pool.query('SELECT a.id,task_id,kind,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=ANY($3))) ORDER BY due_at DESC LIMIT 100',[u.id,allowed,reportScopes(u)])).rows;}
 const at=(day:string,time:string)=>new Date(day+'T'+time+':00+03:00');
 async function add(db:Db,recipient:string,key:string,kind:string,body:string,due:Date,expires:Date,taskId:string|null=null,reminderId:string|null=null,reportId:string|null=null,links:ReportLink[]=[]){
  return db.query('INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,reminder_id,kind,body,due_at,expires_at,report_id,links) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),key,recipient,taskId,reminderId,kind,body,due.toISOString(),expires.toISOString(),reportId,JSON.stringify(links)]);
@@ -114,11 +114,11 @@ export async function pendingAlerts(u:User,now=new Date(),limit:number|null=5,al
  const allowed=(await visibleTasks(u)).filter(t=>t.status!=='completed').map(t=>t.id);
  return (await pool.query(`SELECT a.* FROM task_alerts a WHERE recipient_id=$1 AND acknowledged_at IS NULL
   AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3))
-  AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=$4))
+  AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=ANY($4)))
   AND ($6 OR a.dedupe_key LIKE 'task-once:%' OR EXISTS(SELECT 1 FROM task_reminders r WHERE r.id=a.reminder_id AND r.enabled AND r.personal_delivery))
   AND (a.kind='task' OR COALESCE((SELECT p.telegram_digest FROM notification_preferences p WHERE p.user_id=$1),true))
   AND (SELECT count(*) FROM task_alert_deliveries d WHERE d.alert_id=a.id) < CASE WHEN a.kind='task' THEN 2 ELSE 1 END
   AND NOT EXISTS(SELECT 1 FROM task_alert_deliveries d WHERE d.alert_id=a.id
    AND (d.state IN ('sending','uncertain') OR d.created_at>$2::timestamptz-interval '30 minutes'))
-  ORDER BY due_at LIMIT $5`,[u.id,now.toISOString(),allowed,reportScope(u),limit,allDelivery])).rows;
+  ORDER BY due_at LIMIT $5`,[u.id,now.toISOString(),allowed,reportScopes(u),limit,allDelivery])).rows;
 }

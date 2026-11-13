@@ -7,6 +7,7 @@ import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
 import {bootstrap,visibleTasks} from './service.js';
 import {assert,canManage} from './domain.js';
+import {hasCompanyOverview} from '../shared/report-parameters.js';
 import {directorBatchTasks} from './management-notices.js';
 import {lastUndo} from './undo.js';
 import {pool,type Db} from './db.js';
@@ -79,10 +80,11 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   return taskList(u,ch,p,batch.flatMap(a=>tasks.has(a.task_id)?[{task:tasks.get(a.task_id)!,pending:true}]:[]),'Пакет согласований',now,name,db);
  }
  const own=data.tasks.filter(task=>task.assignee_id===u.id);
+ const teamIds=new Set(data.teamIds);
  if(p.op==='team'){
   assert(canManage(u),403,'Задачи команды доступны руководителю.');
   const owners=new Map<string,Task[]>();
-  for(const task of data.tasks.filter(task=>task.assignee_id!==u.id)){
+  for(const task of data.tasks.filter(task=>teamIds.has(task.assignee_id))){
    const assigned=owners.get(task.assignee_id)??[];
    assigned.push(task);owners.set(task.assignee_id,assigned);
   }
@@ -94,12 +96,12 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    (shown.map(person=>`<b>${h(person.name)}</b>\nОткрыто: ${person.open} · Просрочено: ${person.overdue} · Сегодня: ${person.today}`).join('\n\n')||'У сотрудников пока нет задач.'),[
    ...shown.map(person=>[button(person.name,'tasks',{owner:person.id,filter:'open'})]),
    [...(page?[button('← Назад','team',{page:page-1})]:[]),...((page+1)*6<people.length?[button('Дальше →','team',{page:page+1})]:[])],
-   [button('Мои задачи','tasks',{owner:u.id}),button('Меню','home')]
+   [button('Отчёт команды','reports',{filter:'team'}),button('Меню','home')]
   ],db);
  }
  const owner=p.owner||u.id;
  const scoped=data.tasks.filter(task=>task.assignee_id===owner);
- if(p.owner&&owner!==u.id)assert(canManage(u)&&scoped.length,404,'Сотрудник вне доступной команды.');
+ if(p.owner&&owner!==u.id)assert(canManage(u)&&scoped.length&&(teamIds.has(owner)||hasCompanyOverview(u)),404,'Сотрудник вне доступной команды.');
  const matches=(t:Task,filter:string)=>filter==='my_due'?['today','overdue'].includes(taskQueue(t,now)):
   filter==='open'||filter==='mine'?t.status!=='completed':filter==='active'?t.status==='active':taskQueue(t,now)===filter;
  const myActions=actionItems(data).filter(a=>a.mine),actionTasks=new Set(myActions.map(a=>a.taskId));
@@ -130,18 +132,22 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   const last=await lastUndo(u);
   return htmlScreen(u,ch,'<b>Другие разделы</b>\n\nНапоминания, отчёты и помощь.',[
    [button('🔔 Напоминания','alerts'),...(u.role!=='employee'?[button('📁 Отчёты','reports')]:[])],
-   ...(u.role!=='employee'?[[button('📊 Сводка команды','brief')]]:[]),
+   ...(canManage(u)?[[button('Сводка команды','brief',{filter:'team'})]]:[]),
    ...(last?[[button('Отменить последнее действие','undo_prepare',{id:last.task_id,target:last.id})]]:[]),
-   [button('Как пользоваться','help')],[button('Меню','home')]
+   [button('Поиск','search_prompt'),button('Как пользоваться','help')],[button('Меню','home')]
   ]);
  }
  if(p.op==='help')return htmlScreen(u,ch,'<b>Как пользоваться ботом</b>\n\n1. «Нужно действие» — ответы, приёмка и согласования лично для вас.\n2. «Срок сегодня» и «Просрочены» — срочные задачи.\n3. Откройте задачу: сверху ближайшее действие, ниже описание и обсуждение.\n4. «Ещё действия» — новый срок, редактирование, напоминания и история.\n\nДля поиска просто напишите название, номер или имя исполнителя. Изменения выполняются после отдельного подтверждения.',[[button('Найти задачу','search_prompt')],[button('Меню','home')]]);
  const s=summarize(own,now);
- return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nНужно ваше действие: <b>${actionTasks.size}</b>\nМои сроки · Сегодня: ${s.today} · Просрочено: ${s.overdue}`,[
+ const company=hasCompanyOverview(u);
+ const total=company?summarize(data.tasks,now):null;
+ const overview=total?`\n\n<b>Вся компания</b>\nОткрыто: ${total.unfinished} · Просрочено: ${total.overdue} · Сегодня: ${total.today} · Приёмка: ${total.review}`:'';
+ return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nМои задачи в работе и на приёмке: <b>${s.unfinished}</b>\nМои сроки · Сегодня: ${s.today} · Просрочено: ${s.overdue}\nНужно ваше действие: <b>${actionTasks.size}</b>${overview}`,[
   [button(`📥 Нужно действие · ${actionTasks.size}`,'inbox')],
   [button(`Сегодня · ${s.today}`,'day'),button(`Просрочены · ${s.overdue}`,'tasks',{filter:'overdue'})],
   [button('Мои задачи','tasks',{owner:u.id}),...(canManage(u)?[button('Задачи команды','team')]:[button('Поиск','search_prompt')])],
-  ...(canManage(u)?[[button('Поиск','search_prompt')]]:[]),
+  ...(company?[[button('Сводка компании','brief',{filter:'company'}),button('Отчёты','reports')]]:
+   canManage(u)?[[button('Мои отчёты','reports',{filter:'mine'}),button('Поиск','search_prompt')]]:[]),
   [button('Новая задача','form',{kind:'create_task'}),button('Уведомления','notices')],
   [button('Ещё разделы','menu_more')]
  ]);

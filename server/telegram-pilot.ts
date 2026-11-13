@@ -220,7 +220,7 @@ async function deliverManagementNotices(user:User,chatId:string,now:Date){
    [id,chatId,JSON.stringify([row.id]),now.toISOString()]);
   try{
    const path=notice.kind==='director-approvals'?'/?view=approvals&batch='+notice.batchId:
-    notice.kind==='morning-report'?'/?view=reports&report='+notice.reportId:'/?view=tasks&filter=overdue';
+    notice.kind==='morning-report'?'/?view=reports&report='+notice.reportId:'/?view=tasks&scope=team&filter=overdue';
    const buttons=notice.kind==='director-approvals'?(await screen(user,'telegram:'+chatId,'',[[button('Открыть пакет','director_batch',{target:notice.batchId})]])).buttons:[];
    const sent=await send(chatId,{text:row.body,buttons,links:[{text:'Открыть в РУСПЭТ',url:new URL(path,publicOrigin()).href}]});
    await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id]);

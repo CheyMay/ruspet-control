@@ -17,12 +17,13 @@ test('bot leadership brief enforces role and uses only the managers visible task
  await assert.rejects(()=>botView(employee,'preview',{op:'brief'}),/руководителям/);
  const employeeMenu=await botView(employee,'preview');assert(!employeeMenu.buttons.flat().some(b=>b.text.includes('Сводка команды')));
  const visible=await service.bootstrap(lead),brief=await botView(lead,'preview',{op:'brief'});
- assert(brief.text.includes('Всего задач: '+visible.tasks.length+'\n'));
- const {summarize}=await import('../shared/analytics.js');const s=summarize(visible.tasks,new Date(visible.serverTime));
- assert(brief.text.includes('Просрочены ранее: '+s.overdue+'\n'));
+ const {summarize}=await import('../shared/analytics.js');
+ const s=summarize(visible.tasks.filter(task=>visible.teamIds.includes(task.assignee_id)),new Date(visible.serverTime));
+ assert(brief.text.includes('Открыто: '+s.unfinished));
+ assert(brief.text.includes('Просрочено: '+s.overdue+' ·'));
  const foreign=users.find(u=>u.role==='employee'&&u.branch_id!==lead.branch_id)!;
  assert(!brief.text.includes(foreign.name));
- assert(brief.buttons.flat().some(b=>b.text==='Архив отчётов'));
+ assert(brief.buttons.flat().some(b=>b.text==='Отчёты'));
 });
 
 before(async()=>{
@@ -94,7 +95,7 @@ test('completion requires every route step',async()=>{
 test('report snapshot is immutable and same-day generation is idempotent',async()=>{
  const a=await service.makeReport(users[0]);const b=await service.makeReport(users[0]);assert.equal(a.id,b.id);assert(a.rows.length>0);assert(a.rows.every(t=>t.status!=='completed'||a.summary?.activity.closedIds.includes(t.id)));
  await assert.rejects(()=>db.pool.query('UPDATE reports SET metrics=$1 WHERE id=$2',['{}',a.id]),/append-only/);
- const branch=await service.makeReport(users.find(u=>u.id==='lead-msk')!);assert.ok(branch.rows.every((t:any)=>t.branch_id==='Москва'));
+ const branch=await service.makeReport(users.find(u=>u.id==='lead-msk')!,'snapshot','branch-team',new Date(),{view:'team'});assert.ok(branch.rows.every((t:any)=>t.branch_id==='Москва'));
 });
 test('history and rule versions cannot be overwritten',async()=>{
  await assert.rejects(()=>db.pool.query("UPDATE task_events SET message='changed' WHERE id=(SELECT id FROM task_events LIMIT 1)"),/append-only/);

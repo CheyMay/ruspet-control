@@ -80,6 +80,14 @@ export async function delegatesFor(manager:User,db:Db=pool){
    manager.branch_id===p.branch_id&&!!manager.branch_id&&manager.branch_id!=='Не указан');
  });
 }
+export async function teamMemberIds(manager:User,db:Db=pool):Promise<string[]>{
+ if(!canManage(manager))return [];
+ const rows=(await db.query<{id:string}>(`WITH RECURSIVE team(id) AS (
+  SELECT employee_id FROM org_reporting WHERE manager_id=$1
+  UNION SELECT r.employee_id FROM org_reporting r JOIN team t ON r.manager_id=t.id
+ ) SELECT t.id FROM team t JOIN users u ON u.id=t.id WHERE t.id<>$1 AND NOT u.root_access`,[manager.id])).rows;
+ return rows.length?rows.map(row=>row.id):(await delegatesFor(manager,db)).map(user=>user.id);
+}
 export async function myDelegations(actor:User){
  assert(canManage(actor),403,'Очередь поручений доступна руководителю.');
  const rows=(await pool.query<Task&{source_task:Task;assignee_name:string;manager_name:string}>(`SELECT t.*,row_to_json(source) source_task,
