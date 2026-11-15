@@ -23,7 +23,7 @@ import {listJournal} from './journal.js';
 import {reportPdf} from './report-pdf.js';
 import {taskSyncStatus} from './task-sync.js';
 import {reminderInput,listTaskReminders,saveTaskReminder,disableTaskReminder,acknowledgeAlert,userAlerts} from './reminders.js';
-import {botView,botClick,botText,clearBotDraft,botVoiceDraft,savedVoiceDraft} from './bot.js';
+import {botView,botClick,botText,clearBotDraft,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
 import {browserAudioFormat,transcribeAudio,voiceEnabled} from './transcription.js';
 import {voiceMaxBytes} from '../shared/voice.js';
 import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
@@ -63,6 +63,7 @@ const webBotChannel=(req:express.Request)=>req.query.channel==='mobile'?'mobile'
 export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  const app=express(); app.disable('x-powered-by');
  const compress=compression({level:3,brotli:{params:{[zlib.BROTLI_PARAM_QUALITY]:3}}});
+ const voiceInputs=new Map<string,Promise<BotScreen>>();
  app.use('/api',async(req,res,next)=>{
   const target=req.get(viewAsHeader);
   if(target===undefined)return next();
@@ -212,8 +213,16 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const cached=await savedVoiceDraft(req.actor,channel,inputId);if(cached){res.json(cached);return;}
   assert(Buffer.isBuffer(req.body)&&req.body.length>0,415,'Запишите голосовое или выберите аудиофайл.');
   const format=browserAudioFormat(req.get('Content-Type')||'',req.body);
-  const transcript=await transcribeAudio(new Blob([new Uint8Array(req.body)]),format,req.actor.id);
-  res.json(await botVoiceDraft(req.actor,channel,transcript,inputId));
+  const key=JSON.stringify([req.actor.id,channel,inputId]);
+  let pending=voiceInputs.get(key);
+  if(!pending){
+   const audio=new Blob([new Uint8Array(req.body)]);
+   pending=transcribeAudio(audio,format,req.actor.id)
+    .then(transcript=>botVoiceDraft(req.actor,channel,transcript,inputId))
+    .finally(()=>voiceInputs.delete(key));
+   voiceInputs.set(key,pending);
+  }
+  res.json(await pending);
  });
  app.post('/api/integrations/v1/companies/batch',async(req,res)=>res.json(await syncCompanySnapshots(req.actor,req.body)));
  app.get('/api/okb/companies/:id/responsibility',async(req,res)=>res.json(await companyResponsibility(req.actor,z.uuid().parse(req.params.id))));

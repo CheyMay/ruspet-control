@@ -22,6 +22,7 @@ const reasons:[RegExp,string][]=[
 export class TelegramRejected extends AppError {
  readonly method:TelegramMethod;
  readonly telegramCode:number;
+ readonly editState?:'unchanged'|'unavailable';
  constructor(method:TelegramMethod,data:{error_code?:unknown;description?:unknown},httpStatus=502){
   const code=typeof data.error_code==='number'&&Number.isInteger(data.error_code)&&data.error_code>=400&&data.error_code<=599?data.error_code:
    Number.isInteger(httpStatus)&&httpStatus>=400&&httpStatus<=599?httpStatus:502;
@@ -30,5 +31,9 @@ export class TelegramRejected extends AppError {
   const reason=code===401?'Telegram отклонил токен бота.':code===409?'Конфликт: другой polling-процесс или webhook.':code===429?'Telegram ограничил частоту запросов.':known||'Запрос отклонён. Нужна проверка параметров этого метода.';
   super(502,`Telegram · ${method} · ${code}: ${reason}`);
   this.method=method;this.telegramCode=code;
+  if(method==='editMessageText'&&code===400){
+   if(/message is not modified/i.test(description))this.editState='unchanged';
+   else if(/message to edit not found|message can't be edited/i.test(description))this.editState='unavailable';
+  }
  }
 }

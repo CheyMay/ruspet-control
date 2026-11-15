@@ -71,8 +71,8 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   <div className="panel-heading"><div><h2>{heading}</h2>{copyOf&&<p>Исходная задача #{copyOf.id}. Проверьте поля перед созданием.</p>}</div><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
   {(saveError||error)&&<p className="alert error" role="alert">{saveError||error}</p>}
   {!initial&&<fieldset className="task-mode"><legend>Когда создавать</legend><div>
-   {([{id:'once',label:'Один раз',detail:'Создать сейчас'},{id:'repeat',label:'По расписанию',detail:'Повторять по календарю'},
-    ...(onConditional?[{id:'conditional',label:'По условию',detail:'По событию в процессе'}]:[])]).map(item=><label key={item.id}>
+   {([{id:'once',label:'Разовая',detail:'Поставить сейчас'},{id:'repeat',label:'Регулярная',detail:'По расписанию'},
+    ...(onConditional?[{id:'conditional',label:'По условию',detail:'При событии в процессе'}]:[])]).map(item=><label key={item.id}>
     <input type="radio" name="createMode" value={item.id} checked={mode===item.id} onChange={()=>setMode(item.id)}/>
     <span><strong>{item.label}</strong><small>{item.detail}</small></span>
    </label>)}

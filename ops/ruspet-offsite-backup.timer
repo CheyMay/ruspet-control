@@ -1,0 +1,9 @@
+[Unit]
+Description=Daily encrypted RUSPET backup to the secondary VPS
+
+[Timer]
+OnCalendar=*-*-* 04:05:00 Europe/Moscow
+Persistent=true
+
+[Install]
+WantedBy=timers.target

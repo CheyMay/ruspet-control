@@ -1,0 +1,18 @@
+[Unit]
+Description=Send encrypted RUSPET PostgreSQL dumps offsite
+After=network-online.target
+Wants=network-online.target
+StartLimitIntervalSec=1h
+StartLimitBurst=6
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/ruspet-offsite-backup
+TimeoutStartSec=5min
+Restart=on-failure
+RestartSec=5min
+UMask=0077
+PrivateTmp=yes
+NoNewPrivileges=yes
+Nice=10
+CPUQuota=40%

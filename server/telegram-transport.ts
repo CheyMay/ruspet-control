@@ -1,4 +1,27 @@
 import {readFile} from 'node:fs/promises';
+import {TelegramRejected} from './telegram-errors.js';
+import {AppError} from './domain.js';
+
+type TextCall=(method:'sendMessage'|'editMessageText',body:object)=>Promise<{message_id:number}>;
+
+export class TelegramTextUnconfirmed extends AppError {
+ constructor(readonly operation:'send'|'edit'){
+  super(502,'Telegram не подтвердил доставку сообщения.');
+ }
+}
+
+export async function sendTelegramText(call:TextCall,body:object,messageId?:number){
+ if(messageId!==undefined){
+  try{return await call('editMessageText',{...body,message_id:messageId});}
+  catch(error){
+   if(!(error instanceof TelegramRejected))throw new TelegramTextUnconfirmed('edit');
+   if(error.editState==='unchanged')return {message_id:messageId};
+   if(error.editState!=='unavailable')throw error;
+  }
+ }
+ try{return await call('sendMessage',body);}
+ catch(error){if(error instanceof TelegramRejected)throw error;throw new TelegramTextUnconfirmed('send');}
+}
 
 // No fallback or automatic retry: a failed send may already have reached Telegram.
 export async function telegramRequest(url:string,body:object|FormData|null,timeout:number):Promise<Response>{

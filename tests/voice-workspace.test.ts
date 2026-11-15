@@ -62,6 +62,23 @@ test('mobile voice validates audio, checks access, drafts once and writes only o
  assert.equal((await realFetch(site+'/api/bot/voice')).status,401);
 });
 
+test('parallel retries of the same voice recording share one transcription and draft',async()=>{
+ let calls=0;
+ globalThis.fetch=async()=>{
+  calls++;
+  await new Promise(resolve=>setTimeout(resolve,50));
+  return Response.json({text:'Добавь комментарий к задаче '+own+': Связь восстановилась.'});
+ };
+ const id=randomUUID();
+ const responses=await Promise.all([audio(id),audio(id)]);
+ assert.ok(responses.every(response=>response.status===200));
+ const screens=await Promise.all(responses.map(response=>response.json()));
+ assert.deepEqual(screens[0],screens[1]);
+ assert.equal(calls,1);
+ const comments=await db.pool.query("SELECT count(*)::int n FROM comments WHERE body='Связь восстановилась.'");
+ assert.equal(comments.rows[0].n,0);
+});
+
 test('Telegram voice uses the same transcription adapter after a bounded binary GET',async()=>{
  const {transcribeTelegramVoice}=await import('../server/telegram-voice.js');
  const requests:string[]=[];

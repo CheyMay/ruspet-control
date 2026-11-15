@@ -2,7 +2,7 @@ import {onboardingMessage,ensureLinkedAccount} from './telegram-onboarding.js';
 import {ownerTimeReply,sendOwnerTimePrompt} from './owner-time.js';
 import {TelegramRejected,type TelegramMethod} from './telegram-errors.js';
 import {telegramLoginScreen} from './telegram-login.js';
-import {telegramRequest} from './telegram-transport.js';
+import {sendTelegramText,TelegramTextUnconfirmed,telegramRequest} from './telegram-transport.js';
 import {reportPdf} from './report-pdf.js';
 import {getReport} from './service.js';
 import {publicOrigin} from './report-content.js';
@@ -59,7 +59,7 @@ export async function configurePilot(u:User,input:{enabled:boolean;delivery:bool
    THEN now() ELSE task_delivery_enabled_at END WHERE id=1`,[input.enabled,input.delivery,input.taskDelivery??null]);
 }
 let lastSend=0;const chatSend=new Map<string,number>();
-async function send(chat:string,s:BotScreen,message?:number){const slot=Math.max(Date.now(),lastSend+80,(chatSend.get(chat)||0)+1050);lastSend=slot;chatSend.set(chat,slot);if(slot>Date.now())await sleep(slot-Date.now());if(s.document){const user=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0];assert(user,403,'Чат не привязан.');const report=await getReport(user,s.document.reportId),bytes=await reportPdf(report);const form=new FormData();form.set('chat_id',chat);form.set('caption',s.text.slice(0,1000));form.set('document',new Blob([new Uint8Array(bytes)],{type:'application/pdf'}),`ruspet-${report.day}.pdf`);let response:Response;try{response=await telegramRequest(`https://api.telegram.org/bot${await token()}/sendDocument`,form,35000)}catch{throw new AppError(502,'Не получено подтверждение отправки PDF. Проверьте чат перед повтором.');}const data=await response.json() as any;if(typeof data?.ok!=='boolean')throw new AppError(502,'Отправка PDF не подтверждена мостом.');if(!data.ok)throw new TelegramRejected('sendDocument',data,response.status);if(!Number.isInteger(data.result?.message_id))throw new AppError(502,'Нет подтверждения отправки PDF.');return data.result;}const body={chat_id:chat,text:s.text,...(s.format==='HTML'?{parse_mode:'HTML'}:{}),reply_markup:s.replyKeyboard==='contact'?{keyboard:[[{text:'Поделиться своим номером',request_contact:true}],[{text:'Не могу поделиться номером'}]],resize_keyboard:true,one_time_keyboard:true}:s.replyKeyboard==='remove'?{remove_keyboard:true}:{inline_keyboard:s.buttons.filter(r=>r.length).map(r=>r.map(b=>({text:b.text,callback_data:b.token}))).concat((s.links||[]).map(b=>[{text:b.text,url:b.url}] as any))},link_preview_options:{is_disabled:true}};if(message){try{return await call('editMessageText',{...body,message_id:message})}catch{}}return call('sendMessage',body)}
+async function send(chat:string,s:BotScreen,message?:number){const slot=Math.max(Date.now(),lastSend+80,(chatSend.get(chat)||0)+1050);lastSend=slot;chatSend.set(chat,slot);if(slot>Date.now())await sleep(slot-Date.now());if(s.document){const user=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0];assert(user,403,'Чат не привязан.');const report=await getReport(user,s.document.reportId),bytes=await reportPdf(report);const form=new FormData();form.set('chat_id',chat);form.set('caption',s.text.slice(0,1000));form.set('document',new Blob([new Uint8Array(bytes)],{type:'application/pdf'}),`ruspet-${report.day}.pdf`);let response:Response;try{response=await telegramRequest(`https://api.telegram.org/bot${await token()}/sendDocument`,form,35000)}catch{throw new AppError(502,'Не получено подтверждение отправки PDF. Проверьте чат перед повтором.');}const data=await response.json() as any;if(typeof data?.ok!=='boolean')throw new AppError(502,'Отправка PDF не подтверждена мостом.');if(!data.ok)throw new TelegramRejected('sendDocument',data,response.status);if(!Number.isInteger(data.result?.message_id))throw new AppError(502,'Нет подтверждения отправки PDF.');return data.result;}const body={chat_id:chat,text:s.text,...(s.format==='HTML'?{parse_mode:'HTML'}:{}),reply_markup:s.replyKeyboard==='contact'?{keyboard:[[{text:'Поделиться своим номером',request_contact:true}],[{text:'Не могу поделиться номером'}]],resize_keyboard:true,one_time_keyboard:true}:s.replyKeyboard==='remove'?{remove_keyboard:true}:{inline_keyboard:s.buttons.filter(r=>r.length).map(r=>r.map(b=>({text:b.text,callback_data:b.token}))).concat((s.links||[]).map(b=>[{text:b.text,url:b.url}] as any))},link_preview_options:{is_disabled:true}};return sendTelegramText(call,body,s.replyKeyboard?undefined:message)}
 async function reply(chat:string,s:BotScreen,started:number,message?:number){
  const kind=s.document?'pdf':s.timingKind;
  let ok=false;
@@ -77,7 +77,10 @@ export async function handlePilotUpdate(update:any){
   if(!sender||sender.is_bot||String(sender.id)!==chat||!(/^[1-9][0-9]{0,15}$/.test(chat)))return;
   const acknowledged=c?call('answerCallbackQuery',{callback_query_id:c.id}).catch(()=>{}):Promise.resolve();
   try{await reply(chat,await telegramLoginScreen(login||loginCallback![2],chat,loginCallback?(loginCallback[1]==='a'?'approve':'deny'):undefined),started,c?m.message_id:undefined);}
-  catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось обработать вход. Обновите QR-код на сайте.',buttons:[]},c?m.message_id:undefined);}
+  catch(e){
+   if(e instanceof TelegramTextUnconfirmed)throw e;
+   await send(chat,{text:e instanceof AppError?e.message:'Не удалось обработать вход. Обновите QR-код на сайте.',buttons:[]},c?m.message_id:undefined);
+  }
   finally{await acknowledged;}return;
  }
  const code=typeof m.text==='string'&&!c?m.text.match(/^\/start ([a-f0-9]{40})$/)?.[1]:null;
@@ -105,29 +108,61 @@ export async function handlePilotUpdate(update:any){
   OR EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled) AS account_active
   FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1`,[chat])).rows[0] as (User&{account_active:boolean})|undefined;
  if(u&&!u.account_active){if(c)await call('answerCallbackQuery',{callback_query_id:c.id,text:'Вход приостановлен администратором.'});return;}
- if(!u){if(!c){try{const response=await onboardingMessage(m);if(response)await reply(chat,response,started)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось подключить сотрудника. Попробуйте /start позже.',buttons:[]})}}return;}
+ if(!u){
+  if(!c){
+   const response=await onboardingMessage(m).catch(e=>({
+    text:e instanceof AppError?e.message:'Не удалось подключить сотрудника. Попробуйте /start позже.',buttons:[]
+   }));
+   if(response)await reply(chat,response,started);
+  }
+  return;
+ }
  const ch='telegram:'+chat;
- if(c){const acknowledged=call('answerCallbackQuery',{callback_query_id:c.id}).catch(()=>{});try{await reply(chat,await botClick(u,ch,String(c.data)),started,m.message_id)}catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',buttons:(await botView(u,ch)).buttons})}finally{await acknowledged;}return}
- try{
-  if(m.voice){
+ if(c){
+  const acknowledged=call('answerCallbackQuery',{callback_query_id:c.id}).catch(()=>{});
+  try{
+   const response=await botClick(u,ch,String(c.data)).catch(async error=>({
+    text:error instanceof AppError?error.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',
+    buttons:(await botView(u,ch)).buttons
+   }));
+   await reply(chat,response,started,m.message_id);
+  }finally{await acknowledged;}
+  return;
+ }
+ if(m.voice){
+  let response:BotScreen,messageId:number|undefined;
+  try{
    assert(m.from&&!m.from.is_bot&&String(m.from.id)===chat,403,'Голосовое можно прислать из своего личного чата.');
    assert(voiceEnabled('telegram',u.id),409,'Голосовые команды пока недоступны. Можно написать боту текстом.');
    const key=String(update.update_id);
    const cached=await savedVoiceDraft(u,ch,key);
-   if(cached){await reply(chat,cached,started);return;}
-   const progress=await send(chat,{text:'Распознаю голосовое…',buttons:[]});
-   try{
+   if(cached)response=cached;
+   else{
+    const progress=await send(chat,{text:'Распознаю голосовое…',buttons:[]}).catch(()=>null);
+    messageId=progress?.message_id;
     const transcript=await transcribeTelegramVoice(u.id,m.voice,id=>call('getFile',{file_id:id}),token);
-    await reply(chat,await botVoiceDraft(u,ch,transcript,key),started,progress.message_id);
-   }catch(error){
-    const text=error instanceof AppError?error.message:'Голосовое не обработано. Можно написать боту текстом.';
-    await reply(chat,{text,buttons:[]},started,progress.message_id);
+    response=await botVoiceDraft(u,ch,transcript,key);
    }
-   return;
+  }catch(error){
+   response={text:error instanceof AppError?error.message:'Голосовое не обработано. Можно написать боту текстом.',buttons:[]};
   }
+  try{await reply(chat,response,started,messageId);}
+  catch(error){
+   if(!(error instanceof TelegramTextUnconfirmed)||error.operation!=='edit')throw error;
+   // Retrying the same edit cannot create a second message.
+   try{await reply(chat,response,started,messageId);}
+   catch(retry){
+    if(!(retry instanceof TelegramTextUnconfirmed)||retry.operation!=='edit')throw retry;
+    console.error('Telegram voice reply edit unconfirmed');
+   }
+  }
+  return;
+ }
+ let response:BotScreen;
+ try{
   const timeReply=await ownerTimeReply(u,m);
   if(timeReply){await reply(chat,{text:timeReply,buttons:[]},started);return;}
-  const text=String(m.text||'').trim();let response:BotScreen;
+  const text=String(m.text||'').trim();
   if(code||/^\/(start|menu|status|cancel|task|today|tasks|inbox|reports|search)(\s|$)/.test(text))await clearBotDraft(u,ch);
   if(code||text==='/start')await ensureLinkedAccount(u);
   if(code||['/start','/menu','/status'].includes(text))response=await botView(u,ch);
@@ -137,8 +172,11 @@ export async function handlePilotUpdate(update:any){
   else if(['/today','/tasks','/inbox','/reports'].includes(text))response=await botView(u,ch,{op:({'/today':'day','/tasks':'tasks','/inbox':'inbox','/reports':'reports'} as Record<string,string>)[text]});
   else if(!text)response={text:'Пока принимаются текст и ссылки на материалы. Опишите результат и добавьте ссылку; загрузка файлов будет отдельным этапом.',buttons:[]};
   else response=await botText(u,ch,text,String(update.update_id));
-  await reply(chat,response,started);
- }catch(e){await send(chat,{text:e instanceof AppError?e.message:'Не удалось обработать сообщение. Попробуйте ещё раз или откройте /menu.',buttons:[]})}
+ }catch(e){
+  if(e instanceof TelegramTextUnconfirmed||e instanceof TelegramRejected)throw e;
+  response={text:e instanceof AppError?e.message:'Не удалось обработать сообщение. Попробуйте ещё раз или откройте /menu.',buttons:[]};
+ }
+ await reply(chat,response,started);
 }
 export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:string,limit:number|null=null,now=new Date()){
  const included=(await visibleTasks(user)).map(t=>t.id);
@@ -270,6 +308,25 @@ export function startPilot(){if(process.env.TELEGRAM_WORKER_DISABLED==='true')re
   const updates=await call('getUpdates',{offset,timeout:20,limit:10,allowed_updates:['message','callback_query']});
   assert(Array.isArray(updates),502,'Telegram вернул неожиданный ответ при опросе.');
   await pool.query('UPDATE telegram_runtime SET last_poll_at=now(),heartbeat_at=now() WHERE id=1');
-  for(const update of updates){if(stopped)break;const enabled=(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0].enabled;if(!enabled)break;await handlePilotUpdate(update);await pool.query('UPDATE telegram_cursor SET next_update=$1 WHERE id=1',[update.update_id+1])}
+  for(const update of updates){
+   if(stopped)break;
+   const enabled=(await pool.query('SELECT enabled FROM telegram_settings WHERE id=1')).rows[0].enabled;
+   if(!enabled)break;
+   try{await handlePilotUpdate(update);}
+   catch(error){
+    const unconfirmedSend=error instanceof TelegramTextUnconfirmed&&error.operation==='send';
+    const rejectedReply=error instanceof TelegramRejected&&['sendMessage','editMessageText','answerCallbackQuery'].includes(error.method)
+     &&[400,403].includes(error.telegramCode);
+    if(!unconfirmedSend&&!rejectedReply)throw error;
+    console.error(error.message);
+   }
+   await pool.query('UPDATE telegram_cursor SET next_update=$1 WHERE id=1',[update.update_id+1]);
+  }
   }finally{const result=await delivery;if(!result.ok)throw result.error;}
- }catch(e){transportChecked=false;if(!stopped){if(e instanceof TelegramRejected)console.error(e.message);try{await pool.query("INSERT INTO telegram_runtime(id,heartbeat_at,error) VALUES(1,now(),$1) ON CONFLICT(id) DO UPDATE SET heartbeat_at=now(),error=excluded.error",[e instanceof AppError?e.message:'Telegram недоступен. Повтор через 10 секунд.'])}catch{}await sleep(10000)}}finally{if(lock){try{await lock.query('SELECT pg_advisory_unlock(431009)')}finally{lock.release()}}}}};void run();return()=>{stopped=true};}
+ }catch(e){transportChecked=false;if(!stopped){if(e instanceof TelegramRejected)console.error(e.message);try{await pool.query("INSERT INTO telegram_runtime(id,heartbeat_at,error) VALUES(1,now(),$1) ON CONFLICT(id) DO UPDATE SET heartbeat_at=now(),error=excluded.error",[e instanceof AppError?e.message:'Telegram недоступен. Повтор через 10 секунд.'])}catch{}await sleep(10000)}}finally{
+  if(lock){
+   let discard=false;
+   try{await lock.query('SELECT pg_advisory_unlock(431009)');}catch{discard=true;}
+   lock.release(discard);
+  }
+ }}};void run();return()=>{stopped=true};}

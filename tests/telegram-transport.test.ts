@@ -1,6 +1,28 @@
 import {test} from 'node:test';
 import assert from 'node:assert/strict';
-import {telegramRequest} from '../server/telegram-transport.js';
+import {sendTelegramText,TelegramTextUnconfirmed,telegramRequest} from '../server/telegram-transport.js';
+import {TelegramRejected} from '../server/telegram-errors.js';
+
+test('Telegram replies open a new message only when the original is definitely unavailable',async()=>{
+ const attempted:string[]=[],body={text:'Ответ',chat_id:'fixture'};
+ const call=async(method:'sendMessage'|'editMessageText',error:Error)=>{
+  attempted.push(method);
+  if(method==='editMessageText')throw error;
+  return {message_id:43};
+ };
+ const editError=(description:string)=>new TelegramRejected('editMessageText',{error_code:400,description});
+ const unchanged=await sendTelegramText(method=>call(method,editError('Bad Request: message is not modified')),body,42);
+ assert.deepEqual(unchanged,{message_id:42});
+ assert.deepEqual(attempted.splice(0),['editMessageText']);
+ const replacement=await sendTelegramText(method=>call(method,editError('Bad Request: message to edit not found')),body,42);
+ assert.deepEqual(replacement,{message_id:43});
+ assert.deepEqual(attempted.splice(0),['editMessageText','sendMessage']);
+ await assert.rejects(()=>sendTelegramText(method=>call(method,Error('connection lost')),body,42),
+  (error:unknown)=>error instanceof TelegramTextUnconfirmed&&error.operation==='edit');
+ assert.deepEqual(attempted.splice(0),['editMessageText']);
+ await assert.rejects(()=>sendTelegramText(method=>call(method,editError("can't parse entities")),body,42),TelegramRejected);
+ assert.deepEqual(attempted,['editMessageText']);
+});
 test('proxy wraps JSON and multipart without leaking secret to target or retrying uncertain sends',async()=>{
  const savedFetch=globalThis.fetch,env={...process.env};const calls:{url:string;init:RequestInit}[]=[];
  process.env.TELEGRAM_PROXY_URL='https://bridge.example/forward';process.env.TELEGRAM_PROXY_SECRET='test-secret';

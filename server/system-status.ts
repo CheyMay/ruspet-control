@@ -8,7 +8,7 @@ import {taskSyncStatus} from './task-sync.js';
 import {operationsStatus} from './automation.js';
 import type {Task,User} from '../shared/types.js';
 
-async function backupRecord(name:string,profile:'maintenance'|'okb-maintenance'='maintenance'){
+async function backupRecord(name:string,profile:'maintenance'|'okb-maintenance'|'offsite-maintenance'='maintenance'){
  try{
   const value=JSON.parse(await readFile('/var/lib/ruspet/'+profile+'/'+name+'.json','utf8'));
   if(typeof value.at!=='string'||!Number.isFinite(Date.parse(value.at)))return null;
@@ -18,7 +18,7 @@ async function backupRecord(name:string,profile:'maintenance'|'okb-maintenance'=
 
 export async function systemStatus(actor:User){
  assert(actor.role==='admin',403,'Диагностика доступна администратору.');
- const [pilot,automation,bindings,timings,reports,backup,restore,backupAttempt,restoreAttempt,sync,okbBackup,okbRestore,okbBackupAttempt,okbRestoreAttempt]=await Promise.all([
+ const [pilot,automation,bindings,timings,reports,backup,restore,backupAttempt,restoreAttempt,sync,okbBackup,okbRestore,okbBackupAttempt,okbRestoreAttempt,offsiteBackup,offsiteAttempt]=await Promise.all([
   pilotStatus(actor),operationsStatus(),
   pool.query('SELECT u.*,b.paired_at FROM telegram_binding b JOIN users u ON u.id=b.user_id'),
   pool.query(`SELECT kind,count(*)::int samples,count(*) FILTER (WHERE NOT ok)::int errors,
@@ -28,7 +28,8 @@ export async function systemStatus(actor:User){
   pool.query("SELECT DISTINCT ON (state) job_key,state,finished_at FROM job_runs WHERE job_key LIKE 'reports-v5:%' AND state IN ('done','failed') ORDER BY state,finished_at DESC NULLS LAST"),
   backupRecord('backup'),backupRecord('restore'),backupRecord('backup.attempt'),backupRecord('restore.attempt'),taskSyncStatus(),
   backupRecord('backup','okb-maintenance'),backupRecord('restore','okb-maintenance'),
-  backupRecord('backup.attempt','okb-maintenance'),backupRecord('restore.attempt','okb-maintenance')
+  backupRecord('backup.attempt','okb-maintenance'),backupRecord('restore.attempt','okb-maintenance'),
+  backupRecord('backup','offsite-maintenance'),backupRecord('backup.attempt','offsite-maintenance')
  ]);
  let pending=0;
  if(pilot.settings.enabled&&pilot.settings.delivery){
@@ -45,7 +46,8 @@ export async function systemStatus(actor:User){
   reports:{enabled:automation.config.enabled,alive:automation.alive,heartbeat:automation.heartbeat,runs:reports.rows},
   bitrix:sync.bitrix,
   backups:{backup,restore,backupAttempt,restoreAttempt},
-  okbBackups:{backup:okbBackup,restore:okbRestore,backupAttempt:okbBackupAttempt,restoreAttempt:okbRestoreAttempt}
+  okbBackups:{backup:okbBackup,restore:okbRestore,backupAttempt:okbBackupAttempt,restoreAttempt:okbRestoreAttempt},
+  offsiteBackup:{backup:offsiteBackup,attempt:offsiteAttempt}
  };
 }
 

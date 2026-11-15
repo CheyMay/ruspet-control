@@ -1,7 +1,7 @@
 import {useEffect,useRef,useState} from 'react';
 import {Bell,House,ListTodo,Search,Send} from 'lucide-react';
 import type {BotScreen} from '../server/bot.js';
-import {api} from './api.js';
+import {api,ApiError} from './api.js';
 import {BotText} from './BotText.js';
 import {VoiceRecorder} from './VoiceRecorder.js';
 
@@ -12,39 +12,67 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
  const [view,setView]=useState<BotScreen|null>(null),[text,setText]=useState(''),[busy,setBusy]=useState(false);
  const [error,setError]=useState(''),[voice,setVoice]=useState(false);
  const active=useRef(false);
+ const revision=useRef(0);
+ const pendingText=useRef<{text:string;id:string}|null>(null);
  const query=mobile?'?channel=mobile':'';
  const field=useRef<HTMLTextAreaElement|null>(null);
  const message=useRef<HTMLDivElement|null>(null);
  useEffect(()=>{
   let mounted=true;
-  api<BotScreen>('/bot/screen'+query,'POST',{screen:initial}).then(next=>{if(mounted)setView(next);}).catch(e=>{if(mounted)setError(e.message);});
-  api<{enabled:boolean}>('/bot/voice').then(status=>{if(mounted)setVoice(status.enabled);}).catch(()=>{});
+  const requested=++revision.current;
+  active.current=true;setBusy(true);
+  api<BotScreen>('/bot/screen'+query,'POST',{screen:initial},{timeout:12000}).then(next=>{
+   if(mounted&&requested===revision.current)setView(next);
+  }).catch(e=>{if(mounted&&requested===revision.current)setError(e.message);}).finally(()=>{
+   if(mounted&&requested===revision.current){active.current=false;setBusy(false);}
+  });
+  api<{enabled:boolean}>('/bot/voice','GET',undefined,{timeout:10000}).then(status=>{if(mounted)setVoice(status.enabled);}).catch(()=>{});
   return()=>{mounted=false;};
  },[query,initial]);
  async function run(path:string,body:unknown,focus=false){
-  if(active.current)return;
+  if(active.current)return false;
+  revision.current++;
   active.current=true;setBusy(true);setError('');
   try{
-   const next=await api<BotScreen>(path+query,'POST',body);
+   const next=await api<BotScreen>(path+query,'POST',body,{timeout:15000});
+   pendingText.current=null;
    setView(next);setText('');
    if(focus)window.requestAnimationFrame(()=>field.current?.focus());
    else if(mobile)window.requestAnimationFrame(()=>message.current?.scrollIntoView({block:'start'}));
    if(next.buttons.flat().some(button=>button.text==='Отменить последнее действие'||button.text==='К задаче'))void refresh().catch(()=>{});
-  }catch(e){setError((e as Error).message);}
+   return true;
+  }catch(e){
+   if(e instanceof ApiError&&!e.unconfirmed&&e.status!==401)pendingText.current=null;
+   setError((e as Error).message);
+   return false;
+  }
   finally{active.current=false;setBusy(false);}
  }
  function open(screen:Entry){void run('/bot/screen',{screen},screen==='search_prompt');}
+ function sendText(){
+  if(active.current||!text.trim())return;
+  const previous=pendingText.current;
+  const id=previous?.text===text?previous.id:crypto.randomUUID();
+  pendingText.current={text,id};
+  void run('/bot/text',{text,inputId:id});
+ }
  async function sendVoice(audio:Blob,id:string){
   if(active.current)throw new Error('Дождитесь ответа бота.');
+  revision.current++;
   active.current=true;setBusy(true);setError('');
+  const controller=new AbortController();
+  const deadline=setTimeout(()=>controller.abort(),45000);
   try{
    const result=await fetch('/api/bot/voice'+query,{method:'POST',credentials:'same-origin',body:audio,
-    headers:{'Content-Type':audio.type,'X-Voice-Input-Id':id}});
+    headers:{'Content-Type':audio.type,'X-Voice-Input-Id':id},signal:controller.signal});
    const next=await result.json().catch(()=>null);
    if(!result.ok||!next)throw new Error(next?.error||'Не удалось распознать запись.');
-   setView(next as BotScreen);setText('');
+   pendingText.current=null;setView(next as BotScreen);setText('');
    if(mobile)message.current?.scrollIntoView({block:'nearest'});
-  }finally{active.current=false;setBusy(false);}
+  }catch(error){
+   if(controller.signal.aborted||error instanceof TypeError)throw new Error('Не получили ответ. Повторите отправку этой записи.');
+   throw error;
+  }finally{clearTimeout(deadline);active.current=false;setBusy(false);}
  }
  return <section className={mobile?'mobile-conversation':'panel'} aria-label="Рабочий бот">
   {!mobile&&<div className="panel-heading"><div><h2>Рабочий бот</h2><p>Найдите задачу, ответьте или запишите голосовое.</p></div><button className="button secondary" disabled={busy} onClick={()=>open('home')}>Меню</button></div>}
@@ -55,8 +83,8 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
    {view?.document&&<a className="button primary" href={'/api/reports/'+view.document.reportId+'/pdf'} target="_blank" rel="noreferrer">Скачать PDF</a>}
    {view?.links?.filter(link=>!mobile||link.text!=='Войти на сайт').map(link=><a key={link.url} className="text-button" href={link.url} target="_blank" rel="noreferrer">{link.text}</a>)}
    {view&&<div className="bot-buttons">{view.buttons.map((row,i)=><div key={i}>{row.map(b=><button disabled={busy} key={b.token} onClick={()=>void run('/bot/click',{token:b.token},b.text==='Поиск')}>{b.text}</button>)}</div>)}</div>}
-   {error&&<div className="alert error" role="alert">{error}</div>}
-   <form className="bot-compose" onSubmit={event=>{event.preventDefault();if(text.trim())void run('/bot/text',{text,inputId:crypto.randomUUID()});}}>
+   {error&&<div className="alert error" role="alert"><span>{error}</span>{!view&&<button className="button secondary" disabled={busy} onClick={()=>open(initial)}>Повторить</button>}</div>}
+   <form className="bot-compose" onSubmit={event=>{event.preventDefault();sendText();}}>
     <textarea ref={field} aria-label="Ответ боту" value={text} maxLength={4000} onChange={event=>setText(event.target.value)} placeholder="Ответ или номер задачи…"/>
     <div className="bot-compose-actions">
      {!mobile&&voice&&<VoiceRecorder disabled={busy} onSend={sendVoice}/>}
