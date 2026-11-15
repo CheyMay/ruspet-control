@@ -1,10 +1,11 @@
 import {ArrowUpRight,Bell,Menu} from 'lucide-react';
+import type {ReactNode} from 'react';
 import type {User} from '../shared/types.js';
 import {BotConversation} from './BotConversation.js';
 import {CapMark} from './CapMark.js';
 import {DeviceNotifications} from './DeviceNotifications.js';
 
-export function MobileWorkspace({user,refresh,unread}:{user:User;refresh:()=>Promise<unknown>;unread:boolean}){
+export function MobileWorkspace({user,refresh,unread,connectionNotice}:{user:User;refresh:()=>Promise<unknown>;unread:boolean;connectionNotice?:ReactNode}){
  const notices=new URLSearchParams(location.search).get('view')==='notifications';
  return <main className="mobile-workspace">
   <header className="mobile-workspace-header">
@@ -14,6 +15,7 @@ export function MobileWorkspace({user,refresh,unread}:{user:User;refresh:()=>Pro
     <a href="/?view=full" className="text-button">Полная версия <ArrowUpRight size={14}/></a>
    </div>
   </header>
+  {connectionNotice}
   <details className="mobile-device-notifications" open={notices||undefined}><summary>Установить приложение и включить push</summary><DeviceNotifications install userId={user.id}/></details>
   <BotConversation mobile initial={notices?'notices':'home'} refresh={refresh}/>
  </main>;

@@ -52,7 +52,7 @@ async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
  const task=(await db.query(`SELECT * FROM tasks WHERE id=$1${lock?' FOR UPDATE':''}`,[id])).rows[0];
  assert(task && canSee(user,task),404,'Задача не найдена или недоступна.'); return task;
 }
-export async function bootstrap(user:User,light=false) {
+export async function bootstrap(user:User,light=false,compactWorkspace=false) {
  return transaction(async db=>{
  await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
  const tasks=await visibleTasks(user,db), ids=tasks.map(t=>t.id), cfg=await config(db);
@@ -67,9 +67,9 @@ export async function bootstrap(user:User,light=false) {
  const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
  const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
  const lastTaskChange=(await db.query("SELECT max(created_at) AS at FROM task_events WHERE task_id=ANY($1) AND (kind=ANY($2) OR (data ? 'before' AND data ? 'after'))",[ids,['created','task_edited','task_completed','deadline_changed','review_submitted','review_returned','action_undone']])).rows[0].at;
- return {lastTaskChange,selection,user,users,tasks,teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
+ return {lastTaskChange,selection,user,users,tasks:compactWorkspace?tasks.map(({source_fields,...task})=>task):tasks,teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
- events:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
+ events:compactWorkspace?[]:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
  notifications:(await db.query("SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY created_at DESC LIMIT 150",[user.id,ids])).rows,
  reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=ANY($1) AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[reportScopes(user),!!cfg.config.showPlanning])).rows};
  });
@@ -293,6 +293,18 @@ export async function answerControl(...args:Parameters<typeof answerControlCore>
 
 export async function requestApproval(...args:Parameters<typeof requestApprovalCore>){const taskId=args[1];return recordTaskAction(args[0],taskId,'Запрос согласования',()=>requestApprovalCore(...args));}
 
-export async function decide(...args:Parameters<typeof decideCore>){const taskId=(await pool.query('SELECT task_id FROM approvals WHERE id=$1',[args[1]])).rows[0]?.task_id;if(!taskId)return decideCore(...args);return recordTaskAction(args[0],taskId,'Решение по согласованию',()=>decideCore(...args));}
+export async function decide(...args:Parameters<typeof decideCore>){
+ return transaction(async db=>{
+  const taskId=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[args[1]])).rows[0]?.task_id;
+  if(!taskId)return decideCore(...args);
+  return recordTaskAction(args[0],taskId,'Решение по согласованию',()=>decideCore(...args));
+ });
+}
 
-export async function answerClarification(...args:Parameters<typeof answerClarificationCore>){const taskId=(await pool.query('SELECT task_id FROM approvals WHERE id=$1',[args[1]])).rows[0]?.task_id;if(!taskId)return answerClarificationCore(...args);return recordTaskAction(args[0],taskId,'Ответ на уточнение',()=>answerClarificationCore(...args));}
+export async function answerClarification(...args:Parameters<typeof answerClarificationCore>){
+ return transaction(async db=>{
+  const taskId=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[args[1]])).rows[0]?.task_id;
+  if(!taskId)return answerClarificationCore(...args);
+  return recordTaskAction(args[0],taskId,'Ответ на уточнение',()=>answerClarificationCore(...args));
+ });
+}

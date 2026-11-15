@@ -10,4 +10,16 @@ const host=process.env.HOST||'127.0.0.1';
 if(!['127.0.0.1','localhost','::1'].includes(host))throw new Error('MVP uses demo login; bind to loopback only. Production authentication is not implemented.');
 const server=createApp().listen(Number(process.env.PORT||4310),host,()=>console.log(`РУСПЭТ: http://${host}:${process.env.PORT||4310}`));
 const stopAutomation=startAutomation(),stopTelegram=startPilot(),stopWorkDesign=startWorkDesign(),stopWebNotices=startWebTaskNotices();
-async function stop(){stopAutomation();stopTelegram();stopWorkDesign();stopWebNotices();server.close();await closeOkb();await pool.end();process.exit(0);}process.on('SIGINT',stop);process.on('SIGTERM',stop);
+let stopping=false;
+async function stop(){
+ if(stopping)return;
+ stopping=true;
+ stopAutomation();stopTelegram();stopWorkDesign();stopWebNotices();
+ const drained=new Promise<void>(resolve=>server.close(()=>resolve()));
+ const deadline=setTimeout(()=>server.closeAllConnections(),8000);
+ await drained;
+ clearTimeout(deadline);
+ await closeOkb();await pool.end();
+ process.exit(0);
+}
+process.on('SIGINT',stop);process.on('SIGTERM',stop);

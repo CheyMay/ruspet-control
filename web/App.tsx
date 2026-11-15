@@ -5,7 +5,7 @@ import {TaskCardFields,TaskEditPanel} from './TaskCardSections.js';
 import {DelegationInbox,OrgWorkspace} from './OrgWorkspace.js';
 import {TaskDelegation} from './TaskDelegation.js';
 import {CompanyReference} from './TaskComposeTools.js';
-import {canUseOkb,Okb,WorkDesign,type ProcessDraft} from './WorkDesign.js';
+import type {ProcessDraft} from './WorkDesign.js';
 import {BitrixActivity} from './BitrixActivity.js';
 import {AccessDirectory,SystemHealth,moscowTimestamp} from './SystemHealth.js';
 import {useRememberedFilter} from './remembered-filter.js';
@@ -31,7 +31,7 @@ import {CapMark} from './CapMark.js';
 import {ActionWorkspace} from './ActionWorkspace.js';
 import {BotWorkspace} from './BotWorkspace.js';
 import {actionItems} from '../shared/actions.js';
-import { lazy, Suspense, useEffect, useState, useRef, useSyncExternalStore, type ReactNode, type FormEvent } from 'react';
+import { Component, lazy, Suspense, useEffect, useState, useRef, useSyncExternalStore, type ReactNode, type FormEvent } from 'react';
 import { LayoutDashboard, ListTodo, GitPullRequest, ShieldCheck, BarChart3, Users, History, Settings2, Search, ArrowUpRight, ArrowRight, ChevronRight, Check, Clock3, X, Bell, Download, RefreshCw, Filter, MessageSquare, ChevronDown, PanelLeftClose, CircleHelp, CheckCheck, AlertCircle, Send, CalendarDays, ExternalLink, Copy, Pencil, Bookmark } from 'lucide-react';
 import { businessDay, taskQueue, elapsedToday, plannedToday } from '../shared/queues.js';
 import {hasCompanyOverview,defaultReportView,type ReportView} from '../shared/report-parameters.js';
@@ -42,9 +42,23 @@ import {Appearance} from './Appearance.js';
 import { ReviewActions,TaskEditor } from './TaskWorkflow.js';
 import { History as TaskHistory } from './History.js';
 import { Operations } from './Operations.js';
-import { api, viewAs } from './api.js';
+import {api,ApiError,loadWorkspace,viewAs} from './api.js';
 import type { Bootstrap, Task, User, TaskDetail, Rules, Approval, Event } from '../shared/types.js';
 const Reports=lazy(()=>import('./Reports.js').then(module=>({default:module.Reports})));
+const Okb=lazy(()=>import('./WorkDesign.js').then(module=>({default:module.Okb})));
+const WorkDesign=lazy(()=>import('./WorkDesign.js').then(module=>({default:module.WorkDesign})));
+const canUseOkb=(user:User)=>canOpenWorkspacePage(user,'okb');
+const retryableTaskWrite=(method:string,path:string)=>method==='POST'&&(path==='/tasks'||/^\/tasks\/[^/]+\/(comments|review|approvals)$/.test(path)||/^\/approvals\/[^/]+\/(decision|clarification)$/.test(path))
+ ||method==='PUT'&&/^\/tasks\/[^/]+$/.test(path);
+class WorkspaceSection extends Component<{label:string;children:ReactNode},{failed:boolean}>{
+ state={failed:false};
+ static getDerivedStateFromError(){return {failed:true};}
+ render(){
+  return this.state.failed?<div className="alert error" role="alert"><span>Раздел не загрузился. Проверьте связь и обновите страницу.</span>
+   <button className="button secondary" onClick={()=>location.reload()}>Обновить страницу</button></div>:
+   <Suspense fallback={<p className="panel section-loading" role="status">{this.props.label}</p>}>{this.props.children}</Suspense>;
+ }
+}
 const nav=[{id:'overview',label:'Главная',icon:LayoutDashboard},{id:'actions',label:'Нужно действие',icon:Bell},{id:'bot',label:'Рабочий бот',icon:MessageSquare},{id:'tasks',label:'Задачи',icon:ListTodo},{id:'approvals',label:'Согласования',icon:GitPullRequest},{id:'checks',label:'Качество задач',icon:ShieldCheck},{id:'reports',label:'Отчёты',icon:BarChart3},{id:'people',label:'Сотрудники',icon:Users},{id:'journal',label:'История действий',icon:History},{id:'delegations',label:'Мои поручения',icon:ListTodo},{id:'org',label:'Оргструктура',icon:Users},{id:'processes',label:'Бизнес-процессы',icon:GitPullRequest},{id:'okb',label:'ОКБ',icon:Users},{id:'settings',label:'Настройки',icon:Settings2}] as const;
 const viewingEmployee=viewAs!==null;
 const phone=window.matchMedia('(max-width: 760px)');
@@ -69,36 +83,102 @@ export function App(){
  const [taskView,setTaskView]=useState<ReportView|null>(null),[reportView,setReportView]=useState<ReportView|null>(null);
  const page=data&&!canOpenWorkspacePage(data.user,requestedPage)&&!(requestedPage==='reports'&&reportOpen)?'overview':requestedPage;
  const [selected,setSelected]=useState<string|null>(null),[detail,setDetail]=useState<TaskDetail|null>(null),[drawerTab,setDrawerTab]=useState('info'),[requestType,setRequestType]=useState<'deadline'|'completion'|null>(null),[mobileMenu,setMobileMenu]=useState(false);
+ const [detailError,setDetailError]=useState('');
  const [demo,setDemo]=useState(true),[processDraft,setProcessDraft]=useState<ProcessDraft|null>(null);
  const [editor,setEditor]=useState<{task:Task|null;copyOf?:Task;companyId?:string}|null>(null);
  const [okbCompany,setOkbCompany]=useState<string|null>(null);
  const refreshGeneration=useRef(0),detailGeneration=useRef(0),toastTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
+ const snapshot=useRef<Awaited<ReturnType<typeof loadWorkspace>>|undefined>(undefined);
+ const pendingWrites=useRef(new Map<string,string>());
+ const writeRunning=useRef(false);
+ const [connectionIssue,setConnectionIssue]=useState<'unavailable'|'expired'|null>(null);
  const lastNoticeCheck=useRef<{userId:string;at:string}|null>(null);
  const showToast=(message:string)=>{setToast(message);if(toastTimer.current)clearTimeout(toastTimer.current);toastTimer.current=setTimeout(()=>setToast(''),5000);};
- async function refresh(){const generation=++refreshGeneration.current;const d=await api<Bootstrap>('/bootstrap');if(generation===refreshGeneration.current)setData(d);return d;}
+ async function refresh(){
+  const generation=++refreshGeneration.current;
+  try{
+   const next=await loadWorkspace(snapshot.current);
+   if(generation===refreshGeneration.current){
+    if(snapshot.current&&snapshot.current.data.user.id!==next.data.user.id){closeTask();setEditor(null);pendingWrites.current.clear();}
+    snapshot.current=next;
+    setData(next.data);
+    setConnectionIssue(null);
+   }
+   return next.data;
+  }catch(error){
+   if(generation===refreshGeneration.current)setConnectionIssue(error instanceof ApiError&&error.status===401?'expired':'unavailable');
+   throw error;
+  }
+ }
  async function refreshDetail(id:string){
   const generation=detailGeneration.current;
-  const next=await api<TaskDetail>('/tasks/'+encodeURIComponent(id));
-  if(generation===detailGeneration.current)setDetail(next);
+  const next=await api<TaskDetail>('/tasks/'+encodeURIComponent(id),'GET',undefined,{timeout:10000});
+  if(generation===detailGeneration.current){setDetail(next);setDetailError('');}
  }
- async function openTask(id:string,tab='info'){const generation=++detailGeneration.current;setSelected(id);setDrawerTab(tab);setDetail(null);setError('');window.history.replaceState(null,'',`#task=${encodeURIComponent(id)}`);try{const result=await api<TaskDetail>(`/tasks/${id}`);if(generation===detailGeneration.current)setDetail(result);}catch(e){if(generation===detailGeneration.current)setError((e as Error).message);}}
+ async function openTask(id:string,tab='info'){const generation=++detailGeneration.current;setSelected(id);setDrawerTab(tab);setDetail(null);setDetailError('');setError('');window.history.replaceState(null,'',`#task=${encodeURIComponent(id)}`);try{await refreshDetail(id);}catch(e){if(generation===detailGeneration.current)setDetailError((e as Error).message);}}
  function closeTask(){detailGeneration.current++;setSelected(null);setDetail(null);setRequestType(null);window.history.replaceState(null,'',window.location.pathname+window.location.search);}
- async function login(id:string){refreshGeneration.current++;setBusy(true);setError('');try{await api('/demo/login','POST',{userId:id});closeTask();setEditor(null);setTablePage(0);setSearch('');setLinkedIds(null);setWorkDay(null);setProcessDraft(null);setOkbCompany(null);await refresh();showToast('Пользователь переключён. Права доступа применены.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
- async function act(path:string,body?:unknown,method='POST',message='Изменения сохранены',onSaved?:(id:string)=>void){
-  if(viewingEmployee)return false;
-  const generation=detailGeneration.current;
-  setBusy(true);setError('');
+ async function login(id:string){refreshGeneration.current++;setBusy(true);setError('');try{await api('/demo/login','POST',{userId:id});closeTask();setEditor(null);setTablePage(0);setSearch('');setLinkedIds(null);setWorkDay(null);setProcessDraft(null);setOkbCompany(null);pendingWrites.current.clear();snapshot.current=undefined;await refresh();showToast('Пользователь переключён. Права доступа применены.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+ async function logout(){
+  setBusy(true);
   try{
-   const result=await api<{id?:string;state?:string;count?:number}>(path,method,body);
-   await refresh().catch(e=>setError(e.message));
+   await api('/auth/logout','POST',{},{timeout:10000});
+   refreshGeneration.current++;snapshot.current=undefined;pendingWrites.current.clear();
+   setSearch('');setLinkedIds(null);setWorkDay(null);closeTask();setEditor(null);setProcessDraft(null);setOkbCompany(null);
+   setPage('overview');setError('');setConnectionIssue(null);setData(null);
+  }catch(error){setError((error as Error).message);}
+  finally{setBusy(false);}
+ }
+ async function act(path:string,body?:unknown,method='POST',message='Изменения сохранены',onSaved?:(id:string)=>void){
+  if(viewingEmployee||writeRunning.current)return false;
+  const request=retryableTaskWrite(method,path)?JSON.stringify([data?.user.id,method,path,body]):null;
+  const key=request?(pendingWrites.current.get(request)??crypto.randomUUID()):undefined;
+  if(request&&key)pendingWrites.current.set(request,key);
+  const generation=detailGeneration.current;
+  writeRunning.current=true;setBusy(true);setError('');
+  try{
+   const result=await api<{id?:string;state?:string;count?:number}>(path,method,body,key?{key,timeout:15000}:undefined);
+   if(request)pendingWrites.current.delete(request);
+   await refresh().catch(()=>{});
    if(result?.id&&onSaved)onSaved(result.id);
    else if(selected&&generation===detailGeneration.current)await refreshDetail(selected).catch(e=>setError(e.message));
    showToast(result?.state==='stale'?'Задача изменилась. Создайте новый запрос.':typeof result?.count==='number'?`Обработано уведомлений: ${result.count}`:message);
    return true;
-  }catch(e){setError((e as Error).message);return false;}
-  finally{setBusy(false);}
+  }catch(e){
+   const unconfirmed=e instanceof ApiError&&(e.unconfirmed||e.status===401);
+   if(unconfirmed)setConnectionIssue(e instanceof ApiError&&e.status===401?'expired':'unavailable');
+   if(request&&!unconfirmed)pendingWrites.current.delete(request);
+   setError(unconfirmed&&request?'Сохранение не подтверждено. Когда связь восстановится, повторите отправку в этой вкладке с теми же данными.':
+    e instanceof ApiError&&e.unconfirmed?'Результат действия неизвестен. Проверьте задачу или историю перед повтором.':(e as Error).message);
+   return false;
+  }finally{writeRunning.current=false;setBusy(false);}
  }
- useEffect(()=>{let live=true;(async()=>{try{if(viewingEmployee){setDemo(false);const d=await api<Bootstrap>('/bootstrap');if(live){setData(d);const task=new URLSearchParams(location.hash.slice(1)).get('task');if(task)void openTask(task);}return;}const mode=await api<{demo:boolean}>('/auth/mode');if(!live)return;setDemo(mode.demo);if(mode.demo){const list=await api<User[]>('/demo/users');if(!live)return;setUsers(list);try{const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}catch{await api('/demo/login','POST',{userId:'director'});const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}}else{try{await api('/auth/me');const d=await api<Bootstrap>('/bootstrap');if(live)setData(d);}catch{if(live)setData(null);}}const task=new URLSearchParams(window.location.hash.slice(1)).get('task');if(task&&live&&window.location.hash)void openTask(task);}catch(e){if(live)setError((e as Error).message);}finally{if(live)setLoading(false);}})();return()=>{live=false;};},[]);
+ useEffect(()=>{
+  let live=true;
+  async function start(){
+   try{
+    const mode=viewingEmployee?{demo:false}:await api<{demo:boolean}>('/auth/mode','GET',undefined,{timeout:10000});
+    if(!live)return;
+    setDemo(mode.demo);
+    if(mode.demo){const list=await api<User[]>('/demo/users','GET',undefined,{timeout:10000});if(!live)return;setUsers(list);}
+    let next;
+    try{next=await loadWorkspace();}
+    catch(error){
+     if(!live)return;
+     if(!(error instanceof ApiError)||error.status!==401||viewingEmployee)throw error;
+     if(!mode.demo)return;
+     await api('/demo/login','POST',{userId:'director'},{timeout:10000});
+     next=await loadWorkspace();
+    }
+    if(!live)return;
+    snapshot.current=next;setData(next.data);
+    const task=new URLSearchParams(location.hash.slice(1)).get('task');
+    if(task)void openTask(task);
+   }catch(error){if(live)setError((error as Error).message);}
+   finally{if(live)setLoading(false);}
+  }
+  void start();
+  return()=>{live=false;};
+ },[]);
  useEffect(()=>{setTablePage(0);},[filter,search,owner,branch,sort,priceFilter,fromDate,toDate]);
  useEffect(()=>{if(editor)setError('');},[editor]);
  useEffect(()=>{
@@ -118,7 +198,27 @@ export function App(){
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'){if(editor)setEditor(null);else if(requestType)setRequestType(null);else closeTask();}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[requestType,editor]);
  function go(next:Page,taskFilter?:string,view?:ReportView){if((viewingEmployee&&!previewSections.has(next))||(data&&!canOpenWorkspacePage(data.user,next)))return;if(next!=='okb')setOkbCompany(null);if(next!=='processes')setProcessDraft(null);setTablePage(0);setPage(next);setMobileMenu(false);if(next==='tasks'&&(view||!taskFilter)){setTaskView(view??null);if(!taskFilter){setOwner('all');setFilter('all');setSearch('');setFromDate('');setToDate('');setBranch('all');setPriceFilter('all');setLinkedIds(null);setWorkDay(null);}}if(next==='reports'){setReportOpen(null);setReportPdf(false);setReportView(view??null);}if(next!=='tasks'){setLinkedIds(null);setWorkDay(null);}if(taskFilter){setSearch('');setFromDate('');setToDate('');setWorkDay(null);setLinkedIds(null);setPriceFilter('all');setFilter(taskFilter);setOwner('all');setBranch('all');}}
  const userById=(id:string)=>data?.users.find(u=>u.id===id);
- useEffect(()=>{if(!data||busy||editor||requestType)return;const timer=setInterval(()=>{if(document.visibilityState==='visible'){void refresh().catch(()=>{});if(selected)void refreshDetail(selected).catch(()=>{});}},60000);return()=>clearInterval(timer);},[Boolean(data),busy,editor,requestType,selected]);
+ useEffect(()=>{
+  if(!data)return;
+  const refreshVisible=()=>{
+   if(document.visibilityState!=='visible')return;
+   void refresh().then(()=>{if(selected)return refreshDetail(selected);}).catch(()=>{});
+  };
+  const offline=()=>setConnectionIssue('unavailable');
+  const poll=()=>{if(!busy&&!editor&&!requestType&&navigator.onLine)refreshVisible();};
+  const visible=()=>{const stamp=snapshot.current?.data.serverTime;if(!stamp||Date.now()-Date.parse(stamp)>60000)poll();};
+  window.addEventListener('online',refreshVisible);
+  window.addEventListener('offline',offline);
+  document.addEventListener('visibilitychange',visible);
+  if(!navigator.onLine)offline();
+  const timer=setInterval(poll,60000);
+  return()=>{
+   clearInterval(timer);
+   window.removeEventListener('online',refreshVisible);
+   window.removeEventListener('offline',offline);
+   document.removeEventListener('visibilitychange',visible);
+  };
+ },[data?.user.id,busy,editor,requestType,selected]);
  useEffect(()=>{if(data&&!data.rules.showPlanning&&filter==='planned_today')setFilter('all');},[data?.rules.showPlanning,filter]);
  const appliedLink=useRef('');
  useEffect(()=>{if(!data)return;const marker=data.user.id+':'+location.search;if(appliedLink.current===marker)return;appliedLink.current=marker;const q=new URLSearchParams(location.search);if(q.get('view')==='registrations'&&data.user.role==='admin'){setPage('settings');return;}if(q.get('view')==='approvals'&&canOpenWorkspacePage(data.user,'approvals')){setPage('approvals');return;}if(q.get('view')==='notifications'){setPage('notifications');return;}if(q.get('view')==='reports'){if(!q.get('report')&&!canOpenWorkspacePage(data.user,'reports'))return;setPage('reports');setReportOpen(q.get('report'));setReportPdf(q.get('format')==='pdf');return;}if(q.get('view')!=='tasks')return;setPage('tasks');setTaskView(q.get('scope')==='team'?'team':q.get('scope')==='mine'||q.get('owner')===data.user.id?'mine':hasCompanyOverview(data.user)?'company':q.get('owner')&&managed(data.user)?'team':null);setTablePage(0);setSearch('');setBranch('all');setFromDate('');setToDate('');setLinkedIds(null);setFilter(q.get('filter')||'all');setOwner(q.get('owner')||'all');setWorkDay(q.get('day'));if(['deadline','title','transfers','price_desc','work_priority'].includes(q.get('sort')||''))setSort(q.get('sort')!);setPriceFilter(q.get('price')||'all');if(q.get('task'))void openTask(q.get('task')!);const reportId=q.get('report');if(reportId)void api<import('../shared/types.js').Report>('/reports/'+encodeURIComponent(reportId)).then(r=>{const subset=q.get('subset'),s=r.summary,at=new Date(s?.to||r.created_at);const ids=subset==='expected'?s?.front.expectedIds:subset==='front_closed'?s?.front.closedIds:subset==='processed'?s?.activity.processedIds:subset==='closed'?s?.activity.closedIds:subset==='remaining'?s?.front.remainingIds:subset==='tomorrow'?s?.tomorrow.ids:subset==='late'?s?.lateIds:r.rows.filter(t=>!subset||subset==='all'||taskQueue(t,at)===subset).map(t=>t.id);setLinkedIds(ids||[]);setFilter('all');}).catch(e=>setError(e.message));},[data?.user.id]);
@@ -129,12 +229,18 @@ export function App(){
  function Table({tasks,compact=false}: {tasks:Task[];compact?:boolean}) {return tasks.length?<div className="table-scroll"><table><thead><tr><th>Задача</th><th>Ответственный</th><th>Цена · категория</th><th>Крайний срок</th><th>Состояние</th>{!compact&&<th>Переносы</th>}<th aria-label="Открыть"/></tr></thead><tbody>{(compact?tasks:tasks.slice(tablePage*50,tablePage*50+50)).map(t=><tr key={t.id}><td><button className="task-link" onClick={()=>void openTask(t.id)}><span className="task-id">#{t.id} <span>{t.code}</span></span><strong>{t.title}</strong></button></td><td><div className="person"><Avatar user={userById(t.assignee_id)} small/><div>{userById(t.assignee_id)?.name}<small>{t.branch_id}</small></div></div></td><td><strong>{formatPrice(t)}</strong><small>{priceLabels[priceBand(t)]}</small></td><td className={overdue(t)?'late-date':''}>{date(t.deadline,true)}{elapsedToday(t,now)&&<small className="red-text">Время истекло сегодня</small>}{overdue(t)&&<small>Просрочено {Math.max(1,Math.round((new Date(businessDay(now)).getTime()-new Date(businessDay(t.deadline!)).getTime())/86400000))} дн.</small>}</td><td><Badge state={taskState(t)}>{taskState(t)==='overdue'?'Просрочена':undefined}</Badge></td>{!compact&&<td className="mono">{t.transfer_count||'—'}</td>}<td><button className="icon-button row-arrow" aria-label={`Открыть задачу ${t.id}`} onClick={()=>void openTask(t.id)}><ChevronRight size={17}/></button></td></tr>)}</tbody></table></div>:<Empty>Задач с выбранными условиями нет. Попробуйте изменить фильтры.</Empty>;}
  if(loading)return <div className="boot" role="status" aria-live="polite"><CapMark loading/><h2>РУСПЭТ</h2><p>Загружаем рабочее пространство…</p></div>;
  if(!data&&viewingEmployee)return <div className="boot"><h2>Просмотр недоступен</h2><p role="alert">{error}</p><a className="button secondary" href="/">Перейти в панель</a></div>;
- if(!data&&!demo)return <Login onLogin={setData}/>;
+ if(!data&&!demo&&!error)return <Login onLogin={value=>{snapshot.current=undefined;pendingWrites.current.clear();setConnectionIssue(null);setData(value);}}/>;
  if(!data)return <div className="boot"><h2>Не удалось открыть систему</h2><p>{error}</p><button onClick={()=>location.reload()}>Попробовать снова</button></div>;
+ const connectionNotice=connectionIssue&&<div className="alert error connection-notice" role="status">
+  <span>{connectionIssue==='expired'?'Сессия завершилась. Войдите снова в другой вкладке, чтобы сохранить открытые формы.':
+   `Не удалось обновить данные. Последняя синхронизация в ${new Date(data.serverTime).toLocaleTimeString('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'})} МСК.`}</span>
+  {connectionIssue==='expired'?<a className="button secondary" href="/" target="_blank" rel="noopener">Войти</a>:
+   <button className="button secondary" disabled={busy} onClick={()=>void refresh().catch(()=>{})}>Повторить</button>}
+ </div>;
  const requestedView=new URLSearchParams(location.search).get('view');
  const mobilePath=location.pathname==='/mobile'||location.pathname==='/mobile/';
  if(!viewingEmployee&&(mobilePath||compact&&data.user.role==='employee'&&location.pathname==='/'&&!location.hash&&(!requestedView||requestedView==='notifications'))){
-  return <MobileWorkspace key={data.user.id} user={data.user} refresh={refresh} unread={data.notifications.some(item=>!item.read_at)}/>;
+  return <MobileWorkspace key={data.user.id} user={data.user} refresh={refresh} unread={data.notifications.some(item=>!item.read_at)} connectionNotice={connectionNotice}/>;
  }
  const company=hasCompanyOverview(data.user),teamAllowed=managed(data.user);
  const currentScope=taskView==='company'&&!company?'mine':taskView==='team'&&!teamAllowed?'mine':taskView??defaultReportView(data.user);
@@ -151,8 +257,9 @@ export function App(){
  const title=page==='notifications'?'Уведомления':nav.find(n=>n.id===page)?.label;
  return <div className="app">
   <aside className={mobileMenu?'sidebar mobile-open':'sidebar'}><a className="brand" href="#" onClick={e=>{e.preventDefault();go('overview');}}><CapMark/><span>РУСПЭТ<small>Контроль и согласование</small></span></a><div className="workspace"><span className="workspace-mark"><CapMark/></span><div>Рабочее пространство<small>{data.managerPreview?'Учебный стенд':'Данные из Excel'}</small></div><ChevronDown size={13}/></div><p className="nav-label">УПРАВЛЕНИЕ</p><nav>{nav.filter(n=>(!viewingEmployee||previewSections.has(n.id))&&canOpenWorkspacePage(data.user,n.id)).map(({id,label,icon:Icon},i)=><button key={id} className={`${page===id?'active':''} ${i===6?'nav-divider':''}`} onClick={()=>go(id)}><Icon size={18}/><span>{label}</span>{id==='actions'&&myActionCount>0&&<b>{myActionCount}</b>}{id==='approvals'&&pending.length>0&&<b>{pending.length}</b>}</button>)}{!viewingEmployee&&data.user.root_access&&<a className="owner-planner-link" href="/time"><CalendarDays size={18}/> Личный планер</a>}{!viewingEmployee&&<a className="owner-planner-link" href="/mobile"><MessageSquare size={18}/> Мобильная версия</a>}</nav><div className="sidebar-bottom"><div className="source-status"><span className="status-dot"/><div>Рабочее пространство</div></div><div className="sidebar-note">{data.managerPreview?'Вымышленные задачи и сотрудники.':'Задачи из «руспет.xlsx».'}<br/>ПЭТ-преформы · крышки · упаковка.</div>{!viewingEmployee&&<button className="help-link" onClick={()=>go('settings')}><CircleHelp size={16}/> Настройки <ArrowUpRight size={14}/></button>}</div></aside>
-  <div className="workspace-main"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-toggle" aria-label="Меню" onClick={()=>setMobileMenu(!mobileMenu)}><PanelLeftClose size={19}/></button><span>Рабочее пространство</span><ChevronRight size={14}/><strong>{title}</strong></div><div className="topbar-right"><ThemeToggle/>{demo&&<span className="demo-label">ДЕМО</span>}<button className="icon-button notification-button" aria-label="Уведомления" onClick={()=>go('notifications')}><Bell size={19}/>{data.notifications.some(item=>!item.read_at)&&<i/>}</button><div className="user-switch"><Avatar user={data.user}/>{demo?<div><label htmlFor="persona">Демонстрационная роль</label><select id="persona" value={data.user.id} disabled={busy} onChange={e=>void login(e.target.value)}>{users.map(u=><option key={u.id} value={u.id}>{u.name} · {roles[u.role]}</option>)}</select></div>:<div><strong>{data.user.name}</strong><small>{data.user.root_access?'Владелец · root':roles[data.user.role]}</small></div>}{!demo&&!viewingEmployee&&<button className="text-button" onClick={async()=>{await api('/auth/logout','POST',{});setSearch('');setLinkedIds(null);setWorkDay(null);closeTask();setProcessDraft(null);setOkbCompany(null);setPage('overview');setData(null)}}>Выйти</button>}</div></div></header>
+  <div className="workspace-main"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-toggle" aria-label="Меню" onClick={()=>setMobileMenu(!mobileMenu)}><PanelLeftClose size={19}/></button><span>Рабочее пространство</span><ChevronRight size={14}/><strong>{title}</strong></div><div className="topbar-right"><ThemeToggle/>{demo&&<span className="demo-label">ДЕМО</span>}<button className="icon-button notification-button" aria-label="Уведомления" onClick={()=>go('notifications')}><Bell size={19}/>{data.notifications.some(item=>!item.read_at)&&<i/>}</button><div className="user-switch"><Avatar user={data.user}/>{demo?<div><label htmlFor="persona">Демонстрационная роль</label><select id="persona" value={data.user.id} disabled={busy} onChange={e=>void login(e.target.value)}>{users.map(u=><option key={u.id} value={u.id}>{u.name} · {roles[u.role]}</option>)}</select></div>:<div><strong>{data.user.name}</strong><small>{data.user.root_access?'Владелец · root':roles[data.user.role]}</small></div>}{!demo&&!viewingEmployee&&<button className="text-button" disabled={busy} onClick={()=>void logout()}>Выйти</button>}</div></div></header>
   <main>{viewingEmployee&&<div className="source-banner view-as-banner"><div><strong>Просмотр от имени {data.user.name}</strong><p>Данные и задачи доступны по роли сотрудника. Режим только для чтения.</p></div><a className="button secondary" href="/">В админскую панель</a></div>}<div className="page-heading"><div><div className="eyebrow">{page==='overview'?new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'long',year:'numeric',weekday:'long'}).format(now):'РУСПЭТ / КОНТРОЛЬ ЗАДАЧ'}</div><h1>{page==='overview'?(company?'Обзор компании':'Главная'):title}</h1><p>{({org:'Руководители команд и временные замещения.',delegations:'Выданные поручения, сроки и приёмка.',processes:'Условия создания задач и расписания повторений.',okb:'Компании, контакты и состояние работы с ними.',actions:'Кто должен ответить, принять результат или исправить замечания.',bot:'Личные чаты и действия по задачам.',overview:'Задачи, решения и отклонения — в одном рабочем пространстве.',tasks:'Сроки, исполнители и полная история каждой задачи.',approvals:'Примите решение с учётом причины, плана и предыдущих изменений.',checks:'Формальные проверки качества постановки и исполнения задач.',reports:'Сохранённые снимки состояния. Часовой пояс — Москва.',people:'Нагрузка и состояние задач в вашей области доступа.',journal:'История действий, ответов и решений без перезаписи.',settings:'Правила контроля, маршруты и состояние подключений.',notifications:'Уведомления по задачам, проверкам и решениям.'} as Record<Page,string>)[page]}</p></div><div className="heading-actions"><button className="button secondary square" aria-label="Обновить данные" disabled={busy} onClick={()=>{setBusy(true);refresh().then(()=>showToast('Данные обновлены')).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}><RefreshCw size={16}/></button>{!viewingEmployee&&page==='tasks'&&<button className="button primary" disabled={busy} onClick={()=>setEditor({task:null})}>Создать задачу</button>}{!viewingEmployee&&managed(data.user)&&page!=='reports'&&<button className="button primary" disabled={busy} onClick={()=>void act('/checks/run',undefined,'POST','Проверка завершена. Нарушения и запросы обновлены.')} ><ShieldCheck size={17}/> Запустить проверку</button>}</div></div>
+  {connectionNotice}
   {error&&<div className="alert error" role="alert"><AlertCircle size={18}/><span>{error}</span><button className="icon-button" aria-label="Скрыть ошибку" onClick={()=>setError('')}><X size={16}/></button></div>}
   {!viewingEmployee&&!selected&&<UndoAction refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}
   {page==='actions'&&<ActionWorkspace data={data} open={openTask}/>}
@@ -170,15 +277,15 @@ export function App(){
   {page==='approvals'&&data.user.role==='admin'&&!viewingEmployee&&<DirectorBatch stamp={data.serverTime}/>}
   {page==='approvals'&&<ApprovalWorkspace readOnly={viewingEmployee} data={data} render={a=><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask}/>}/>}
   {page==='checks'&&<QualityWorkspace key={data.user.id} data={data} open={(id,tab)=>void openTask(id,tab)} settings={viewingEmployee?undefined:()=>go('settings')}/>}
-  {page==='reports'&&<Suspense fallback={<p className="panel section-loading" role="status">Загружаем отчёты…</p>}><Reports key={data.user.id+':'+(reportView??'default')} initialView={reportView??undefined} initialReport={reportOpen} downloadPdf={reportPdf} readOnly={viewingEmployee} data={data} refresh={refresh}/></Suspense>}
+  {page==='reports'&&<WorkspaceSection label="Загружаем отчёты…"><Reports key={data.user.id+':'+(reportView??'default')} initialView={reportView??undefined} initialReport={reportOpen} downloadPdf={reportPdf} readOnly={viewingEmployee} data={data} refresh={refresh}/></WorkspaceSection>}
   {page==='people'&&managed(data.user)&&<Performance data={data} open={openTask}/>}
   {page==='journal'&&<Journal data={data} open={openTask}/>}
   {page==='notifications'&&<ReminderInbox readOnly={viewingEmployee} key={data.user.id} userId={data.user.id}/>}
   {page==='notifications'&&<NotificationCenter key={data.user.id} items={data.notifications} readOnly={viewingEmployee} open={openTask} refresh={refresh}/>}
-  {page==='okb'&&canUseOkb(data.user)&&<Okb key={data.user.id} initialId={okbCompany} users={data.users} openTask={id=>{setOkbCompany(null);void openTask(id);}} createTask={companyId=>{setOkbCompany(null);setEditor({task:null,companyId});}}/>}
+  {page==='okb'&&canUseOkb(data.user)&&<WorkspaceSection label="Загружаем ОКБ…"><Okb key={data.user.id} initialId={okbCompany} users={data.users} openTask={id=>{setOkbCompany(null);void openTask(id);}} createTask={companyId=>{setOkbCompany(null);setEditor({task:null,companyId});}}/></WorkspaceSection>}
   {page==='org'&&['admin','director'].includes(data.user.role)&&<OrgWorkspace roles={roles}/>}
   {page==='delegations'&&managed(data.user)&&<DelegationInbox open={openTask}/>}
-  {page==='processes'&&<WorkDesign key={data.user.id} user={data.user} users={data.users} draft={processDraft} open={openTask}/>}
+  {page==='processes'&&<WorkspaceSection label="Загружаем бизнес-процессы…"><WorkDesign key={data.user.id} user={data.user} users={data.users} draft={processDraft} open={openTask}/></WorkspaceSection>}
   {page==='settings'&&<SettingsSections key={data.user.id} userId={data.user.id} initial={data.user.role==='admin'?'staff':'notices'} initialSelection={requestedView==='registrations'?'staff':undefined} items={[
    ...(data.user.role==='admin'?[{id:'staff',label:'Сотрудники',content:<><StaffOnboarding roles={roles}/><AccessDirectory roles={roles} currentUserId={data.user.id}/></>}]:[]),
    ...(managed(data.user)?[{id:'rules',label:'Правила и согласования',content:<>{data.user.role==='admin'&&<ApprovalHierarchySettings users={data.users}/>}<Settings key={data.rulesVersion} data={data} busy={busy} act={act}/></>}]:[]),
@@ -282,7 +389,7 @@ export function App(){
   {drawerTab==='discussion'&&<>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="comment"/>}{!viewingEmployee&&detail.controls.filter(c=>['waiting','escalated'].includes(c.state)&&(data.user.id===c.assignee_id||data.user.role==='admin')).map(c=><ExplanationForm key={c.id} min={data.rules.responseMinLength} busy={busy} submit={body=>act(`/controls/${c.id}/answer`,body)}/>)}{detail.comments.map(c=><div className="comment" key={c.id}><Avatar small user={userById(c.author_id)}/><div><strong>{userById(c.author_id)?.name}<small>{date(c.created_at,true)}</small></strong><p>{c.body}</p></div></div>)}{!detail.comments.length&&<p className="muted">Комментариев пока нет.</p>}{!viewingEmployee&&<form className="comment-form" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const f=new FormData(form),body=String(f.get('body')),approvalId=String(f.get('approvalId')||'')||undefined;if(await act(`/tasks/${selected}/comments`,{body,approvalId}))form.reset();}}><label>К чему относится сообщение<select name="approvalId"><option value="">К задаче в целом</option>{detail.approvals.filter(a=>!a.canceled_at).map(a=><option key={a.id} value={a.id}>{a.type==='deadline'?'Перенос':'Закрытие'} от {date(a.created_at,true)}</option>)}</select></label><label>Комментарий<textarea name="body" required maxLength={4000} placeholder="Добавьте уточнение или результат работы…"/></label><button className="button primary" disabled={busy}><Send size={15}/>Отправить</button></form>}</>}
   {drawerTab==='history'&&<>{!viewingEmployee&&<UndoAction taskId={selected} refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}<TaskHistory showPlanning={!!data.rules.showPlanning} events={detail.events} users={data.users}/>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="history"/>}{demo&&!viewingEmployee&&data.user.role==='admin'&&<div className="demo-action"><p>Проверка защиты от устаревшего решения</p><button className="text-button" disabled={busy} onClick={()=>void act('/tasks/'+selected+'/mock-change',{expectedVersion:detail.task.version})}>Изменить описание в mock-источнике <ArrowUpRight size={14}/></button></div>}</>}
   {drawerTab==='approvals'&&<>{!viewingEmployee&&<TaskEditPanel key={selected} task={detail.task} access={detail.editAccess} users={data.users} busy={busy} act={act}/>}<div className='task-card-approvals'>{detail.approvals.map(a=><div key={a.id}><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask} inDrawer/>{detail.decisions.filter(d=>d.approval_id===a.id).map(d=><div className="decision-record" key={d.id}><Check size={14}/><div>{userById(d.actor_id)?.name} · {({approve:'Согласовал',reject:'Отказал',later:'Вернётся позже',clarify:'Запросил уточнение'} as Record<string,string>)[d.decision]}<small>{d.retracted?'Отменено · ':''}{date(d.created_at,true)}{d.comment&&` · ${d.comment}`}</small></div></div>)}</div>)}{!detail.approvals.length&&<Empty>Запросить перенос крайнего срока можно в обзоре.</Empty>}</div></>}
-    </div></>:<div className="empty">Загружаем карточку…{error&&<p role="alert">{error}</p>}</div>}</div></div>}
+    </div></>:<div className="empty">{detailError?<><p role="alert">{detailError}</p><button className="button secondary" onClick={()=>void openTask(selected,drawerTab)}>Повторить загрузку</button></>:'Загружаем карточку…'}</div>}</div></div>}
   {requestType&&detail&&<RequestModal type={requestType} task={detail.task} min={data.rules.responseMinLength} busy={busy} error={error} close={()=>setRequestType(null)} submit={async body=>{if(await act(`/tasks/${detail.task.id}/approvals`,body)){setRequestType(null);setDrawerTab('approvals');}}}/>}
   {editor&&<TaskEditor key={editor.task?.id||editor.copyOf?.id||editor.companyId||'new'} task={editor.task} copyOf={editor.copyOf} companyId={editor.companyId} canLink={canUseOkb(data.user)} availableTasks={data.tasks} showPlanning={!!data.rules.showPlanning} users={data.users} user={data.user} busy={busy} saveError={error} save={(path,body,method,message)=>act(path,body,method,message,editor.copyOf?id=>void openTask(id):undefined)} close={()=>setEditor(null)} onConditional={canUseOkb(data.user)?draft=>{setProcessDraft(draft);setEditor(null);go('processes');}:undefined}/>}
   {toast&&<div className="toast" role="status"><CheckCheck size={18}/>{toast}</div>}

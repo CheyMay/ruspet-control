@@ -13,6 +13,8 @@ main select:disabled { opacity:.6; }
 .bitrix-activity article { border-top:1px solid var(--line); padding:12px 0; }
 .bitrix-activity p { white-space:pre-wrap; overflow-wrap:anywhere; }
 .section-loading { padding:24px; }
+.connection-notice { flex-wrap:wrap; }
+.connection-notice > span { flex:1 1 16rem; }
 @media(max-width:1150px) { .queue-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @media(max-width:760px) {
  .topbar { gap:8px; }

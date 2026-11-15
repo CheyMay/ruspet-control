@@ -1,7 +1,7 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {randomBytes} from 'node:crypto';
+import {randomBytes,randomUUID} from 'node:crypto';
 import {hashPassword} from '../server/passwords.js';
 import pg from 'pg';
 import type {Server} from 'node:http';
@@ -1109,4 +1109,76 @@ test('scheduled metric rules count both presets, notify the actual manager and r
  await runProcesses(new Date(now.getTime()+1800000));
  assert.equal((await messages()).length,2);
  assert.equal((await generated()).length,1);
+});
+
+test('workspace refresh keeps authorization and avoids sending unchanged task data',async()=>{
+ const workspace=(actor:string,version?:string)=>fetch(base+'/api/bootstrap?view=workspace',{headers:{
+  Cookie:cookies.get(actor)||'','Accept-Encoding':'gzip',...(version?{'X-Ruspet-Workspace-Version':version}:{})
+ }});
+ const first=await workspace('admin');
+ assert.equal(first.status,200);
+ assert.equal(first.headers.get('content-encoding'),'gzip');
+ assert.match(first.headers.get('vary')||'',/Accept-Encoding/i);
+ assert.equal(first.headers.get('cache-control'),'no-store');
+ const version=first.headers.get('x-ruspet-workspace-version')!;
+ assert.ok(version);
+ const data=await first.json();
+ assert.deepEqual(data.events,[]);
+ assert.ok(data.tasks.every((task:object)=>!('source_fields' in task)));
+ const same=await workspace('admin',version);
+ assert.equal(same.status,204);
+ assert.ok(Date.parse(same.headers.get('x-ruspet-server-time')!)>=Date.parse(data.serverTime));
+ assert.equal((await same.text()).length,0);
+ assert.equal((await workspace('unknown',version)).status,401);
+ const employee=await workspace('anna',version);
+ assert.equal(employee.status,200);
+ assert.equal((await employee.json()).user.id,'anna');
+ const created=await request('admin','/tasks',taskInput);
+ assert.equal(created.status,201);
+ const changed=await workspace('admin',version);
+ assert.equal(changed.status,200);
+ assert.notEqual(changed.headers.get('x-ruspet-workspace-version'),version);
+ assert.ok((await changed.json()).tasks.some((task:{id:string})=>task.id===created.data.id));
+});
+
+test('repeating a task write after a lost response returns the saved result once',async()=>{
+ const post=async(actor:string,path:string,key:string,body:unknown)=>{
+  const response=await fetch(base+'/api'+path,{method:'POST',headers:{
+   Cookie:cookies.get(actor)!,'Content-Type':'application/json','Idempotency-Key':key
+  },body:JSON.stringify(body)});
+  return {status:response.status,data:await response.json()};
+ };
+ const key=randomUUID();
+ const [first,duplicate]=await Promise.all([post('admin','/tasks',key,taskInput),post('admin','/tasks',key,taskInput)]);
+ assert.equal(first.status,201);
+ assert.deepEqual(duplicate,first);
+ assert.equal((await post('admin','/tasks',key,{...taskInput,title:'Другое название'})).status,409);
+ const path=`/tasks/${first.data.id}/comments`,comment={body:'Комментарий при проверке восстановления'};
+ const commentKey=randomUUID();
+ const receipt=await post('admin',path,commentKey,comment);
+ assert.equal(receipt.status,200);
+ assert.deepEqual(await post('admin',path,commentKey,comment),receipt);
+ assert.equal((await post('anna',path,commentKey,comment)).status,200);
+ const detail=await request('admin',`/tasks/${first.data.id}`);
+ assert.deepEqual(detail.data.comments.map((entry:{author_id:string})=>entry.author_id).sort(),['admin','anna']);
+ const blocked=randomUUID();
+ await db.pool.query(`ALTER TABLE task_write_receipts ADD CONSTRAINT test_unavailable_receipt CHECK (request_id <> '${blocked}'::uuid) NOT VALID`);
+ try{
+  assert.equal((await post('admin',path,blocked,{body:'При неудачной записи квитанции'})).status,500);
+  assert.equal((await request('admin',`/tasks/${first.data.id}`)).data.comments.length,2);
+ }finally{await db.pool.query('ALTER TABLE task_write_receipts DROP CONSTRAINT test_unavailable_receipt');}
+ assert.equal((await post('admin',path,blocked,{body:'При неудачной записи квитанции'})).status,200);
+ assert.equal((await request('admin',`/tasks/${first.data.id}`)).data.comments.length,3);
+ const approval=await post('anna',`/tasks/${first.data.id}/approvals`,randomUUID(),{
+  type:'deadline',reason:'Требуется дополнительная проверка',plan:'Подготовить и проверить итоговый результат',
+  proposedDeadline:new Date(Date.now()+864000000).toISOString(),expectedVersion:1
+ });
+ assert.equal(approval.status,201);
+ const next=(await db.pool.query('SELECT route FROM approvals WHERE id=$1',[approval.data.id])).rows[0].route[0].userId;
+ const decisionKey=randomUUID(),decision={decision:'reject',comment:'Результат нужно перепроверить',expectedStep:0,expectedRevision:1};
+ const decisionPath=`/approvals/${approval.data.id}/decision`;
+ const decided=await post(next,decisionPath,decisionKey,decision);
+ assert.equal(decided.status,200);
+ assert.deepEqual(await post(next,decisionPath,decisionKey,decision),decided);
+ assert.equal((await db.pool.query('SELECT id FROM decisions WHERE approval_id=$1',[approval.data.id])).rowCount,1);
 });

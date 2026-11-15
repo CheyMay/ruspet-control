@@ -30,6 +30,8 @@ import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
 import {removeWebPush,saveWebPush,webPushEndpoint,webPushStatus,webPushSubscription,testDevicePush} from './web-push.js';
 import {printReport} from './report-print.js';
 import express from 'express';
+import compression from 'compression';
+import {constants as zlib} from 'node:zlib';
 import {verifyPassword} from './passwords.js';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { resolve } from 'node:path';
@@ -44,6 +46,7 @@ import {createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
 import {directorBatchStatus,directorBatchTasks,sendDirectorBatch} from './management-notices.js';
+import {taskWrite} from './task-write.js';
 import type { User } from '../shared/types.js';
 declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
@@ -59,6 +62,7 @@ const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 const webBotChannel=(req:express.Request)=>req.query.channel==='mobile'?'mobile':'preview';
 export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  const app=express(); app.disable('x-powered-by');
+ const compress=compression({level:3,brotli:{params:{[zlib.BROTLI_PARAM_QUALITY]:3}}});
  app.use('/api',async(req,res,next)=>{
   const target=req.get(viewAsHeader);
   if(target===undefined)return next();
@@ -109,7 +113,16 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/auth/me',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(!token)return res.status(401).json({error:'Войдите в систему.'});const user=await sessionUser(token);if(!user)return res.status(401).json({error:'Сессия завершена.'});res.json(user);});
  app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);await clearBrowserLogin(req,res);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
  app.use('/api',async(req,_res,next)=>{if(req.actor)return next();const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=await sessionUser(token);assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
- app.get('/api/bootstrap',async(req,res)=>res.json({...await service.bootstrap(req.actor),managerPreview:managerPreview||undefined}));
+ app.get('/api/bootstrap',compress,async(req,res)=>{
+  const {serverTime,...workspace}=await service.bootstrap(req.actor,false,req.query.view==='workspace');
+  const snapshot={...workspace,managerPreview:managerPreview||undefined};
+  if(req.query.view==='workspace'){
+   const version=createHash('sha256').update(JSON.stringify(snapshot)).digest('base64url');
+   res.set({'X-Ruspet-Workspace-Version':version,'X-Ruspet-Server-Time':serverTime});
+   if(req.get('X-Ruspet-Workspace-Version')===version){res.status(204).end();return;}
+  }
+  res.json({...snapshot,serverTime});
+ });
  app.get('/api/undo/last',async(req,res)=>res.json(await lastUndo(req.actor)));
  app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
  app.post('/api/undo',async(req,res)=>{const input=z.object({id:z.uuid(),confirmed:z.literal(true)}).parse(req.body);res.json(await undoLastAction(req.actor,input.id));});
@@ -225,7 +238,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const change=z.object({enabled:z.boolean(),expectedRevision:z.number().int().positive().optional()}).parse(req.body);
   await toggleProcess(req.actor,z.uuid().parse(req.params.id),change.enabled,change.expectedRevision);res.json({ok:true});
  });
- app.post('/api/tasks',async(req,res)=>res.status(201).json(await createTask(req.actor,taskInput.parse(req.body))));
+ app.post('/api/tasks',async(req,res)=>taskWrite(req,res,201,()=>createTask(req.actor,taskInput.parse(req.body))));
  app.post('/api/tasks/:id/copy',async(req,res)=>{
   const {requestId,...input}=taskInput.extend({requestId:z.uuid()}).parse(req.body);
   res.status(201).json(await createTaskCopy(req.actor,String(req.params.id),requestId,input));
@@ -253,13 +266,22 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const {decision,comment}=z.object({decision:z.enum(['approve','reject']),comment:z.string().trim().max(4000).default('')}).parse(req.body);
   res.json(await decideTaskEdit(req.actor,String(req.params.id),z.uuid().parse(req.params.requestId),decision,comment));
  });
- app.put('/api/tasks/:id',async(req,res)=>{const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));});
- app.post('/api/tasks/:id/review',async(req,res)=>{const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);res.json(await reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));});
- app.get('/api/tasks/:id',async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));
- app.post('/api/tasks/:id/comments',async(req,res)=>{const input=z.object({body:text,approvalId:z.uuid().optional()}).parse(req.body);await service.addComment(req.actor,String(req.params.id),input.body,input.approvalId);res.json({ok:true});});
- app.post('/api/tasks/:id/approvals',async(req,res)=>res.status(201).json(await service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:text,proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
- app.post('/api/approvals/:id/decision',async(req,res)=>res.json(await service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
- app.post('/api/approvals/:id/clarification',async(req,res)=>res.json(await service.answerClarification(req.actor,z.uuid().parse(req.params.id),z.object({answer:z.string().trim().min(5).max(4000)}).parse(req.body).answer)));
+ app.put('/api/tasks/:id',async(req,res)=>{
+  const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);
+  await taskWrite(req,res,200,()=>editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));
+ });
+ app.post('/api/tasks/:id/review',async(req,res)=>{
+  const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);
+  await taskWrite(req,res,200,()=>reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));
+ });
+ app.get('/api/tasks/:id',compress,async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));
+ app.post('/api/tasks/:id/comments',async(req,res)=>{
+  const input=z.object({body:text,approvalId:z.uuid().optional()}).parse(req.body);
+  await taskWrite(req,res,200,async()=>{await service.addComment(req.actor,String(req.params.id),input.body,input.approvalId);return {ok:true};});
+ });
+ app.post('/api/tasks/:id/approvals',async(req,res)=>taskWrite(req,res,201,()=>service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:text,proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
+ app.post('/api/approvals/:id/decision',async(req,res)=>taskWrite(req,res,200,()=>service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
+ app.post('/api/approvals/:id/clarification',async(req,res)=>taskWrite(req,res,200,()=>service.answerClarification(req.actor,z.uuid().parse(req.params.id),z.object({answer:z.string().trim().min(5).max(4000)}).parse(req.body).answer)));
  app.post('/api/controls/:id/answer',async(req,res)=>{await service.answerControl(req.actor,z.uuid().parse(req.params.id),z.object({reason:text,progress:text,plan:text}).parse(req.body));res.json({ok:true});});
  app.post('/api/checks/run',async(req,res)=>res.json(await service.runChecks(req.actor)));
  app.post('/api/reminders/run',async(req,res)=>res.json(await service.remind(req.actor)));
@@ -280,6 +302,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   if(!user?.root_access)return res.status(user?403:401).sendFile(resolve('server/time/locked.html'));
   res.sendFile(resolve('server/time/plan.html'));
  });
+ app.use('/assets',compress,express.static(resolve('dist/assets'),{maxAge:'1y',immutable:true}));
  app.use(express.static(resolve('dist')));app.get('/{*path}',(_req,res)=>res.sendFile(resolve('dist/index.html')));
  app.use((error:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{
   if(error instanceof ZodError)return res.status(400).json({error:'Проверьте заполнение полей.',fields:error.issues.map(i=>({path:i.path,message:i.message}))});

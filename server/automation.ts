@@ -21,6 +21,7 @@ export async function tick(now=new Date()){
  const lock=await pool.connect();let acquired=false;try{
   acquired=(await lock.query('SELECT pg_try_advisory_lock(431010) ok')).rows[0].ok;if(!acquired)return;
   await pool.query('INSERT INTO automation_runtime(id,heartbeat_at) VALUES(1,now()) ON CONFLICT(id) DO UPDATE SET heartbeat_at=now()');
+  await lock.query("DELETE FROM task_write_receipts WHERE created_at < now()-interval '7 days'");
   const cfg=(await pool.query('SELECT * FROM automation_config WHERE id=1')).rows[0];if(!cfg.enabled)return;
   const shifted=new Date(now.getTime()+10800000),weekday=shifted.getUTCDay(),workday=weekday!==0&&weekday!==6;
   const hhmm=shifted.toISOString().slice(11,16),day=businessDay(now),actor=(await pool.query("SELECT * FROM users WHERE id='admin'")).rows[0] as User;
@@ -46,7 +47,11 @@ export async function tick(now=new Date()){
    await pool.query("INSERT INTO job_runs(job_key,state,attempts,started_at) VALUES($1,'running',1,now()) ON CONFLICT(job_key) DO UPDATE SET state='running',attempts=job_runs.attempts+1,started_at=now(),finished_at=NULL,retry_at=NULL,updated_at=now()",[job.key]);
    try{const ids=await job.run();await pool.query("UPDATE job_runs SET state='done',error=NULL,report_ids=$2,finished_at=now(),updated_at=now() WHERE job_key=$1",[job.key,JSON.stringify(ids)]);}catch{await pool.query("UPDATE job_runs SET state='failed',error='Задание не завершено. Сохранённые снимки остаются в архиве. Повтор не создаёт их дубликаты.',retry_at=$2,finished_at=now(),updated_at=now() WHERE job_key=$1",[job.key,new Date(now.getTime()+60000*Math.pow(2,previous?.attempts||0)).toISOString()]);}
   }
- }finally{if(acquired)await lock.query('SELECT pg_advisory_unlock(431010)');lock.release();}
+ }finally{
+  let discard=false;
+  if(acquired)try{await lock.query('SELECT pg_advisory_unlock(431010)');}catch{discard=true;}
+  lock.release(discard);
+ }
 }
 export async function retryJob(user:User,key:string){
  assert(user.role==='admin',403,'Повтор запускает администратор.');
