@@ -42,7 +42,7 @@ import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
 import {ownerTimeRouter} from './owner-time.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
-import {createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
+import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
 import {directorBatchStatus,directorBatchTasks,sendDirectorBatch} from './management-notices.js';
@@ -83,7 +83,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   next();
  });
  app.use('/api/integrations/v1/companies/batch',express.json({limit:'512kb'})); app.use(express.json({limit:'32kb'}));
- app.post('/api/bitrix/events',express.urlencoded({extended:true,limit:'128kb',parameterLimit:1000}),express.json({limit:'128kb'}),async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await receiveBitrixEvent(req.body));});
+ app.post(['/api/bitrix/events','/integrations/bitrix/events'],express.urlencoded({extended:true,limit:'128kb',parameterLimit:1000}),express.json({limit:'128kb'}),async(req,res)=>{res.setHeader('Cache-Control','no-store');res.json(await receiveBitrixEvent(req.body));});
  const loginAttempts=new Map<string,{count:number;since:number}>();
  app.use((req,res,next)=>{res.setHeader('X-Content-Type-Options','nosniff');res.setHeader('Referrer-Policy','same-origin');res.setHeader('Content-Security-Policy',"default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; script-src 'self'; connect-src 'self'; media-src 'self' blob:; frame-ancestors 'none'; base-uri 'self'");next();});
  app.use('/api',(req,res,next)=>{res.setHeader('Cache-Control','no-store');if(!['GET','HEAD','OPTIONS'].includes(req.method)&&req.get('origin')){const allowed=[`http://${req.get('host')}`,'http://127.0.0.1:5173','http://localhost:5173'];if(process.env.PUBLIC_ORIGIN)allowed.push(new URL(process.env.PUBLIC_ORIGIN).origin);if(!allowed.includes(req.get('origin')!))return res.status(403).json({error:'Запрос с другого сайта запрещён.'});}next();});
@@ -278,6 +278,10 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.put('/api/tasks/:id',async(req,res)=>{
   const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);
   await taskWrite(req,res,200,()=>editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));
+ });
+ app.put('/api/tasks/:id/branch',async(req,res)=>{
+  const {branchId,expectedVersion}=z.object({branchId:z.string().trim().min(1).max(100),expectedVersion:z.number().int().positive()}).parse(req.body);
+  await taskWrite(req,res,200,()=>classifyTaskBranch(req.actor,String(req.params.id),branchId,expectedVersion));
  });
  app.post('/api/tasks/:id/review',async(req,res)=>{
   const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);

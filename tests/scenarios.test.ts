@@ -414,10 +414,10 @@ test('creating a copy saves the edited draft once and starts an independent task
  assert.equal((await request('director',path)).data.task.status,'completed');
 });
 
-test('launch routing sends every new request to the branch manager and adds the sales head only for watched or В-coded tasks',async()=>{
- const branch='lead-msk',sales='director',assignee='olga';
+test('launch routing uses the task branch and adds the sales head only for watched or В-coded tasks',async()=>{
+ const branch='lead-kzn',sales='director',assignee='olga',otherBranch='lead-msk';
  assert.equal((await request(sales,'/approval-hierarchy',{branchId:branch,salesId:sales},'PUT')).status,403);
- assert.equal((await request('admin','/approval-hierarchy',{branchId:branch,salesId:sales},'PUT')).status,200);
+ assert.equal((await request('admin','/approval-hierarchy',{branchId:otherBranch,salesId:sales},'PUT')).status,200);
  const make=async(title:string)=>(await request('admin','/tasks',{...taskInput,title,assigneeId:assignee})).data.id as string;
  const simple=await make('РЗМ* В названии, но не в коде'),coded=await make('РВМ* Код с В'),marked=await make('РЗМ* Отметка контроля');
  const task=(id:string)=>'/tasks/'+id;
@@ -425,6 +425,21 @@ test('launch routing sends every new request to the branch manager and adds the 
  const decide=(actor:string,id:string,decision:string,comment:string)=>request(actor,'/approvals/'+id+'/decision',{decision,comment});
  try{
   assert.equal((await request(branch,task(simple))).status,200);
+  assert.equal((await request(otherBranch,task(simple))).status,404);
+  const explicit=(await request('admin','/tasks',{...taskInput,title:'РЗМ* Задача другого филиала',assigneeId:assignee,branchId:'Москва'})).data.id;
+  assert.equal((await request(branch,task(explicit))).status,404);
+  assert.equal((await request(otherBranch,task(explicit))).status,200);
+  assert.equal((await propose(explicit)).status,201);
+  assert.equal((await request(assignee,task(explicit))).data.approvals[0].route[0].userId,otherBranch);
+  await db.pool.query("UPDATE users SET branch_id='Не указан' WHERE id=$1",[assignee]);
+  const unresolved=await make('РЗМ* Задача на сверку');
+  await db.pool.query('UPDATE users SET branch_id=$2 WHERE id=$1',[assignee,'Казань']);
+  assert.equal((await propose(unresolved)).status,422);
+  const classification={branchId:'Казань',expectedVersion:1};
+  assert.equal((await request(assignee,task(unresolved)+'/branch',classification,'PUT')).status,403);
+  assert.equal((await request('admin',task(unresolved)+'/branch',classification,'PUT')).status,200);
+  assert.equal((await request(branch,task(unresolved))).status,200);
+  assert.equal((await request(otherBranch,task(unresolved))).status,404);
   assert.equal((await request(assignee,task(marked)+'/approval-watch',{enabled:true},'PUT')).status,403);
   assert.equal((await request(sales,task(marked)+'/approval-watch',{enabled:true},'PUT')).status,200);
   assert.equal((await request(sales,task(marked))).data.approvalWatch.manual,true);

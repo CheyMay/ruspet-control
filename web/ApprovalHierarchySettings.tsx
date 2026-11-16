@@ -23,9 +23,9 @@ export function ApprovalHierarchySettings({users}:{users:User[]}){
   .map(person=><option key={person.id} value={person.id}>{person.name}</option>);
  return <form className="panel automation-settings" onSubmit={event=>{event.preventDefault();void save();}}>
   <h2>Маршрут согласования задач</h2>
-  <p className="muted">Руководитель филиала получает первый этап по всем задачам. Второй этап открывается по отметке контроля или букве В в коде.</p>
+  <p className="muted">Первый этап определяется филиалом задачи. Если у подразделения несколько руководителей, приоритет действует только внутри подразделения выбранного руководителя. Второй этап открывается по отметке контроля или букве В в коде.</p>
   <div className="editor-grid">
-   <label>Первый этап<select required value={branch} onChange={e=>setBranch(e.target.value)}><option value="">Руководитель филиала</option>{options(['branch_manager'])}</select></label>
+   <label>Приоритет в своём подразделении<select required value={branch} onChange={e=>setBranch(e.target.value)}><option value="">Руководитель филиала</option>{options(['branch_manager'])}</select></label>
    <label>Второй этап<select required value={sales} onChange={e=>setSales(e.target.value)}><option value="">Руководитель продаж или директор</option>{options(['sales_head','director'])}</select></label>
   </div>
   <div className="task-card-buttons"><button className="button primary" disabled={!loaded||busy||!branch||!sales||branch===sales}>Сохранить маршрут</button></div>

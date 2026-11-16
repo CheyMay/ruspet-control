@@ -1,6 +1,7 @@
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
-import {approvalHierarchy,approvalWatch,hierarchyRoute} from './approval-hierarchy.js';
+import {approvalHierarchy,approvalWatch,branchApprover,hierarchyRoute} from './approval-hierarchy.js';
+import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
 import {enqueueBitrixOperation} from './bitrix-live.js';
@@ -44,8 +45,10 @@ export async function visibleTasksForCompany(user:User,id:string):Promise<Task[]
  return (await pool.query<Task>("SELECT * FROM tasks WHERE company_id=$1 ORDER BY (status='completed'),updated_at DESC,id",[id])).rows.filter(t=>canSee(user,t));
 }
 export async function visibleTasks(user:User,db:Db=pool):Promise<Task[]> {
- return (await db.query<Task>(`SELECT * FROM tasks WHERE $1 OR assignee_id=$2 OR creator_id=$2 OR ($3 AND branch_id=$4)
-  ORDER BY deadline ASC NULLS LAST,id`,[globalAccess(user)||user.role==='branch_manager'&&!!user.company_branch_access,user.id,user.role==='branch_manager',user.branch_id])).rows.filter(t=>canSee(user,t));
+ return (await db.query<Task>(`SELECT * FROM tasks WHERE $1 OR assignee_id=$2 OR creator_id=$2
+  OR ($3 AND (branch_id=$4 OR starts_with(branch_id,$4 || ' / ')))
+  ORDER BY deadline ASC NULLS LAST,id`,[globalAccess(user)||user.role==='branch_manager'&&!!user.company_branch_access,user.id,
+   user.role==='branch_manager'&&!!user.branch_id&&user.branch_id!==unassignedBranch,user.branch_id])).rows.filter(t=>canSee(user,t));
 }
 async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
  if(lock)await lockDelegationChain(db,id);
@@ -61,7 +64,7 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false) {
   WHERE p.task_id=ANY($1) AND t.status='active' AND p.state='pending' AND p.task_version=t.version AND p.requester_id=t.assignee_id`,[ids])).rows;
  const controls=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const people=new Set([...tasks.flatMap(t=>[t.assignee_id,t.creator_id]),...approvals.flatMap((a:Approval)=>a.route.map(step=>step.userId))]);
- const users=(await db.query<User>('SELECT * FROM users ORDER BY name')).rows.filter(u=>globalAccess(user)||u.branch_id===user.branch_id||u.id===user.id||people.has(u.id));
+ const users=(await db.query<User>('SELECT * FROM users ORDER BY name')).rows.filter(u=>globalAccess(user)||branchCovers(user.branch_id,u.branch_id)||u.id===user.id||people.has(u.id));
  const teamIds=await teamMemberIds(user,db);
  if(light)return {user,users,tasks,teamIds,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
  const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
@@ -138,14 +141,11 @@ async function answerControlCore(user:User,id:string,input:{reason:string;progre
  });
 }
 async function routeFor(db:Db,task:Task,selectors:Rules['routes']['deadline']):Promise<Step[]> {
- if(selectors.length===1&&selectors[0]==='branchManager'){
-  const hierarchy=await approvalHierarchy(db);
-  if(hierarchy)return [{userId:hierarchy.branch_manager_id,label:'Руководитель филиала'}];
- }
  const users=(await db.query('SELECT * FROM users ORDER BY id')).rows as User[];
  const labels={branchManager:'Руководитель филиала',salesHead:'Руководитель продаж',director:'Директор',creator:'Постановщик'};
  return selectors.map(selector=>{
-  const matches=users.filter(u=>selector==='branchManager'?u.role==='branch_manager'&&u.branch_id===task.branch_id:selector==='creator'?u.id===task.creator_id:u.role===(selector==='salesHead'?'sales_head':'director'));
+  const scoped=selector==='branchManager'?branchApprover(users,task):undefined;
+  const matches=selector==='branchManager'?(scoped?[scoped]:[]):users.filter(u=>selector==='creator'?u.id===task.creator_id:u.role===(selector==='salesHead'?'sales_head':'director'));
   assert(matches.length===1,422,matches.length?`Неоднозначный маршрут: несколько согласующих «${labels[selector]}». Настройте реальные роли и филиалы.`:`Не назначен согласующий: ${labels[selector]}`);return {userId:matches[0].id,label:labels[selector]};
  });
 }

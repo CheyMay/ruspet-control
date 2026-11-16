@@ -2,6 +2,7 @@ import type {Db} from './db.js';
 import {assert,canManage,canRequest,canSee,globalAccess} from './domain.js';
 import {taskEditAccess} from './task-edit-permissions.js';
 import {canReview} from '../shared/actions.js';
+import {branchCovers} from '../shared/branches.js';
 import {parsePrice} from '../shared/pricing.js';
 import type {Approval,Task,User} from '../shared/types.js';
 import {delegationTargets,taskAssignees} from './workflow.js';
@@ -64,7 +65,8 @@ function relatedName(a:string,b:string){
 async function availableAssignees(actor:User,payload:Payload,db:Db){
  if(payload.kind==='delegate')return (await delegationTargets(actor,payload.id!,undefined,db)).people;
  if(payload.kind==='edit_assignee')return taskAssignees(actor,payload.id!,db);
- return (await db.query<User>('SELECT * FROM users WHERE id=$1 OR NOT root_access AND ($2 OR ($3 AND branch_id=$4)) ORDER BY name',[actor.id,globalAccess(actor),actor.role==='branch_manager',actor.branch_id])).rows;
+ return (await db.query<User>('SELECT * FROM users WHERE NOT root_access OR id=$1 ORDER BY name',[actor.id])).rows
+  .filter(person=>person.id===actor.id||globalAccess(actor)||actor.role==='branch_manager'&&branchCovers(actor.branch_id,person.branch_id));
 }
 export async function resolveAssignee(actor:User,payload:Payload,value:string,db:Db){
  const people=await availableAssignees(actor,payload,db);

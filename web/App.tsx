@@ -1,7 +1,7 @@
 import {StaffOnboarding} from './StaffOnboarding.js';
 import {BitrixArchiveStatus} from './BitrixArchiveStatus.js';
 import {PilotReadiness} from './PilotReadiness.js';
-import {TaskCardFields,TaskEditPanel} from './TaskCardSections.js';
+import {TaskBranchReview,TaskCardFields,TaskEditPanel} from './TaskCardSections.js';
 import {DelegationInbox,OrgWorkspace} from './OrgWorkspace.js';
 import {TaskDelegation} from './TaskDelegation.js';
 import {CompanyReference} from './TaskComposeTools.js';
@@ -15,6 +15,7 @@ import {ApprovalHierarchySettings} from './ApprovalHierarchySettings.js';
 import {UndoAction} from './UndoAction.js';
 import {ManagementProgress,ManagementPreference,Performance} from './Management.js';
 import {formatPrice,priceBand,priceLabels,taskPrice} from '../shared/pricing.js';
+import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {ReminderInbox} from './ReminderInbox.js';
 import {ManagerHome} from './ManagerHome.js';
 import {MobileWorkspace} from './MobileWorkspace.js';
@@ -70,7 +71,7 @@ const initials=(name:string)=>name.split(' ').slice(0,2).map(s=>s[0]).join('');
 const roles:Record<string,string>={director:'Директор',admin:'Администратор',sales_head:'Руководитель продаж',branch_manager:'Руководитель филиала',employee:'Менеджер'};
 const stateLabels:Record<string,string>={canceled:'Отменено',pending:'На согласовании',approved:'Согласовано',rejected:'Отказано',stale:'Требует нового запроса',active:'В работе',review:'На приёмке',completed:'Завершена',waiting:'Ждём ответа',answered:'Ответ получен',escalated:'Эскалация',resolved:'Устранено'};
 const managed=(u:User)=>u.role!=='employee';
-const allowedRequest=(u:User,t:Task)=>u.id===t.assignee_id||u.id===t.creator_id||managed(u)&&(u.role!=='branch_manager'||(u.company_branch_access||u.branch_id===t.branch_id));
+const allowedRequest=(u:User,t:Task)=>u.id===t.assignee_id||u.id===t.creator_id||managed(u)&&(u.role!=='branch_manager'||(u.company_branch_access||branchCovers(u.branch_id,t.branch_id)));
 function Empty({children}: {children:ReactNode}){return <div className="empty"><CheckCheck size={28}/><h3>Здесь пока нет записей</h3><p>{children}</p></div>;}
 function Badge({state,children}: {state:string;children?:ReactNode}) {return <span className={`badge ${state}`}><i/>{children||stateLabels[state]||state}</span>;}
 function Avatar({user,small=false}: {user?:User;small?:boolean}){return <span className={`avatar ${small?'small':''} color-${(user?.id.length||0)%4}`}>{initials(user?.name||'—')}</span>;}
@@ -367,7 +368,9 @@ export function App(){
       </section>
      </aside>
     </div>}
-    {drawerTab==='fields'&&<TaskCardFields task={detail.task} showPlanning={!!data.rules.showPlanning} date={date}/>}
+    {drawerTab==='fields'&&<>{!viewingEmployee&&['admin','director','sales_head'].includes(data.user.role)&&detail.task.branch_id===unassignedBranch&&
+     <TaskBranchReview key={detail.task.id} task={detail.task} users={data.users} busy={busy} act={act}/>}
+     <TaskCardFields task={detail.task} showPlanning={!!data.rules.showPlanning} date={date}/></>}
     {drawerTab==='links'&&<section className="task-card-section">
      {!viewingEmployee&&detail.task.company_id&&canUseOkb(data.user)&&<CompanyReference key={detail.task.company_id} id={detail.task.company_id} open={id=>{closeTask();go('okb');setOkbCompany(id);}}/>}
      <TaskDelegation readOnly={viewingEmployee} key={detail.task.id} task={detail.task} user={data.user} users={data.users} open={openTask}

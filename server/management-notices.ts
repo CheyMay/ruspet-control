@@ -5,6 +5,7 @@ import {approvalHierarchy} from './approval-hierarchy.js';
 import {teamMemberIds} from './org.js';
 import {event,visibleTasks} from './service.js';
 import {businessDay,taskQueue} from '../shared/queues.js';
+import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {workKinds} from '../shared/report-summary.js';
 import type {ManagementNotice,Task,User} from '../shared/types.js';
 
@@ -30,20 +31,21 @@ export async function directorBatchStatus(actor:User){
   FROM users u WHERE u.id=$1`,[hierarchy.sales_head_id])).rows[0];
  const rows=(await pool.query(`WITH work AS (
    SELECT e.actor_id, count(DISTINCT e.task_id)::int n FROM task_events e
-   WHERE e.kind=ANY($3) AND e.created_at >= $4 AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id)
+   WHERE e.kind=ANY($2) AND e.created_at >= $3 AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id)
    GROUP BY e.actor_id
   ), approvals_by_employee AS (
    SELECT t.assignee_id,
-    count(*) FILTER(WHERE a.state='pending' AND a.route->a.current_step->>'userId'=$2)::int AS waiting,
+    count(*) FILTER(WHERE a.state='pending' AND a.route->a.current_step->>'label'='Руководитель филиала')::int AS waiting,
     count(*) FILTER(WHERE ${ready})::int AS ready,
-    count(*) FILTER(WHERE EXISTS(SELECT 1 FROM decisions d WHERE d.approval_id=a.id AND d.actor_id=$2 AND d.decision='approve' AND d.created_at >= $4
+    count(*) FILTER(WHERE EXISTS(SELECT 1 FROM decisions d WHERE d.approval_id=a.id AND a.route->d.step_index->>'label'='Руководитель филиала'
+     AND d.decision='approve' AND d.created_at >= $3
      AND NOT EXISTS(SELECT 1 FROM decision_retractions r WHERE r.decision_id=d.id)))::int AS approved
    FROM approvals a JOIN tasks t ON t.id=a.task_id GROUP BY t.assignee_id
   ) SELECT u.id,u.name,coalesce(w.n,0)::int AS processed,coalesce(a.waiting,0)::int AS waiting,
    coalesce(a.approved,0)::int AS approved,coalesce(a.ready,0)::int AS ready
   FROM users u LEFT JOIN work w ON w.actor_id=u.id LEFT JOIN approvals_by_employee a ON a.assignee_id=u.id
   WHERE (u.role='employee' AND w.n>0) OR (a.waiting+a.ready+a.approved)>0 ORDER BY u.name`,
-  [hierarchy.sales_head_id,hierarchy.branch_manager_id,[...workKinds],day])).rows;
+  [hierarchy.sales_head_id,[...workKinds],day])).rows;
  const last=(await pool.query(`SELECT b.created_at,d.state FROM director_approval_batches b
   LEFT JOIN outbox o ON o.dedupe_key='director-batch:'||b.id::text
   LEFT JOIN telegram_delivery d ON d.outbox_ids ? o.id::text
@@ -86,10 +88,33 @@ export async function reviewInactivity(day:string,now:Date){
  return transaction(async db=>{
   const hierarchy=await approvalHierarchy(db);
   if(!hierarchy)return;
-  const branch=(await db.query<User>('SELECT * FROM users WHERE id=$1',[hierarchy.branch_manager_id])).rows[0];
-  if(branch?.role!=='branch_manager')return;
+  const managers=(await db.query<User>("SELECT * FROM users WHERE role='branch_manager' AND (branch_id<>$1 OR (id=$2 AND company_branch_access)) ORDER BY id",
+   [unassignedBranch,hierarchy.branch_manager_id])).rows;
+  const combined=new Map<string,Inactive>();
+  const byManager=new Map<string,Inactive[]>();
+  for(const manager of managers){
+   const inactive=await inactiveTeam(db,manager,day,now);
+   byManager.set(manager.id,inactive);
+   for(const person of inactive){
+    const current=combined.get(person.id);
+    combined.set(person.id,current?{...person,ids:[...new Set([...current.ids,...person.ids])]}:person);
+   }
+  }
+  const snapshot=[...combined.values()].sort((a,b)=>b.ids.length-a.ids.length||a.name.localeCompare(b.name,'ru'));
+  const saved=await db.query('INSERT INTO inactivity_reviews(day,details,captured_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',
+   [day,JSON.stringify(snapshot),now.toISOString()]);
+  if(!saved.rowCount)return;
+  for(const [id,inactive] of byManager)if(inactive.length)await managementNotice(db,id,
+   'Просрочки без действий за день\nПроверьте задачи сотрудников:\n\n'+inactivityLines(inactive),
+   'inactivity:'+day+':'+id,{kind:'inactivity'});
+ });
+}
+
+async function inactiveTeam(db:Db,branch:User,day:string,now:Date){
   const team=await teamMemberIds(branch,db);
-  const tasks=(await visibleTasks(branch,db)).filter(task=>team.includes(task.assignee_id));
+  if(!team.length)return [];
+  const teamIds=new Set(team);
+  const tasks=(await visibleTasks(branch,db)).filter(task=>teamIds.has(task.assignee_id)&&(branch.company_branch_access||branchCovers(branch.branch_id,task.branch_id)));
   const people=(await db.query<User>("SELECT * FROM users WHERE role='employee' AND id=ANY($1)",[team])).rows;
   const byId=new Map<string,Task>(tasks.map(task=>[task.id,task]));
   const actions=(await db.query<{actor_id:string;task_id:string;assignee:string|null}>(`SELECT e.actor_id,e.task_id,
@@ -98,15 +123,10 @@ export async function reviewInactivity(day:string,now:Date){
    AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id)`,
   [day+'T00:00:00+03:00',now.toISOString(),[...workKinds,'created','task_delegated'],tasks.map(task=>task.id)])).rows;
   const worked=new Set(actions.filter(e=>(e.assignee??byId.get(e.task_id)?.assignee_id)===e.actor_id).map(e=>e.actor_id));
-  const inactive:Inactive[]=people.filter(person=>!worked.has(person.id)).flatMap(person=>{
+  return people.filter(person=>!worked.has(person.id)).flatMap(person=>{
    const ids=tasks.filter(task=>task.assignee_id===person.id&&taskQueue(task,now)==='overdue').map(task=>task.id);
    return ids.length?[{id:person.id,name:person.name,ids}]:[];
   }).sort((a,b)=>b.ids.length-a.ids.length||a.name.localeCompare(b.name,'ru'));
-  const saved=await db.query('INSERT INTO inactivity_reviews(day,details,captured_at) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',
-   [day,JSON.stringify(inactive),now.toISOString()]);
-  if(saved.rowCount&&inactive.length)await managementNotice(db,branch.id,'Просрочки без действий за день\nПроверьте задачи сотрудников:\n\n'+inactivityLines(inactive),
-   'inactivity:'+day+':'+branch.id,{kind:'inactivity'});
- });
 }
 
 function inactivityLines(rows:Inactive[]){

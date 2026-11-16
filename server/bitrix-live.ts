@@ -57,13 +57,14 @@ async function applyInbound(db:Db,task:Task,next:Values,raw:Record<string,unknow
  if(next.status!==task.status&&next.status!=='active')await requireAcceptedDelegations(db,task.id);
  const owner=(await db.query('SELECT branch_id FROM users WHERE id=$1',[next.assignee_id])).rows[0];
  const changed:string[]=[...changeFields,'creator_id' as const].filter(k=>!same(localValues(task)[k],next[k]));
- if(owner.branch_id!==task.branch_id)changed.push('branch_id');if(!changed.length)return;
+ const branch=task.assignee_id===next.assignee_id?task.branch_id:owner.branch_id;
+ if(branch!==task.branch_id)changed.push('branch_id');if(!changed.length)return;
  const closed=fieldValue(raw,'CLOSED_DATE');
  const updated=(await db.query<Task>(`UPDATE tasks SET title=$2,description=$3,deadline=$4,assignee_id=$5,price=$6,status=$7,
  creator_id=$8,code=$9,branch_id=$10,version=version+1,updated_at=now(),
  transfer_count=transfer_count+CASE WHEN NOT $13 AND deadline IS DISTINCT FROM $4::timestamptz THEN 1 ELSE 0 END,
  completed_at=CASE WHEN $7='completed' THEN $11::timestamptz ELSE NULL END,source_status=$12 WHERE id=$1 RETURNING *`,
- [task.id,next.title,next.description,next.deadline,next.assignee_id,next.price,next.status,next.creator_id,next.title.split(/\s/)[0],owner.branch_id,typeof closed==='string'&&Number.isFinite(Date.parse(closed))?closed:null,String(fieldValue(raw,'STATUS')),initial])).rows[0];
+ [task.id,next.title,next.description,next.deadline,next.assignee_id,next.price,next.status,next.creator_id,next.title.split(/\s/)[0],branch,typeof closed==='string'&&Number.isFinite(Date.parse(closed))?closed:null,String(fieldValue(raw,'STATUS')),initial])).rows[0];
  await new MockTaskProvider().applyApprovedChange(db,updated,task.version);
  await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[task.id]);
  if(next.status==='completed'||task.assignee_id!==next.assignee_id)await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[task.id]);
@@ -89,7 +90,8 @@ export async function activateLiveTask(request:BitrixRequest,id:string,acceptBit
   const members=(await db.query('SELECT user_id FROM bitrix_pilot_members WHERE user_id=ANY($1)',[[remote.assignee_id,remote.creator_id]])).rows;
   assert(new Set(members.map(p=>p.user_id)).size===new Set([remote.assignee_id,remote.creator_id]).size,409,'Исполнитель и постановщик должны быть в подтверждённом составе пилота.');
   const differences:string[]=[...changeFields,'creator_id' as const].filter(k=>!same(localValues(task)[k],remote[k]));
-  const owner=(await db.query('SELECT branch_id FROM users WHERE id=$1',[remote.assignee_id])).rows[0];if(owner.branch_id!==task.branch_id)differences.push('branch_id');
+  const owner=(await db.query('SELECT branch_id FROM users WHERE id=$1',[remote.assignee_id])).rows[0];
+  if(remote.assignee_id!==task.assignee_id&&owner.branch_id!==task.branch_id)differences.push('branch_id');
   if(differences.length&&!acceptBitrix)return {activated:false,differences};
   assert(!(await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rowCount,409,'Перед активацией завершите текущие локальные согласования.');
   if(differences.length)await applyInbound(db,task,remote,raw,true);

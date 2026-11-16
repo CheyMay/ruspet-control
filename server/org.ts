@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {pool,transaction,type Db} from './db.js';
 import {assert,canManage,canSee,globalAccess} from './domain.js';
+import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import type {Task,User} from '../shared/types.js';
 
 const personId=z.string().trim().min(1).max(100);
@@ -11,7 +12,7 @@ function requireOrgAdmin(actor:User){
 export async function orgDirectory(actor:User){
  requireOrgAdmin(actor);
  const [people,substitutions]=await Promise.all([
-  pool.query('SELECT u.id,u.name,u.role,u.branch_id,r.manager_id FROM users u LEFT JOIN org_reporting r ON r.employee_id=u.id WHERE NOT u.root_access ORDER BY u.name,u.id'),
+  pool.query('SELECT u.id,u.name,u.role,u.branch_id,u.position,r.manager_id FROM users u LEFT JOIN org_reporting r ON r.employee_id=u.id WHERE NOT u.root_access ORDER BY u.name,u.id'),
   pool.query('SELECT * FROM org_substitutions WHERE revoked_at IS NULL AND ends_at>now() ORDER BY starts_at,id LIMIT 100')
  ]);
  return {people:people.rows,substitutions:substitutions.rows};
@@ -26,7 +27,7 @@ export async function setManager(actor:User,employeeId:string,input:unknown){
   assert(!employee.root_access,403,'Владелец управляется отдельно.');
   if(!managerId){await db.query('DELETE FROM org_reporting WHERE employee_id=$1',[employeeId]);return;}
   const manager=(await db.query<User>('SELECT * FROM users WHERE id=$1',[managerId])).rows[0];
-  assert(manager&&!manager.root_access&&canManage(manager),400,'Выберите сотрудника с ролью руководителя.');
+  assert(manager&&!manager.root_access,400,'Выберите сотрудника из оргструктуры.');
   assert(employee.id!==manager.id,400,'Сотрудник не может руководить собой.');
   const chain=(await db.query(`WITH RECURSIVE chain(id) AS (SELECT $1::text UNION SELECT o.manager_id
     FROM org_reporting o JOIN chain c ON c.id=o.employee_id) SELECT 1 FROM chain WHERE id=$2`,[managerId,employeeId])).rowCount;
@@ -77,7 +78,7 @@ export async function delegatesFor(manager:User,db:Db=pool){
   if(manager.role==='admin'||manager.role==='director')return true;
   if(manager.role==='sales_head')return p.role==='employee'||p.role==='branch_manager';
   return manager.role==='branch_manager'&&p.role==='employee'&&(manager.company_branch_access||
-   manager.branch_id===p.branch_id&&!!manager.branch_id&&manager.branch_id!=='Не указан');
+   branchCovers(manager.branch_id,p.branch_id));
  });
 }
 export async function teamMemberIds(manager:User,db:Db=pool):Promise<string[]>{
@@ -85,8 +86,15 @@ export async function teamMemberIds(manager:User,db:Db=pool):Promise<string[]>{
  const rows=(await db.query<{id:string}>(`WITH RECURSIVE team(id) AS (
   SELECT employee_id FROM org_reporting WHERE manager_id=$1
   UNION SELECT r.employee_id FROM org_reporting r JOIN team t ON r.manager_id=t.id
- ) SELECT t.id FROM team t JOIN users u ON u.id=t.id WHERE t.id<>$1 AND NOT u.root_access`,[manager.id])).rows;
- return rows.length?rows.map(row=>row.id):(await delegatesFor(manager,db)).map(user=>user.id);
+ ), members AS (
+  SELECT id FROM team
+  UNION SELECT t.assignee_id FROM tasks t JOIN users employee ON employee.id=t.assignee_id
+   WHERE $2 AND (t.branch_id=$3 OR starts_with(t.branch_id,$3 || ' / '))
+   AND NOT (employee.branch_id=$3 OR starts_with(employee.branch_id,$3 || ' / '))
+ ) SELECT m.id FROM members m JOIN users u ON u.id=m.id WHERE m.id<>$1 AND NOT u.root_access`,
+  [manager.id,manager.role==='branch_manager'&&!manager.company_branch_access&&!!manager.branch_id&&manager.branch_id!==unassignedBranch,manager.branch_id])).rows;
+ const delegates=await delegatesFor(manager,db);
+ return [...new Set([...rows.map(row=>row.id),...delegates.map(user=>user.id)])];
 }
 export async function myDelegations(actor:User){
  assert(canManage(actor),403,'Очередь поручений доступна руководителю.');

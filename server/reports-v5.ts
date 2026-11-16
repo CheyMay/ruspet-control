@@ -9,6 +9,7 @@ import {taskQueue,elapsedToday} from '../shared/queues.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {teamMemberIds} from './org.js';
 import type {User,Task,Event,Report} from '../shared/types.js';
+import {branchCovers} from '../shared/branches.js';
 
 const scopeForView=(u:User,view:ReportView)=>view==='mine'?'user:'+u.id:view==='team'?'team:'+u.id:'company';
 export function reportScopes(u:User,view?:ReportView){
@@ -65,7 +66,7 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   const filtered=atEnd.filter(t=>matchesParameters(t,p,to));
   const users=(await db.query('SELECT id,name,role,branch_id,position FROM users')).rows as User[];
   const eligible=users.filter(person=>(view==='mine'?person.id===u.id:!team||team.has(person.id))&&
-   (globalAccess(u)||person.id===u.id||u.role==='branch_manager'&&person.branch_id===u.branch_id||current.some(t=>t.assignee_id===person.id)));
+   (globalAccess(u)||person.id===u.id||u.role==='branch_manager'&&branchCovers(u.branch_id,person.branch_id)||current.some(t=>t.assignee_id===person.id)));
   if(p.assigneeId)assert(eligible.some(person=>person.id===p.assigneeId),403,'Исполнитель вне доступной области.');
   const owners=p.assigneeId?[p.assigneeId]:[...new Set(eligible.map(person=>person.id))];
   // Only a live report may establish today's baseline; historical reports never invent it.

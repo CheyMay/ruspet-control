@@ -2,8 +2,25 @@ import {useState} from 'react';
 import {TaskIntegration} from './TaskIntegration.js';
 import type {Task,User} from '../shared/types.js';
 import type {TaskEditAccess} from '../shared/task-edit.js';
+import {unassignedBranch} from '../shared/branches.js';
 
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
+
+export function TaskBranchReview({task,users,busy,act}:{task:Task;users:User[];busy:boolean;act:Act}){
+ const [branch,setBranch]=useState('');
+ const options=[...new Set(users.map(person=>person.branch_id).filter(id=>id&&id!==unassignedBranch))].sort((a,b)=>a.localeCompare(b,'ru'));
+ return <form className="task-card-section" onSubmit={e=>{
+  e.preventDefault();
+  if(branch)void act('/tasks/'+encodeURIComponent(task.id)+'/branch',{branchId:branch,expectedVersion:task.version},'PUT','Филиал сохранён');
+ }}>
+  <label>Филиал требует сверки<select required value={branch} onChange={e=>setBranch(e.target.value)}>
+   <option value="">Укажите филиал задачи</option>
+   {options.map(id=><option key={id} value={id}>{id}</option>)}
+  </select></label>
+  <p className="muted">От филиала зависят доступ руководителя и маршрут новых согласований.</p>
+  <button className="button secondary" disabled={busy||!branch}>Сохранить филиал</button>
+ </form>;
+}
 
 export function TaskEditPanel({task,access,users,busy,act}:{task:Task;access:TaskEditAccess;users:User[];busy:boolean;act:Act}){
  const [reason,setReason]=useState(''),[comment,setComment]=useState('');

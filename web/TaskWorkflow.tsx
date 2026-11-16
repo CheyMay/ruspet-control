@@ -4,6 +4,7 @@ import {api} from './api.js';
 import {useEffect,useState} from 'react';
 import type {Task,User} from '../shared/types.js';
 import {plannedInterval} from '../shared/analytics.js';
+import {branchCovers,unassignedBranch} from '../shared/branches.js';
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
 export function ReviewActions({task,user,busy,pending,act}: {task:Task;user:User;busy:boolean;pending:boolean;act:Act}){
  const [comment,setComment]=useState('');
@@ -26,6 +27,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
  const [title,setTitle]=useState(initial?.title??''),[description,setDescription]=useState(initial?.description??'');
  const [price,setPrice]=useState(initial?String(taskPrice(initial)??''):'');
  const [owner,setOwner]=useState(initial?.assignee_id||user.id),[deadline,setDeadline]=useState(localDate(copyOf?.deadline));
+ const [branch,setBranch]=useState(initial&&initial.branch_id!==unassignedBranch?initial.branch_id:'');
  const [companyId,setCompanyId]=useState(initial?.company_id??initialCompany??null);
  const [important,setImportant]=useState(initial?.important??null),[risk,setRisk]=useState(initial?.customer_risk??null);
  const [mode,setMode]=useState('once'),[fields,setFields]=useState(initial?.custom_fields??[]);
@@ -45,7 +47,9 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   if(risk===null&&value.customerRisk!==undefined)setRisk(value.customerRisk);
  }
  const plan=initial?plannedInterval(initial):{start:null,end:null};
- const allowedOwners=assignees.filter(person=>person.id===task?.assignee_id||user.id===task?.creator_id||['admin','director','sales_head'].includes(user.role)||person.id===user.id||user.role==='branch_manager'&&person.branch_id===user.branch_id);
+ const canSetBranch=['admin','director','sales_head'].includes(user.role);
+ const allowedOwners=assignees.filter(person=>person.id===task?.assignee_id||user.id===task?.creator_id||canSetBranch||person.id===user.id||user.role==='branch_manager'&&branchCovers(user.branch_id,person.branch_id));
+ const branches=[...new Set(users.map(person=>person.branch_id).filter(id=>id&&id!==unassignedBranch))].sort((a,b)=>a.localeCompare(b,'ru'));
  const ownerAllowed=allowedOwners.some(person=>person.id===owner);
  const heading=task?'Редактировать задачу':copyOf?'Копия задачи':'Новая задача';
  return <div className="modal-backdrop"><form className="modal task-editor task-compose-editor" role="dialog" aria-modal="true" aria-label={heading} onSubmit={async e=>{
@@ -57,7 +61,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
    return value?original&&localDate(original)===value?original:new Date(String(value)+':00+03:00').toISOString():null;
   };
   const common={price:Number(f.get('price')),title:String(f.get('title')),description:String(f.get('description')),
-   assigneeId:owner,customFields:fields,...(canLink?{companyId}:{})};
+   assigneeId:owner,customFields:fields,...(canLink?{companyId}:{}),...(canSetBranch&&branch&&mode!=='conditional'?{branchId:branch}:{})};
   const body={...common,deadline:task?task.deadline:date('deadline',copyOf?.deadline),plannedStart:showPlanning?date('plannedStart',plan.start):initial?.planned_start||null,
    plannedEnd:showPlanning?date('plannedEnd',plan.end):initial?.planned_end||null,important,customerRisk:risk,
    parentId:String(f.get('parentId')||'').trim()||null,...(task?{expectedVersion:task.version,reason:f.get('reason')}:copyOf?{requestId:copyRequestId}:{})};
@@ -81,12 +85,17 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   <label>Название<input autoFocus name="title" required minLength={3} maxLength={500} value={title} onChange={e=>setTitle(e.target.value)}/></label>
   <label>Описание<textarea name="description" maxLength={10000} value={description} onChange={e=>setDescription(e.target.value)}/></label>
   <div className="editor-grid">
-   <label>Исполнитель<select name="assigneeId" value={owner} onChange={e=>setOwner(e.target.value)}>
+   <label>Исполнитель<select name="assigneeId" value={owner} onChange={e=>{setOwner(e.target.value);setBranch(e.target.value===initial?.assignee_id&&initial.branch_id!==unassignedBranch?initial.branch_id:'');}}>
     {!ownerAllowed&&<option value={owner} disabled>{users.find(person=>person.id===owner)?.name||owner} · выберите доступного сотрудника</option>}
     {allowedOwners.map(person=><option key={person.id} value={person.id}>{person.name}</option>)}
    </select></label>
    <label>Цена задачи · ₽<input name="price" type="number" required min="0" max="999999999999.99" step="0.01" value={price} onChange={e=>setPrice(e.target.value)}/></label>
   </div>
+  {canSetBranch&&mode!=='conditional'&&<label>Филиал или подразделение задачи<select value={branch} onChange={e=>setBranch(e.target.value)}>
+   <option value="">По умолчанию · {initial?.assignee_id===owner?initial.branch_id:assignees.find(person=>person.id===owner)?.branch_id??unassignedBranch}</option>
+   {branch&&!branches.includes(branch)&&<option value={branch}>{branch}</option>}
+   {branches.map(id=><option key={id} value={id}>{id}</option>)}
+  </select></label>}
   {canLink&&<CompanyPicker value={companyId} onChange={setCompanyId}/>}
   {!task&&mode==='once'&&<><label>Крайний срок · МСК<input type="datetime-local" name="deadline" value={deadline} onChange={e=>setDeadline(e.target.value)}/></label>
    <div className="task-quick-actions">{[[0,'Сегодня, 18:00'],[1,'Завтра, 18:00'],[7,'Через неделю']].map(([days,label])=><button className="button secondary" key={days} type="button" disabled={new Date(deadlineShortcut(Number(days))+':00+03:00')<=new Date()} onClick={()=>setDeadline(deadlineShortcut(Number(days)))}>{label}</button>)}</div>

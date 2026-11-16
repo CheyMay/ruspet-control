@@ -3,7 +3,7 @@ import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import {businessDay} from '../shared/queues.js';
 
-type Person={id:string;name:string;role:string;branch_id:string;manager_id:string|null};
+type Person={id:string;name:string;role:string;branch_id:string;position:string;manager_id:string|null};
 type Substitution={id:string;manager_id:string;deputy_id:string;starts_at:string;ends_at:string};
 type Directory={people:Person[];substitutions:Substitution[]};
 type Entry={id:string;title:string;sourceId:string|null;sourceTitle:string|null;status:'active'|'review'|'completed';deadline:string|null;assignee:string;manager:string;substitution:boolean};
@@ -18,7 +18,7 @@ export function OrgWorkspace({roles}:{roles:Record<string,string>}){
   return()=>{active=false;};
  },[reload]);
  const people=data?.people??[],managers=people.filter(person=>person.role!=='employee');
- const visible=people.filter(p=>(p.name+' '+p.branch_id).toLowerCase().includes(query.trim().toLowerCase()));
+ const visible=people.filter(p=>[p.name,p.branch_id,p.position].join(' ').toLowerCase().includes(query.trim().toLowerCase()));
  const name=(id:string)=>people.find(p=>p.id===id)?.name||'Сотрудник';
  async function save(path:string,method:string,body?:unknown){
   setBusy(true);setError('');setNotice('');
@@ -34,12 +34,12 @@ export function OrgWorkspace({roles}:{roles:Record<string,string>}){
   {error&&<p className="alert error" role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
   <section className="panel automation-settings"><h2>Оргструктура</h2>
    <p className="muted">Укажите прямого руководителя. Связь применяется при делегировании. Если руководитель ещё не настроил команду, используется прежняя выборка по роли и филиалу.</p>
-   <div className="filters"><input aria-label="Найти сотрудника" placeholder="Имя или филиал" value={query} onChange={e=>setQuery(e.target.value)}/></div>
+   <div className="filters"><input aria-label="Найти сотрудника" placeholder="Имя, подразделение или должность" value={query} onChange={e=>setQuery(e.target.value)}/></div>
    {!data&&!error&&<p>Загружаем сотрудников…</p>}
-   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Роль и филиал</th><th>Прямой руководитель</th></tr></thead><tbody>
-    {visible.map(p=><tr key={p.id}><td>{p.name}</td><td>{roles[p.role]} · {p.branch_id}</td><td><select aria-label={'Руководитель для '+p.name} value={p.manager_id??''} disabled={busy}
+   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Должность</th><th>Подразделение и доступ</th><th>Прямой руководитель</th></tr></thead><tbody>
+    {visible.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.position||'—'}</td><td>{p.branch_id} · {roles[p.role]}</td><td><select aria-label={'Руководитель для '+p.name} value={p.manager_id??''} disabled={busy}
      onChange={e=>void save('/org/reporting/'+encodeURIComponent(p.id),'PUT',{managerId:e.target.value||null})}>
-      <option value="">Не назначен</option>{managers.filter(m=>m.id!==p.id).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
+      <option value="">Не назначен</option>{people.filter(m=>m.id!==p.id).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
      </select></td></tr>)}
    </tbody></table></div>
   </section>

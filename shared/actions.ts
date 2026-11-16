@@ -1,6 +1,7 @@
 import type {Bootstrap,Task,User} from './types.js';
+import {branchCovers} from './branches.js';
 export type ActionItem={key:string;kind:'answer'|'decision'|'review'|'rework'|'clarification'|'edit_permission';taskId:string;title:string;label:string;ownerId:string;since:string|null;due:string|null;mine:boolean;targetId:string};
-export function canReview(u:User,t:Task){return u.id!==t.assignee_id&&(u.id===t.creator_id||['admin','director','sales_head'].includes(u.role)||u.role==='branch_manager'&&(u.company_branch_access||u.branch_id===t.branch_id))}
+export function canReview(u:User,t:Task){return u.id!==t.assignee_id&&(u.id===t.creator_id||['admin','director','sales_head'].includes(u.role)||u.role==='branch_manager'&&(u.company_branch_access||branchCovers(u.branch_id,t.branch_id)))}
 export function actionItems(data:Bootstrap):ActionItem[]{
  const result:ActionItem[]=[],tasks=new Map(data.tasks.map(t=>[t.id,t]));
  const pending=new Set(data.approvals.filter(approval=>approval.state==='pending').map(approval=>approval.task_id));
