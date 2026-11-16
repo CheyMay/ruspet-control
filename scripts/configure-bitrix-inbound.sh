@@ -26,7 +26,7 @@ files = [secrets / name for name in ('bitrix-webhook', 'bitrix-event-token', 'bi
 portal = 'thebest.bitrix24.ru'
 fields = {
     'webhook': 'Входящий вебхук Битрикс24 (HTTPS-адрес)',
-    'eventToken': 'Токен приложения исходящего вебхука',
+    'eventToken': 'Токен приложения исходящего вебхука (Enter, чтобы пока только читать задачи)',
     'balancerUrl': 'HTTPS-адрес балансировщика Романа (/send)',
     'publicKey': 'Публичный ключ балансировщика',
     'privateKey': 'Приватный ключ балансировщика',
@@ -48,10 +48,10 @@ if len(sys.argv) > 1:
         data = json.loads(raw.decode('utf-8-sig'))
     except (ValueError, RecursionError):
         raise SystemExit('Нужен корректный JSON в UTF-8.') from None
-    required = set(fields) - {'priceField'}
+    required = set(fields) - {'eventToken', 'priceField'}
     if (not isinstance(data, dict) or not required <= data.keys() <= fields.keys()
             or any(not isinstance(value, str) for value in data.values())):
-        raise SystemExit('Нужны строковые webhook, eventToken, balancerUrl, publicKey и privateKey. priceField необязателен.')
+        raise SystemExit('Нужны строковые webhook, balancerUrl, publicKey и privateKey. eventToken и priceField необязательны.')
 else:
     data = {key: getpass(f'{prompt}: ') for key, prompt in fields.items()}
 webhook, token, gateway, public, private, price = (data.get(key, '').strip() for key in fields)
@@ -59,8 +59,10 @@ webhook = webhook.rstrip('/') + '/'
 
 if not re.fullmatch(r'https://' + re.escape(portal) + r'/rest/\d+/[A-Za-z0-9_-]+/', webhook):
     raise SystemExit('Ожидается базовый адрес входящего вебхука портала thebest.bitrix24.ru.')
-if not re.fullmatch(r'[^\s\x00-\x1f\x7f]{16,512}', token) or not public or not private:
-    raise SystemExit('Нужен токен исходящего вебхука и оба ключа балансировщика.')
+if not public or not private:
+    raise SystemExit('Нужны оба ключа балансировщика.')
+if token and not re.fullmatch(r'[^\s\x00-\x1f\x7f]{16,512}', token):
+    raise SystemExit('Проверьте токен исходящего вебхука.')
 try:
     url = urlsplit(gateway)
 except ValueError:
@@ -88,6 +90,8 @@ uid, gid = pwd.getpwnam('ruspet').pw_uid, grp.getgrnam('ruspet').gr_gid
 written = []
 try:
     for path, content in zip([*files, config], contents):
+        if path == files[1] and not token:
+            continue
         with path.open('x', encoding='utf-8') as file:
             written.append(path)
             file.write(content.rstrip('\n') + '\n')
