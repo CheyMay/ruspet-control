@@ -6,23 +6,23 @@ import {assert,AppError} from '../server/domain.js';
 import {bitrixClient,BitrixError} from '../server/bitrix-rest.js';
 import {bitrixId} from '../server/bitrix-sync.js';
 import {readEventToken,taskWebhookEvents} from '../server/bitrix-events.js';
-import {enqueueInboundSnapshot,tickInboundTasks} from '../server/bitrix-inbound.js';
+import {discoverInboundTasks,enqueueInboundSnapshot,reconcileInboundTasks,tickInboundTasks} from '../server/bitrix-inbound.js';
 
 let stopped=false;
 for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{stopped=true;});
 try{
- const {positionals,values}=parseArgs({allowPositionals:true,options:{id:{type:'string'}}});
+ const {positionals,values}=parseArgs({allowPositionals:true,options:{id:{type:'string'},since:{type:'string'},comments:{type:'boolean'}}});
  const [command]=positionals;
  const id=values.id;
- assert(positionals.length===1&&(!id||bitrixId(id)),400,'Команды: status, prepare, verify --id ID, enqueue [--id ID], watch.');
+ assert(positionals.length===1&&(!id||bitrixId(id)),400,'Команды: status, prepare, verify --id ID, enqueue [--id ID], discover --since DATE, watch.');
  const portal=process.env.BITRIX_PORTAL;
  assert(portal,400,'Укажите BITRIX_PORTAL.');
  if(command==='status'){
   const capture=(await pool.query('SELECT enabled,portal,verified_at FROM bitrix_event_capture WHERE id=1')).rows[0];
   const queue=(await pool.query(`SELECT resource,state,count(*)::int AS tasks FROM bitrix_refresh_queue
-   WHERE portal=$1 AND resource IN ('task_inbound','task_inbound_comments') GROUP BY resource,state ORDER BY resource,state`,[portal])).rows;
+   WHERE portal=$1 AND resource IN ('task_inbound','task_inbound_new','task_inbound_comments') GROUP BY resource,state ORDER BY resource,state`,[portal])).rows;
   const issues=(await pool.query(`SELECT external_id AS id,resource,error FROM bitrix_refresh_queue
-   WHERE portal=$1 AND resource IN ('task_inbound','task_inbound_comments') AND state IN ('failed','blocked') ORDER BY updated_at LIMIT 20`,[portal])).rows;
+   WHERE portal=$1 AND resource IN ('task_inbound','task_inbound_new','task_inbound_comments') AND state IN ('failed','blocked') ORDER BY updated_at LIMIT 20`,[portal])).rows;
   const conflicts=(await pool.query("SELECT count(*)::int AS n FROM bitrix_task_links WHERE NOT live_enabled AND conflict IS NOT NULL")).rows[0].n;
   console.log(JSON.stringify({capture,queue,issues,conflicts},null,2));
  }else{
@@ -49,9 +49,26 @@ try{
    assert(result.rowCount,409,'Уже настроен другой портал или режим приёма событий.');
    console.log({callback:process.env.PUBLIC_ORIGIN+'/api/bitrix/events',events:taskWebhookEvents});
   }else if(command==='enqueue'){
-   console.log({queued:await enqueueInboundSnapshot(portal,id)});
+   console.log({queued:await enqueueInboundSnapshot(portal,id,values.comments)});
+  }else if(command==='discover'){
+   assert(process.env.BITRIX_INBOUND_NEW_TASKS==='true'&&values.since,400,'Включите приём новых задач и укажите --since с часовым поясом.');
+   console.log({discovery:await discoverInboundTasks(request,values.since)});
   }else if(command==='watch'){
+   let nextSnapshot=Date.now()+10*60*1000;
    while(!stopped){
+    if(Date.now()>=nextSnapshot){
+     try{
+      console.log(JSON.stringify({reconciliation:await reconcileInboundTasks(request)}));
+      if(process.env.BITRIX_INBOUND_NEW_TASKS==='true'){
+       const since=new Date(Date.now()-2*86400000).toISOString();
+       console.log(JSON.stringify({discovery:await discoverInboundTasks(request,since)}));
+      }
+      nextSnapshot=Date.now()+60*60*1000;
+     }catch(error){
+      console.error(error instanceof AppError||error instanceof BitrixError?error.message:'Не удалось сверить список задач Битрикс24.');
+      nextSnapshot=Date.now()+5*60*1000;
+     }
+    }
     const result=await tickInboundTasks(request);
     if(result)console.log(JSON.stringify(result));
     if(!stopped&&(!result||'transient' in result&&result.transient))await delay(result?15000:4000);

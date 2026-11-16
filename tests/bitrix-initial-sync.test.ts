@@ -63,11 +63,15 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   event:'ONTASKUPDATE',data:{FIELDS_AFTER:{ID:taskId}},ts,auth});
  const auth={domain:portal,member_id:member,application_token:'fixture-event-token-only'};
  const methods:BitrixMethod[]=[];
- const inboundRequest:BitrixRequest=Object.assign(async<T>(method:BitrixMethod):Promise<T>=>{
+ const inboundRequest:BitrixRequest=Object.assign(async<T>(method:BitrixMethod,params:any):Promise<T>=>{
   methods.push(method);
   if(method==='user.get')return [{ID:'202',NAME:employee.name},{ID:'201',NAME:admin.name}] as T;
+  if(method==='tasks.task.list'){
+   return {tasks:params.filter.ID?[{id,changedDate:baseline.created_at}]:
+    [{id:'9002',responsibleId:'202',createdDate:baseline.created_at}]} as T;
+  }
   assert.equal(method,'tasks.task.get');
-  return {task:{...task(id),title:'Актуальная задача',description:'Из Битрикс24',createdDate:baseline.created_at}} as T;
+  return {task:{...task(params.taskId),title:'Актуальная задача',description:'Из Битрикс24',createdDate:baseline.created_at,changedDate:baseline.created_at}} as T;
  },{portal,mode:'webhook' as const});
  process.env.BITRIX_INBOUND_TASKS='true';
  try{
@@ -95,9 +99,34 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   assert.deepEqual(methods,['tasks.task.get','user.get']);
   assert.equal((await db.pool.query('SELECT count(*)::int AS n FROM bitrix_operations')).rows[0].n,0);
   assert.equal(await inbound.tickInboundTasks(inboundRequest),null);
+  process.env.BITRIX_INBOUND_AUTHORITATIVE='true';
+  await db.pool.query('UPDATE tasks SET price=12345 WHERE id=$1',[id]);
+  await db.pool.query('UPDATE mock_provider_tasks SET snapshot=jsonb_set(snapshot,\'{price}\',\'12345\') WHERE id=$1',[id]);
+  await inbound.enqueueInboundSnapshot(portal,id);
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,id);
+  const authoritative=(await db.pool.query('SELECT description,price,version FROM tasks WHERE id=$1',[id])).rows[0];
+  assert.equal(authoritative.description,'Из Битрикс24');
+  assert.equal(Number(authoritative.price),12345);
+  assert.equal(authoritative.version,3);
+  assert.equal((await db.pool.query('SELECT conflict FROM bitrix_task_links WHERE task_id=$1',[id])).rows[0].conflict,null);
+  await inbound.enqueueInboundSnapshot(portal,id);
+  await inbound.tickInboundTasks(inboundRequest);
+  assert.equal((await db.pool.query('SELECT version FROM tasks WHERE id=$1',[id])).rows[0].version,3);
+  assert.deepEqual(await inbound.reconcileInboundTasks(inboundRequest),{tracked:1,queued:0});
+  process.env.BITRIX_INBOUND_NEW_TASKS='true';
+  assert.deepEqual(await inbound.discoverInboundTasks(inboundRequest,'2026-11-01T00:00:00Z'),{owners:2,queued:1});
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9002');
+  assert.equal((await db.pool.query("SELECT assignee_id FROM tasks WHERE id='9002'")).rows[0].assignee_id,employee.id);
+  const add={event:'ONTASKADD',data:{FIELDS_AFTER:{ID:'9003'}},ts:'1793872801',auth};
+  assert.equal((await api(admin,'/bitrix/events',add)).body.accepted,true);
+  assert.equal((await api(admin,'/bitrix/events',add)).body.accepted,false);
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9003');
+  assert.equal((await db.pool.query("SELECT count(*)::int n FROM tasks WHERE id IN ('9002','9003')")).rows[0].n,2);
  }finally{
   delete process.env.BITRIX_INBOUND_TASKS;
-  await db.pool.query('DELETE FROM bitrix_task_links WHERE task_id=$1',[id]);
+  delete process.env.BITRIX_INBOUND_AUTHORITATIVE;
+  delete process.env.BITRIX_INBOUND_NEW_TASKS;
+  await db.pool.query("DELETE FROM bitrix_task_links WHERE task_id=ANY($1)",[[id,'9002','9003']]);
   await db.pool.query('DELETE FROM bitrix_user_links WHERE user_id=ANY($1)',[[admin.id,employee.id]]);
   await db.pool.query("DELETE FROM staff_directory WHERE source_key='fixture-inbound'");
  }

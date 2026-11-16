@@ -21,7 +21,7 @@ for unit in "$panel" "$telegram"; do
  systemctl is-active --quiet "$unit"
 done
 workers=()
-for unit in ruspet-bitrix-pilot.service ruspet-bitrix-import.service; do
+for unit in ruspet-bitrix-pilot.service ruspet-bitrix-import.service ruspet-bitrix-inbound.service; do
  if systemctl is-active --quiet "$unit"; then
   test "$(systemctl show "$unit" -p WorkingDirectory --value)" = "$app"
   workers+=("$unit")

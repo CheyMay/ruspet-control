@@ -8,13 +8,14 @@ const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value))
 export const requiredEvents=['ONTASKADD','ONTASKUPDATE','ONTASKDELETE','ONTASKCOMMENTADD',
  ...['COMPANY','CONTACT','DEAL','LEAD'].flatMap(entity=>['ADD','UPDATE','DELETE'].map(action=>'ONCRM'+entity+action)),
  'ONCRMDYNAMICITEMADD','ONCRMDYNAMICITEMUPDATE','ONCRMDYNAMICITEMDELETE','ONUSERADD','ONSONETGROUPADD','ONSONETGROUPUPDATE','ONSONETGROUPDELETE'];
+const commentEvents=['ONTASKCOMMENTADD','ONTASKCOMMENTUPDATE','ONTASKCOMMENTDELETE'];
 export function eventTargets(event:string,data:any):{resource:string;id:string}[]{
  const after=data?.FIELDS_AFTER,before=data?.FIELDS_BEFORE,fields=data?.FIELDS;
  if(['ONTASKADD','ONTASKUPDATE','ONTASKDELETE'].includes(event)){
   const id=bitrixId(after?.ID)||bitrixId(before?.ID);assert(id,400,'В событии нет ID задачи.');
   return [{resource:'task',id},{resource:'task_history',id},{resource:'task_results',id},{resource:'task_checklist',id},{resource:'task_time',id}];
  }
- if(event==='ONTASKCOMMENTADD'){
+ if(commentEvents.includes(event)){
   const id=bitrixId(after?.TASK_ID)||bitrixId(before?.TASK_ID);assert(id,400,'В событии нет TASK_ID.');
   return [{resource:'task',id},{resource:'task_comments',id}];
  }
@@ -46,7 +47,7 @@ export async function receiveBitrixEvent(input:any){
  assert(token.length>=16&&typeof supplied==='string'&&timingSafeEqual(createHash('sha256').update(token).digest(),createHash('sha256').update(supplied).digest()),403,'Неверная подпись источника событий.');
  const memberId=input.auth.member_id;
  assert(input.auth.domain===cfg.portal&&typeof memberId==='string'&&(!inbound||/^[a-f0-9]{32}$/i.test(memberId))&&(!cfg.member_id||memberId===cfg.member_id),403,'Событие другого портала отклонено.');
- assert(typeof input.event==='string'&&requiredEvents.includes(input.event),400,'Неподдерживаемое событие.');
+ assert(typeof input.event==='string'&&(inbound?taskWebhookEvents:requiredEvents).includes(input.event),400,'Неподдерживаемое событие.');
  assert(/^[0-9]{9,12}$/.test(String(input.ts)),400,'У события нет корректного времени.');
  // Never persist auth/access/refresh/application tokens from the request.
  const key=digest({event:input.event,data:input.data,ts:input.ts,handler:input.event_handler_id});
@@ -60,17 +61,25 @@ export async function receiveBitrixEvent(input:any){
   assert(pinned.rowCount,403,'Событие другого портала отклонено.');
   const known=await db.query(`SELECT 1 FROM tasks WHERE id=$1 AND source_fields->>'ID'=id
    UNION ALL SELECT 1 FROM bitrix_task_links WHERE external_id=$1::bigint AND NOT live_enabled`,[id]);
-  if(!known.rowCount)return {accepted:false,ignored:true};
+  const adopt=!known.rowCount&&input.event==='ONTASKADD'&&process.env.BITRIX_INBOUND_NEW_TASKS==='true';
+  if(!known.rowCount&&!adopt){
+   const planned=await db.query("SELECT 1 FROM bitrix_refresh_queue WHERE portal=$1 AND resource='task_inbound_new' AND external_id=$2 AND state<>'done'",[cfg.portal,id]);
+   if(!planned.rowCount)return {accepted:false,ignored:true};
+  }
   const inserted=await db.query(`INSERT INTO bitrix_event_inbox(portal,dedupe_key,event,data,occurred_at)
    VALUES($1,$2,$3,jsonb_build_object('taskId',$4::text),$5) ON CONFLICT DO NOTHING`,[cfg.portal,key,input.event,id,when]);
   if(inserted.rowCount){
-   await queueRefresh(db,cfg.portal,'task_inbound',id,input.event==='ONTASKDELETE');
-   if(input.event==='ONTASKCOMMENTADD')await queueRefresh(db,cfg.portal,'task_inbound_comments',id);
+   await queueRefresh(db,cfg.portal,known.rowCount?'task_inbound':'task_inbound_new',id,input.event==='ONTASKDELETE');
+   if(commentEvents.includes(input.event))await queueRefresh(db,cfg.portal,'task_inbound_comments',id);
+   const removed=input.event==='ONTASKCOMMENTDELETE'?bitrixId(input.data?.FIELDS_BEFORE?.ID):null;
+   if(removed)await db.query(`DELETE FROM bitrix_task_activity a USING bitrix_task_links l,bitrix_task_snapshots s
+    WHERE l.external_id=$1 AND NOT l.live_enabled AND s.external_id=l.external_id AND s.snapshot->>'chatId' IS NULL
+    AND a.task_id=l.task_id AND a.kind='comment' AND a.external_id=$2`,[id,removed]);
   }
   return {accepted:!!inserted.rowCount};
  });
 }
-export const taskWebhookEvents=['ONTASKADD','ONTASKUPDATE','ONTASKDELETE','ONTASKCOMMENTADD'];
+export const taskWebhookEvents=['ONTASKADD','ONTASKUPDATE','ONTASKDELETE',...commentEvents];
 export async function readEventToken(file:string){
  const info=await stat(file).catch(()=>null);
  assert(info?.isFile()&&(info.mode&0o077)===0,503,'Файл токена событий должен быть доступен службе с правами 0600.');
