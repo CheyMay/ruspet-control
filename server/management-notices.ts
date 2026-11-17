@@ -44,8 +44,8 @@ export async function directorBatchStatus(actor:User){
   ) SELECT u.id,u.name,coalesce(w.n,0)::int AS processed,coalesce(a.waiting,0)::int AS waiting,
    coalesce(a.approved,0)::int AS approved,coalesce(a.ready,0)::int AS ready
   FROM users u LEFT JOIN work w ON w.actor_id=u.id LEFT JOIN approvals_by_employee a ON a.assignee_id=u.id
-  WHERE (u.role='employee' AND w.n>0) OR (a.waiting+a.ready+a.approved)>0 ORDER BY u.name`,
-  [hierarchy.sales_head_id,[...workKinds],day])).rows;
+  WHERE ($4::text[] IS NULL OR u.id=ANY($4)) AND ((u.role='employee' AND w.n>0) OR (a.waiting+a.ready+a.approved)>0) ORDER BY u.name`,
+  [hierarchy.sales_head_id,[...workKinds],day,hierarchy.direct_assignee_ids])).rows;
  const last=(await pool.query(`SELECT b.created_at,d.state FROM director_approval_batches b
   LEFT JOIN outbox o ON o.dedupe_key='director-batch:'||b.id::text
   LEFT JOIN telegram_delivery d ON d.outbox_ids ? o.id::text
@@ -88,12 +88,13 @@ export async function reviewInactivity(day:string,now:Date){
  return transaction(async db=>{
   const hierarchy=await approvalHierarchy(db);
   if(!hierarchy)return;
-  const managers=(await db.query<User>("SELECT * FROM users WHERE role IN ('branch_manager','admin') AND (branch_id<>$1 OR (id=$2 AND company_branch_access)) ORDER BY id",
-   [unassignedBranch,hierarchy.branch_manager_id])).rows.filter(canApproveBranch);
+  const managers=hierarchy.direct_assignee_ids?(await db.query<User>('SELECT * FROM users WHERE id=$1',[hierarchy.sales_head_id])).rows:
+   (await db.query<User>("SELECT * FROM users WHERE role IN ('branch_manager','admin') AND (branch_id<>$1 OR (id=$2 AND company_branch_access)) ORDER BY id",
+    [unassignedBranch,hierarchy.branch_manager_id])).rows.filter(canApproveBranch);
   const combined=new Map<string,Inactive>();
   const byManager=new Map<string,Inactive[]>();
   for(const manager of managers){
-   const inactive=await inactiveTeam(db,manager,day,now);
+   const inactive=await inactiveTeam(db,manager,day,now,hierarchy.direct_assignee_ids);
    byManager.set(manager.id,inactive);
    for(const person of inactive){
     const current=combined.get(person.id);
@@ -110,11 +111,11 @@ export async function reviewInactivity(day:string,now:Date){
  });
 }
 
-async function inactiveTeam(db:Db,branch:User,day:string,now:Date){
-  const team=await teamMemberIds(branch,db);
+async function inactiveTeam(db:Db,branch:User,day:string,now:Date,scope:string[]|null){
+  const team=scope??await teamMemberIds(branch,db);
   if(!team.length)return [];
   const teamIds=new Set(team);
-  const tasks=(await visibleTasks(branch,db)).filter(task=>teamIds.has(task.assignee_id)&&(branch.company_branch_access||branchCovers(branch.branch_id,task.branch_id)));
+  const tasks=(await visibleTasks(branch,db)).filter(task=>teamIds.has(task.assignee_id)&&(scope||branch.company_branch_access||branchCovers(branch.branch_id,task.branch_id)));
   const people=(await db.query<User>("SELECT * FROM users WHERE role='employee' AND id=ANY($1)",[team])).rows;
   const byId=new Map<string,Task>(tasks.map(task=>[task.id,task]));
   const actions=(await db.query<{actor_id:string;task_id:string;assignee:string|null}>(`SELECT e.actor_id,e.task_id,
@@ -145,7 +146,7 @@ export async function morningManagementReport(day:string,reportId:string){
   do{previous.setUTCDate(previous.getUTCDate()-1);}while([0,6].includes(previous.getUTCDay()));
   const previousDay=businessDay(previous);
   const saved=(await db.query<{details:Inactive[]}>('SELECT details FROM inactivity_reviews WHERE day=$1',[previousDay])).rows[0];
-  const rows=saved?.details??[];
+  const rows=(saved?.details??[]).filter(person=>!hierarchy.direct_assignee_ids||hierarchy.direct_assignee_ids.includes(person.id));
   const body='Утренний отчёт'+(rows.length?'\n\nБез действий при просрочках за '+previousDay.split('-').reverse().join('.')+':\n'+inactivityLines(rows):
    saved?'\n\nЗа прошлый рабочий день просрочек без действий не зафиксировано.':'\n\nЗа прошлый рабочий день нет снимка активности.');
   await managementNotice(db,actor.id,body,'management-morning:'+day+':'+actor.id,{kind:'morning-report',reportId});

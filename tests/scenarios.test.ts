@@ -511,6 +511,22 @@ test('launch routing uses the task branch and adds the sales head selectively or
   assert.deepEqual(await routeUsers(ordinaryResult),[branch,sales]);
   assert.equal((await enableAll(false)).data.sales_head_approves_all,false);
   assert.deepEqual(await routeUsers(ordinaryResult),[branch,sales]);
+  const direct=await request('admin','/approval-hierarchy',{branchId:otherBranch,salesId:sales,directAssigneeIds:[assignee]},'PUT');
+  assert.equal(direct.status,200,JSON.stringify(direct.data));
+  const moved=(await request(assignee,task(ordinaryResult))).data;
+  assert.equal(moved.approvalProgress.total,1);
+  assert.deepEqual(await routeUsers(ordinaryResult),[sales]);
+  const movedApproval=moved.approvals[0];
+  const decision={decision:'approve',comment:'',expectedRevision:movedApproval.action_revision,expectedStep:0};
+  assert.equal((await request(branch,'/approvals/'+movedApproval.id+'/decision',decision)).status,403);
+  assert.equal((await request(sales,'/approvals/'+movedApproval.id+'/decision',decision)).data.state,'approved');
+  const directTask=await make('РЗМ* Один согласующий');
+  assert.equal((await propose(directTask)).status,201);
+  assert.deepEqual(await routeUsers(directTask),[sales]);
+  const outsideId=(await request('admin','/tasks',{...taskInput,title:'РЗМ* Вне контроля',assigneeId:'anna'})).data.id;
+  const shifted=await request('anna',task(outsideId)+'/approvals',{type:'deadline',reason:'Новый срок для текущей работы',plan:'Выполнить по уточнённому графику',proposedDeadline:new Date(Date.now()+9*86400000).toISOString(),expectedVersion:1});
+  assert.equal(shifted.data.applied,true);
+  assert.deepEqual((await request('anna',task(outsideId))).data.approvals,[]);
  }finally{
   await db.pool.query('DELETE FROM approval_hierarchy WHERE id=1');
   await db.pool.query('UPDATE users SET company_branch_access=false WHERE id=$1',[branch]);

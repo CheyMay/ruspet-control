@@ -52,7 +52,8 @@ async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],chann
   if(!tasks.length)return null;
 
   const stamp=now.toISOString(),byId=new Map(tasks.map(task=>[task.id,task]));
-  const {overdue,elapsedToday,today,todaySlots}=deadlinePlan(tasks,now,previous);
+  const scope=(await db.query<{direct_assignee_ids:string[]|null}>('SELECT direct_assignee_ids FROM approval_hierarchy WHERE id=1')).rows[0]?.direct_assignee_ids;
+  const {overdue,elapsedToday,today,todaySlots}=deadlinePlan(!scope||scope.includes(user.id)?tasks:[],now,previous);
   const alreadyDelivered=channel==='telegram'?'SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text':
    "SELECT 1 FROM outbox d WHERE d.task_notice IS NOT NULL AND (d.task_notice->'assignmentIds') ? o.id::text";
   const rows=(await db.query<Assignment>(`SELECT o.id,o.task_id,o.created_at FROM outbox o

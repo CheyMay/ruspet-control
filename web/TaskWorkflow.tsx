@@ -2,14 +2,15 @@ import {CompanyPicker,TaskHints,TaskTemplates,deadlineShortcut,type TemplateCont
 import {taskPrice} from '../shared/pricing.js';
 import {api} from './api.js';
 import {useEffect,useState} from 'react';
-import type {Task,User} from '../shared/types.js';
+import type {ApprovalScope,Task,User} from '../shared/types.js';
+import {canReview} from '../shared/actions.js';
 import {plannedInterval} from '../shared/analytics.js';
 import {branchCovers,unassignedBranch} from '../shared/branches.js';
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
-export function ReviewActions({task,user,busy,pending,act}: {task:Task;user:User;busy:boolean;pending:boolean;act:Act}){
+export function ReviewActions({task,user,busy,pending,act,scope}: {task:Task;user:User;busy:boolean;pending:boolean;act:Act;scope?:ApprovalScope|null}){
  const [comment,setComment]=useState('');
  const submit=user.id===task.assignee_id||user.id===task.creator_id||['admin','director','sales_head','branch_manager'].includes(user.role);
- const reviewer=user.id!==task.assignee_id&&(user.id===task.creator_id||['admin','director','sales_head','branch_manager'].includes(user.role));
+ const reviewer=canReview(user,task,scope);
  if(task.status==='completed'||task.status==='active'&&!submit||task.status==='review'&&!reviewer)return null;
  return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.'}</p><label>{task.status==='review'?'Комментарий (при возврате обязателен)':'Результат работы'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||pending||(action!=='accept'&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div>{pending&&<p className="muted">Сначала завершите активный маршрут согласования.</p>}</section>;
 }

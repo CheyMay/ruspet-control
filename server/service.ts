@@ -1,6 +1,6 @@
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
-import {approvalHierarchy,approvalWatch,branchApprover,hierarchyRoute} from './approval-hierarchy.js';
+import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,hierarchyRoute,inControlScope} from './approval-hierarchy.js';
 import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
@@ -59,6 +59,7 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false) {
  return transaction(async db=>{
  await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
  const tasks=await visibleTasks(user,db), ids=tasks.map(t=>t.id), cfg=await config(db);
+ const scope=approvalScope(await approvalHierarchy(db));
  const approvals=(await db.query('SELECT * FROM approvals WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const editRequests=(await db.query(`SELECT p.id,p.task_id,t.creator_id,p.created_at FROM task_edit_permissions p JOIN tasks t ON t.id=p.task_id
   WHERE p.task_id=ANY($1) AND t.status='active' AND p.state='pending' AND p.task_version=t.version AND p.requester_id=t.assignee_id`,[ids])).rows;
@@ -66,11 +67,11 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false) {
  const people=new Set([...tasks.flatMap(t=>[t.assignee_id,t.creator_id]),...approvals.flatMap((a:Approval)=>a.route.map(step=>step.userId))]);
  const users=(await db.query<User>('SELECT * FROM users ORDER BY name')).rows.filter(u=>globalAccess(user)||branchCovers(user.branch_id,u.branch_id)||u.id===user.id||people.has(u.id));
  const teamIds=await teamMemberIds(user,db);
- if(light)return {user,users,tasks,teamIds,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
+ if(light)return {approvalScope:scope,user,users,tasks,teamIds,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
  const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
  const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
  const lastTaskChange=(await db.query("SELECT max(created_at) AS at FROM task_events WHERE task_id=ANY($1) AND (kind=ANY($2) OR (data ? 'before' AND data ? 'after'))",[ids,['created','task_edited','task_completed','deadline_changed','review_submitted','review_returned','action_undone']])).rows[0].at;
- return {lastTaskChange,selection,user,users,tasks:compactWorkspace?tasks.map(({source_fields,...task})=>task):tasks,teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
+ return {approvalScope:scope,lastTaskChange,selection,user,users,tasks:compactWorkspace?tasks.map(({source_fields,...task})=>task):tasks,teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
  events:compactWorkspace?[]:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
  notifications:(await db.query("SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY created_at DESC LIMIT 150",[user.id,ids])).rows,
@@ -97,7 +98,7 @@ export async function detail(user:User,id:string,db:Db=pool) {
   };
  }
  return {
-  task,approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
+  task,approvalScope:approvalScope(await approvalHierarchy(db)),approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
   comments:(await db.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,
   bitrixCommentCount:(await db.query<{count:number}>("SELECT count(*)::int AS count FROM bitrix_task_activity WHERE task_id=$1 AND kind='comment'",[id])).rows[0].count,
@@ -144,7 +145,7 @@ async function addCommentCore(user:User,id:string,body:string,approvalId?:string
  });
 }
 export async function refreshTaskFindings(db:Db,task:Task,user:User){
- const findings=evaluate(task,(await config(db)).config,new Date(),await visibleTasks(user,db));
+ const findings=inControlScope(await approvalHierarchy(db),task.assignee_id)?evaluate(task,(await config(db)).config,new Date(),await visibleTasks(user,db)):[];
  await db.query("UPDATE findings SET status='resolved' WHERE task_id=$1 AND NOT(rule=ANY($2))",[task.id,findings.map(f=>f.rule)]);
  for(const f of findings)await db.query("INSERT INTO findings(id,task_id,rule,severity,message,status) VALUES($1,$2,$3,$4,$5,'open') ON CONFLICT(task_id,rule) DO UPDATE SET status='open',last_seen=now(),message=excluded.message,severity=excluded.severity",[randomUUID(),task.id,f.rule,f.severity,f.message]);
  if(!findings.some(f=>f.severity!=='info'))await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[task.id]);
@@ -154,10 +155,12 @@ export async function runChecks(user:User,now=new Date()) {
  assert(canManage(user),403,'Запуск проверки доступен руководителю.');
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(431002)');
-  const cfg=await config(db); let found=0;
+  const cfg=await config(db),hierarchy=await approvalHierarchy(db); let found=0;
   const allTasks=await visibleTasks(user,db);
-  for(const visible of allTasks) {
-   const task=await taskFor(db,visible.id,user,true), findings=evaluate(task,cfg.config,now,allTasks); found+=findings.length;
+  for(const visible of allTasks.filter(task=>inControlScope(hierarchy,task.assignee_id))) {
+   const task=await taskFor(db,visible.id,user,true);
+   if(!inControlScope(hierarchy,task.assignee_id))continue;
+   const findings=evaluate(task,cfg.config,now,allTasks); found+=findings.length;
    await db.query("UPDATE findings SET status='resolved' WHERE task_id=$1 AND NOT(rule=ANY($2))",[task.id,findings.map(f=>f.rule)]);
    for(const f of findings) await db.query("INSERT INTO findings(id,task_id,rule,severity,message,status) VALUES($1,$2,$3,$4,$5,'open') ON CONFLICT(task_id,rule) DO UPDATE SET status='open',last_seen=now(),message=excluded.message,severity=excluded.severity",[randomUUID(),task.id,f.rule,f.severity,f.message]);
    if(findings.some(f=>f.severity!=='info')) {
@@ -201,6 +204,14 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   const cfg=await config(db); assert(input.reason.trim().length>=cfg.config.responseMinLength&&input.plan.trim().length>=cfg.config.responseMinLength,400,`Причина и план: минимум ${cfg.config.responseMinLength} символов.`);
   if(input.type==='deadline') { assert(input.proposedDeadline&&new Date(input.proposedDeadline)>new Date(),400,'Новый срок должен быть в будущем.'); assert(new Date(input.proposedDeadline).getTime()!==new Date(task.deadline||0).getTime(),400,'Новый срок совпадает с текущим.'); }
   const hierarchy=await approvalHierarchy(db,true);
+  if(!inControlScope(hierarchy,task.assignee_id)){
+   assert(input.type==='deadline',422,'Передайте результат на приёмку в карточке задачи.');
+   const next=(await db.query<Task>('UPDATE tasks SET deadline=$2,transfer_count=transfer_count+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.proposedDeadline])).rows[0];
+   await adapters.tasks.applyApprovedChange(db,next,task.version);
+   await event(db,id,user.id,'deadline_changed','Изменён крайний срок',{before:task,after:next,reason:input.reason,plan:input.plan});
+   await refreshTaskFindings(db,next,user);
+   return {id,applied:true};
+  }
   const route=hierarchy?await hierarchyRoute(db,hierarchy,task,user.id,input.type):await routeFor(db,task,cfg.config.routes[input.type]);
   assert(route.length>0,422,'Маршрут не настроен.'); assert(!route.some(s=>s.userId===user.id),422,'Согласовать собственный запрос нельзя.');
   const approvalId=randomUUID();
@@ -219,6 +230,8 @@ async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'
   assert(input.expectedRevision===undefined?a.action_revision===1:input.expectedRevision===a.action_revision,409,'Согласование изменилось после отмены. Откройте актуальную карточку.');
   assert(input.expectedStep===undefined||input.expectedStep===a.current_step,409,'Этот этап уже завершён. Откройте актуальное решение.');
   assert(a.state==='pending',409,'Решение уже принято или запрос устарел.');
+  const hierarchy=await approvalHierarchy(db);
+  if(hierarchy?.direct_assignee_ids)assert(inControlScope(hierarchy,task.assignee_id)&&user.id===hierarchy.sales_head_id,403,'Запрос недоступен в текущем маршруте согласования.');
   assert(a.route[a.current_step].userId===user.id,403,'Сейчас решение принимает другой согласующий.');
   assert(!a.clarification_requested_at||a.clarification_answered_at,409,'Сначала дождитесь ответа на уточнение.');
   if(a.task_version!==task.version) {
@@ -255,7 +268,7 @@ async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'
   } else if(a.current_step<a.route.length-1) {
    await db.query('UPDATE approvals SET current_step=current_step+1,deferred_until=NULL WHERE id=$1',[id]);
    await event(db,task.id,user.id,'step_approved',`Этап согласован: ${a.route[a.current_step].label}`,{approvalId:id,comment:input.comment});
-   const next=a.route[a.current_step+1],hierarchy=await approvalHierarchy(db);
+   const next=a.route[a.current_step+1];
    if(next.userId!==hierarchy?.sales_head_id)await notify(db,task.id,next.userId,`Требуется ваше решение по задаче #${task.id}`,`approval:${id}:${a.current_step+1}`);
   } else {
    if(a.type==='deadline') assert(a.proposed_deadline&&new Date(a.proposed_deadline)>new Date(),409,'Предложенный срок уже прошёл. Откажите и создайте новый запрос.');
@@ -294,11 +307,13 @@ export async function remind(user:User,now=new Date()) {
  assert(canManage(user),403,'Недостаточно прав.');
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(431002)'); const cfg=await config(db), ids=(await visibleTasks(user,db)).map(t=>t.id); let count=0;
+  const hierarchy=await approvalHierarchy(db);
   const controls=(await db.query("SELECT * FROM control_requests WHERE task_id=ANY($1) AND state='waiting' AND due_at<=$2",[ids,now])).rows as ControlRequest[];
   for(const candidate of controls) {
    const task=await taskFor(db,candidate.task_id,user,true);
+   if(!inControlScope(hierarchy,task.assignee_id))continue;
    const c=(await db.query("SELECT * FROM control_requests WHERE id=$1 AND state='waiting' AND due_at<=$2 FOR UPDATE",[candidate.id,now])).rows[0] as ControlRequest|undefined;if(!c)continue; const escalated=c.reminders>=cfg.config.maxReminders;
-   const recipient=escalated?(await routeFor(db,task,['branchManager']))[0].userId:c.assignee_id;
+   const recipient=escalated?(hierarchy?.direct_assignee_ids?hierarchy.sales_head_id:(await routeFor(db,task,['branchManager']))[0].userId):c.assignee_id;
    await notify(db,c.task_id,recipient,`${escalated?'Эскалация руководителю':'Напоминание'}: нет объяснения по задаче #${c.task_id}`,`remind:${c.id}:${c.reminders}`);
    await db.query("UPDATE control_requests SET state=$2,reminders=reminders+1,due_at=$3 WHERE id=$1",[c.id,escalated?'escalated':'waiting',new Date(now.getTime()+cfg.config.reminderMinutes*60000)]);
    await event(db,c.task_id,user.id,escalated?'escalated':'reminder',escalated?'Отсутствие ответа передано руководителю':'Отправлено тестовое напоминание');count++;

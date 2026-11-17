@@ -2,6 +2,7 @@ import type {Db} from './db.js';
 import {assert,canManage,canRequest,canSee,globalAccess} from './domain.js';
 import {taskEditAccess} from './task-edit-permissions.js';
 import {canReview} from '../shared/actions.js';
+import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 import {branchCovers} from '../shared/branches.js';
 import {parsePrice} from '../shared/pricing.js';
 import type {Approval,Task,User} from '../shared/types.js';
@@ -135,14 +136,15 @@ export async function prepareVoiceAction(actor:User,intent:VoiceIntent,db:Db){
  const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[intent.id])).rows[0];
  assert(task&&canSee(actor,task),404,'Задача не найдена или недоступна. Проверьте номер в «Мои задачи».');
  let kind=intent.kind;
- if(kind==='submit'&&task.status==='review'&&canReview(actor,task))kind='accept';
+ const reviewer=task.status==='review'&&canReview(actor,task,approvalScope(await approvalHierarchy(db)));
+ if(kind==='submit'&&reviewer)kind='accept';
  const payload:Payload={op:'form',id:task.id,kind,version:task.version};
  const pending=(await db.query<Approval>("SELECT * FROM approvals WHERE task_id=$1 AND state='pending' ORDER BY created_at DESC LIMIT 1",[task.id])).rows[0];
  if(kind==='submit'||kind==='deadline'){
   assert(canRequest(actor,task)&&task.status==='active',409,'Действие доступно по задаче в работе.');
   assert(!pending,409,'Сначала завершите активное согласование.');
  }
- if(kind==='accept'||kind==='return')assert(task.status==='review'&&canReview(actor,task)&&!pending,409,'Результат должен ожидать вашей приёмки.');
+ if(kind==='accept'||kind==='return')assert(reviewer&&!pending,409,'Результат должен ожидать вашей приёмки.');
  if(['approve','reject','clarify','clarification'].includes(kind)){
   assert(pending,409,'Согласование уже завершено или ещё не началось.');
   const waiting=!!pending.clarification_requested_at&&!pending.clarification_answered_at;

@@ -412,7 +412,7 @@ export function App(){
       <button type="button" className="button primary" onClick={()=>setDrawerTab('approvals')}>Открыть приёмку</button>
      </div>}
      {!viewingEmployee&&managed(data.user)&&data.user.id!==detail.task.assignee_id&&<p className="manager-action-note">Действие за исполнителя будет записано от вашего имени.</p>}
-     {!viewingEmployee&&<ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} busy={busy} pending={detail.approvals.some(a=>a.state==='pending')} act={act}/>}
+     {!viewingEmployee&&<ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} scope={detail.approvalScope} busy={busy} pending={detail.approvals.some(a=>a.state==='pending')} act={act}/>}
      {detail.submissions.length?<section className="submission-history">{detail.submissions.map(s=><article key={s.id}>
       <strong>{s.restored_from?'Приёмка восстановлена после отмены':s.automatic?'Автоматическая сдача после приёмки поручений':'Сдача №'+s.round} · {({review:'Ожидает приёмки',returned:'Возвращена',accepted:'Принята'})[s.state]}</strong>
       <small>{userById(s.author_id)?.name} · {date(s.submitted_at,true)}</small><p>{s.result}</p>

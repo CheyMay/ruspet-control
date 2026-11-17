@@ -3,7 +3,8 @@ import {canManage,canRequest} from './domain.js';
 import {okbConfigured,okbPool} from './okb.js';
 import {visibleTasks} from './service.js';
 import {canReview} from '../shared/actions.js';
-import type {Approval,Task,User} from '../shared/types.js';
+import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
+import type {Approval,ApprovalScope,Task,User} from '../shared/types.js';
 import type {VoiceKind} from './voice-intent.js';
 
 type Candidate={task:Task;company:string;score:number;pending:boolean};
@@ -39,10 +40,10 @@ function companyScore(name:string,query:string[]){
  const joined=query.join('');
  return joined.length>=4&&tokens.join('').includes(joined)?65:0;
 }
-function applicable(actor:User,task:Task,kind:VoiceKind,pending?:Approval){
+function applicable(actor:User,task:Task,kind:VoiceKind,scope:ApprovalScope|null,pending?:Approval){
  if(kind==='deadline')return !pending&&task.status==='active'&&canRequest(actor,task);
- if(kind==='submit')return !pending&&(task.status==='active'&&canRequest(actor,task)||task.status==='review'&&canReview(actor,task));
- if(kind==='accept'||kind==='return')return !pending&&task.status==='review'&&canReview(actor,task);
+ if(kind==='submit')return !pending&&(task.status==='active'&&canRequest(actor,task)||task.status==='review'&&canReview(actor,task,scope));
+ if(kind==='accept'||kind==='return')return !pending&&task.status==='review'&&canReview(actor,task,scope);
  if(kind==='clarification')return !!pending?.clarification_requested_at&&!pending.clarification_answered_at&&pending.requester_id===actor.id;
  if(kind==='approve'||kind==='reject'||kind==='clarify')return !!pending&&
   (!pending.clarification_requested_at||!!pending.clarification_answered_at)&&pending.route[pending.current_step]?.userId===actor.id;
@@ -56,7 +57,8 @@ export async function findVoiceTasks(actor:User,value:string,kind:VoiceKind,db:D
  const accessible=await visibleTasks(actor,db);
  const pending=(await db.query<Approval>("SELECT * FROM approvals WHERE state='pending' AND task_id=ANY($1)",[accessible.map(task=>task.id)])).rows;
  const byTask=new Map(pending.map(approval=>[approval.task_id,approval]));
- const tasks=accessible.filter(task=>applicable(actor,task,kind,byTask.get(task.id)));
+ const scope=approvalScope(await approvalHierarchy(db));
+ const tasks=accessible.filter(task=>applicable(actor,task,kind,scope,byTask.get(task.id)));
  const exact=tasks.find(task=>task.id.toLowerCase()===search.toLowerCase());
  if(exact)return [{task:exact,company:'',score:100,pending:byTask.has(exact.id)}];
  const query=nameWords(search.replace(/^(?:(?:по\s+)?(?:клиент[ауе]?|компани[яию])\s+)+/iu,''));

@@ -35,7 +35,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
     [form('Уточнить','clarify',pending.id,pending.current_step),button('Напомнить через час','confirm',{...extra,kind:'later',target:pending.id,step:pending.current_step,revision:pending.action_revision,minutes:60,values:{}})]);
   }
  }
- const reviewRows=t.status==='review'&&!pending&&canReview(u,t)?[
+ const reviewRows=t.status==='review'&&!pending&&canReview(u,t,d.approvalScope)?[
   [button('Принять без комментария','accept_prepare',{...extra,version:t.version})],
   [form('Принять результат','accept'),form('Вернуть с замечаниями','return')]
  ]:[];
@@ -119,7 +119,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   if(last?.state==='returned')context.push('Есть замечания к результату');
   rows.push([form(last?.state==='returned'?'Отправить доработку':'Сдать результат','submit')]);
  }
- if(last||t.status==='review')rows.push([button(t.status==='review'&&canReview(u,t)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);
+ if(last||t.status==='review')rows.push([button(t.status==='review'&&canReview(u,t,d.approvalScope)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);
  const status=botTaskStatus(t,now,!!pending),facts:string[]=[];
  if(t.status==='completed'&&t.completed_at)facts.push('Закрыта '+date(t.completed_at)+' МСК');
  if(t.status!=='completed')facts.push(t.deadline?'Крайний срок '+date(t.deadline)+' МСК':'Без крайнего срока');
