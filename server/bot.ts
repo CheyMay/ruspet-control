@@ -1,5 +1,5 @@
 import {button,date,screen,type BotScreen,type Payload} from './bot-ui.js';
-import {renderBotTask} from './bot-task.js';
+import {deadlineProposalButton,renderBotTask} from './bot-task.js';
 import {renderBotNavigation} from './bot-navigation.js';
 import {readNotifications} from './notifications.js';
 import {findVoiceTasks} from './voice-task-search.js';
@@ -17,7 +17,7 @@ import {linkedText,reportLink,escapeHtml,taskLink} from '../shared/report-links.
 import {randomBytes} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {acknowledgeAlert,userAlerts,listTaskReminders,saveTaskReminder,disableTaskReminder,saveOneTimeReminder,cancelOneTimeReminder} from './reminders.js';
-import {assert,AppError,canSee} from './domain.js';
+import {assert,AppError,canRequest,canSee} from './domain.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
 import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {taskQueue} from '../shared/queues.js';
@@ -165,10 +165,12 @@ async function draftSummary(d:Dialog,db:Db){
  }
  return result.join('\n\n');
 }
-async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading=d.payload.id?'Проверьте перед отправкой · #'+d.payload.id:'Проверьте новую задачу'){
+async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string){
  const summary=await draftSummary(d,db);
+ const action=d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':'Проверьте перед отправкой';
+ const title=heading??(d.payload.id?action+' · #'+d.payload.id:'Проверьте новую задачу');
  const redo={...d.payload,values:d.payload.kind==='reminder'?{days:d.values.days}:undefined};
- return screen(u,ch,`${heading}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
+ return screen(u,ch,`${title}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
   [button('Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],
   [...(d.fields.length?[button('Ввести заново','form',redo)]:[]),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]
  ],db);
@@ -332,6 +334,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    await saveDialog(db,u,ch,d);return prompt(u,ch,d,db);
   }
   const v=p.values||{};let result='Действие сохранено.',resultTask:string|undefined;
+  const nextActions:ReturnType<typeof button>[][]=[];
   if(p.kind==='create_task'){
    const input=taskInput.parse({title:v.title,description:v.description||'',assigneeId:v.assignee,price:Number(v.price),deadline:v.deadline==='none'?null:v.deadline,
     plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null});
@@ -357,7 +360,22 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    await decideTaskEdit(u,p.id!,p.target!,approved?'approve':'reject',v.comment||'');
    result=approved?'Исполнителю разрешено одно сохранение карточки.':'Запрос на редактирование отклонён.';
   }
-  else if(p.kind==='answer'){await answerControl(u,p.target!,{reason:v.reason,progress:v.progress,plan:v.plan});result='Ответ сохранён и доступен руководителю.'}
+  else if(p.kind==='answer'){
+   await answerControl(u,p.target!,{reason:v.reason,progress:v.progress,plan:v.plan});
+   const task=(await db.query<Task&{pending:boolean}>(`SELECT t.*,EXISTS(
+    SELECT 1 FROM approvals a WHERE a.task_id=t.id AND a.state='pending') AS pending
+    FROM tasks t JOIN control_requests c ON c.task_id=t.id WHERE c.id=$1`,[p.target])).rows[0];
+   result='Объяснение сохранено.';
+   if(task&&canSee(u,task)){
+    const status=botTaskStatus(task,new Date(),task.pending);
+    result+='\n'+status+(task.deadline&&task.status!=='completed'?' · крайний срок '+date(task.deadline)+' МСК':'');
+    if(task.pending)nextActions.push([button('Посмотреть согласование','task_approval',{id:task.id,list:p.list})]);
+    else if(task.status==='active'&&canRequest(u,task)){
+     nextActions.push([deadlineProposalButton(task,p.list,{reason:v.reason,plan:v.plan})],
+      [button('Сдать результат','form',{id:task.id,kind:'submit',list:p.list,version:task.version})]);
+    }
+   }
+  }
   else if(p.kind==='deadline'){const outcome=await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,plan:v.plan,proposedDeadline:v.deadline,expectedVersion:p.version!});result=outcome.applied?'Крайний срок изменён.':'Новый срок предложен. Текущий крайний срок изменится после согласования.'}
   else if(p.kind==='clarification'){await answerClarification(u,p.target!,v.answer);result='Ответ отправлен согласующему. Этап ожидает его решения.'}
   else if(['approve','reject','later','clarify'].includes(p.kind!)){const r=await decide(u,p.target!,{decision:p.kind as 'approve'|'reject'|'later'|'clarify',comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':'Согласование завершено.'}
@@ -365,7 +383,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   const undo=await lastUndo(u,undefined,db);
   if(p.id&&(await db.query("SELECT 1 FROM bitrix_operations WHERE task_id=$1 AND payload->>'actorId'=$2 AND created_at>=transaction_timestamp() AND state='pending' LIMIT 1",[p.id,u.id])).rowCount)result+='\n\nДействие сохранено в РУСПЭТ. Обмен с Битрикс24 выполняется по очереди; состояние видно в карточке задачи.';
   if(resultTask&&p.kind==='delegate')result+='\nПоручение создано локально: автоматическое создание задач в Битрикс24 пока не включено.';
-  const response=await screen(u,ch,result,[...(resultTask?[[button(p.kind==='create_task'?'Открыть задачу':'Открыть поручение','task',{id:resultTask})]]:[]),[...(p.id?[button('К задаче','task',{id:p.id,list:p.list})]:[]),button('Нужно действие','inbox')],...(undo?[[button('Отменить последнее действие','undo_prepare',{id:undo.task_id,target:undo.id})]]:[])],db);
+  const response=await screen(u,ch,result,[...nextActions,...(resultTask?[[button(p.kind==='create_task'?'Открыть задачу':'Открыть поручение','task',{id:resultTask})]]:[]),[...(p.id?[button('К задаче','task',{id:p.id,list:p.list})]:[]),button('Нужно действие','inbox')],...(undo?[[button('Отменить последнее действие','undo_prepare',{id:undo.task_id,target:undo.id})]]:[])],db);
   await db.query('UPDATE bot_buttons SET receipt=$2 WHERE token=$1',[token,JSON.stringify(response)]);
   const context=resultTask||p.id;
   if(context)await saveDialog(db,u,ch,{payload:{op:'context',id:context},fields:[],index:0,values:{}},15);

@@ -10,8 +10,14 @@ import {canDelegateTask} from './workflow.js';
 import {lastUndo} from './undo.js';
 import {taskIntegration} from './bitrix-fields.js';
 import {integrationLabels} from '../shared/integration-status.js';
+import {elapsedToday,taskQueue} from '../shared/queues.js';
 import {pool} from './db.js';
-import type {User} from '../shared/types.js';
+import type {ControlRequest,Task,User} from '../shared/types.js';
+
+export function deadlineProposalButton(task:Task,list:Payload['list'],explanation?:Pick<ControlRequest,'reason'|'plan'>){
+ const values=explanation?.reason&&explanation.plan?{reason:explanation.reason,plan:explanation.plan}:undefined;
+ return button('Предложить новый срок','form',{id:task.id,kind:'deadline',version:task.version,list,values});
+}
 
 export async function renderBotTask(u:User,ch:string,p:Payload){
  const d=await detail(u,p.id!),t=d.task,now=new Date();
@@ -107,7 +113,9 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const context:string[]=[];
  const rows:ReturnType<typeof button>[][]=[];
  const control=d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));
- if(control){context.push('От вас ждут ответ на запрос');rows.push([form('Ответить на запрос','answer',control.id)]);}
+ const overdue=taskQueue(t,now)==='overdue'||elapsedToday(t,now);
+ const explained=!control?d.controls.find(c=>c.state==='answered'&&c.assignee_id===t.assignee_id):undefined;
+ if(control){context.push('Нужно объяснение по проверке');rows.push([form('Дать объяснение','answer',control.id)]);}
  if(canDecide||request?.state==='approved'&&request.requesterId===u.id)
   rows.push([button(canDecide?'Решить запрос на редактирование':'Редактировать задачу',canDecide?'task_edit_permission':'edit',extra)]);
  if(pending){
@@ -118,6 +126,10 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  }else if(t.status==='active'&&canRequest(u,t)){
   if(last?.state==='returned')context.push('Есть замечания к результату');
   rows.push([form(last?.state==='returned'?'Отправить доработку':'Сдать результат','submit')]);
+  if(overdue){
+   if(explained)context.push('Объяснение сохранено. Крайний срок истёк.');
+   rows.push([deadlineProposalButton(t,p.list,explained)]);
+  }
  }
  if(last||t.status==='review')rows.push([button(t.status==='review'&&canReview(u,t,d.approvalScope)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);
  const status=botTaskStatus(t,now,!!pending),facts:string[]=[];

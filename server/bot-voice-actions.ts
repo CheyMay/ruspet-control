@@ -15,7 +15,7 @@ export type Field={key:string;label:string;min:number;max?:number};
 export const voiceLabels:Record<VoiceKind,string>={
  create_task:'Поставить задачу',comment:'Добавить комментарий',submit:'Передать результат на приёмку',
  deadline:'Запросить перенос срока',accept:'Принять результат',return:'Вернуть на доработку',
- approve:'Согласовать запрос',reject:'Отклонить запрос',clarify:'Запросить уточнение',clarification:'Ответить на уточнение',answer:'Ответить на запрос',
+ approve:'Согласовать запрос',reject:'Отклонить запрос',clarify:'Запросить уточнение',clarification:'Ответить на уточнение',answer:'Дать объяснение',
  edit_title:'Изменить название',edit_description:'Изменить описание',edit_price:'Изменить цену',edit_assignee:'Сменить исполнителя',
  delegate:'Делегировать задачу',reminder_once:'Поставить разовое напоминание',reminder:'Поставить напоминание по расписанию',
  reminder_cancel_voice:'Отменить напоминание',undo:'Отменить последнее действие',

@@ -175,6 +175,43 @@ test('archive searches all stored days, paginates without duplicate rows and enf
 });
 
 const botButton=(view:any,label:string)=>{const b=view.buttons.flat().find((b:any)=>b.text===label);assert.ok(b,'Button missing: '+label);return b.token as string};
+test('an overdue explanation preserves the deadline and offers a separate prefilled transfer',async()=>{
+ const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,ch='preview-explanation';
+ const deadline=new Date(Date.now()-2*86400000).toISOString();
+ const created=await request('admin','/tasks',{...taskInput,deadline});
+ assert.equal(created.status,201);
+ const id=created.data.id;
+ await db.pool.query("INSERT INTO control_requests(id,task_id,assignee_id,state,due_at) VALUES($1,$2,$3,'waiting',now())",
+  [randomUUID(),id,anna.id]);
+ const open=()=>bot.botView(anna,ch,{op:'task',id});
+ const press=(view:Awaited<ReturnType<typeof open>>,label:string)=>bot.botClick(anna,ch,botButton(view,label));
+ const type=(value:string)=>bot.botText(anna,ch,value,randomUUID());
+ const reason='Клиент прислал сведения с задержкой',plan='Проверить документы и отправить решение';
+ await press(await open(),'Дать объяснение');
+ await type(reason);
+ await type('Запросили документы и сверили заявку');
+ const saved=await press(await type(plan),'Подтвердить и отправить');
+ assert.match(saved.text,/Объяснение сохранено/);
+ assert.match(saved.text,/Просрочена/);
+ assert.ok(botButton(saved,'Сдать результат'));
+ const details=()=>request('anna','/tasks/'+id);
+ const before=(await details()).data;
+ assert.equal(before.task.deadline,deadline);
+ assert.deepEqual(before.approvals,[]);
+ const card=await open();
+ assert.match(card.text,/Объяснение сохранено/);
+ const draft=await press(card,'Предложить новый срок');
+ assert.match(draft.text,/Дата и время по Москве/);
+ const confirmation=await type('завтра в 15:00');
+ assert.match(confirmation.text,/^Запросить перенос/);
+ assert.ok(confirmation.text.includes(reason)&&confirmation.text.includes(plan));
+ await press(confirmation,'Подтвердить и отправить');
+ const after=(await details()).data;
+ assert.equal(after.task.deadline,deadline);
+ assert.equal(after.approvals[0].state,'pending');
+ assert.equal(after.approvals[0].reason,reason);
+ assert.equal(after.approvals[0].plan,plan);
+});
 test('bot result → return → resubmission → acceptance shares panel history and ignores repeated confirmation',async()=>{
  const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,director=users.find(u=>u.id==='director')!;
  const id=(await request('admin','/tasks',taskInput)).data.id;
