@@ -227,9 +227,9 @@ async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'
   const first=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[id])).rows[0]; assert(first,404,'Согласование не найдено.');
   const task=await taskFor(db,first.task_id,user,true);
   const a=(await db.query('SELECT * FROM approvals WHERE id=$1 FOR UPDATE',[id])).rows[0] as Approval;
-  assert(input.expectedRevision===undefined?a.action_revision===1:input.expectedRevision===a.action_revision,409,'Согласование изменилось после отмены. Откройте актуальную карточку.');
+  assert(input.expectedRevision===undefined?a.action_revision===1:input.expectedRevision===a.action_revision,409,'Версия согласования изменилась. Откройте актуальную задачу, чтобы проверить этап и решение.');
   assert(input.expectedStep===undefined||input.expectedStep===a.current_step,409,'Этот этап уже завершён. Откройте актуальное решение.');
-  assert(a.state==='pending',409,'Решение уже принято или запрос устарел.');
+  assert(a.state==='pending',409,a.state==='stale'?'Запрос устарел из-за изменения задачи. В актуальной карточке можно посмотреть текущий статус и срок.':'Этот запрос уже обработан. Откройте актуальную задачу, чтобы посмотреть решение.');
   const hierarchy=await approvalHierarchy(db);
   if(hierarchy?.direct_assignee_ids)assert(inControlScope(hierarchy,task.assignee_id)&&user.id===hierarchy.sales_head_id,403,'Запрос недоступен в текущем маршруте согласования.');
   assert(a.route[a.current_step].userId===user.id,403,'Сейчас решение принимает другой согласующий.');

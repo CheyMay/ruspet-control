@@ -517,6 +517,17 @@ test('launch routing uses the task branch and adds the sales head selectively or
   assert.equal(moved.approvalProgress.total,1);
   assert.deepEqual(await routeUsers(ordinaryResult),[sales]);
   const movedApproval=moved.approvals[0];
+  const directorUser=users.find(person=>person.id===sales)!;
+  const {screen,button}=await import('../server/bot-ui.js');
+  const bot=await import('../server/bot.js');
+  const old=await screen(directorUser,'preview','Старое согласование',[[button('Принять','confirm',{
+   kind:'approve',id:ordinaryResult,target:movedApproval.id,step:1,revision:1,values:{comment:''}
+  })]]);
+  const token=old.buttons[0][0].token;
+  const fresh=await bot.botClick(directorUser,'preview',token).catch(error=>bot.botClickError(directorUser,'preview',token,error));
+  assert.match(fresh.text,/Версия согласования изменилась/);
+  const reopened=await bot.botClick(directorUser,'preview',botButton(fresh,'Открыть актуальную задачу'));
+  assert.match(reopened.text,/Решение за вами/);
   const decision={decision:'approve',comment:'',expectedRevision:movedApproval.action_revision,expectedStep:0};
   assert.equal((await request(branch,'/approvals/'+movedApproval.id+'/decision',decision)).status,403);
   assert.equal((await request(sales,'/approvals/'+movedApproval.id+'/decision',decision)).data.state,'approved');

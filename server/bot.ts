@@ -17,13 +17,13 @@ import {linkedText,reportLink,escapeHtml,taskLink} from '../shared/report-links.
 import {randomBytes} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {acknowledgeAlert,userAlerts,listTaskReminders,saveTaskReminder,disableTaskReminder,saveOneTimeReminder,cancelOneTimeReminder} from './reminders.js';
-import {assert,AppError} from './domain.js';
+import {assert,AppError,canSee} from './domain.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
 import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
 import {defaultReportView,reportViews,reportViewLabels,type ReportView} from '../shared/report-parameters.js';
-import type {User} from '../shared/types.js';
+import type {Task,User} from '../shared/types.js';
 import {taskInput} from './task-input.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {setApprovalWatch} from './approval-hierarchy.js';
@@ -272,6 +272,15 @@ export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:s
   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,'voice:'+inputId,JSON.stringify(response)]);
   return response;
  });
+}
+export async function botClickError(u:User,ch:string,token:string,error:unknown):Promise<BotScreen>{
+ const message=error instanceof AppError?error.message:'Не удалось завершить действие. Откройте задачу и проверьте историю.';
+ if(error instanceof AppError&&[403,409].includes(error.status)){
+  const task=(await pool.query<Task>(`SELECT t.* FROM bot_buttons b JOIN tasks t ON t.id=b.payload->>'id'
+   WHERE b.token=$1 AND b.actor_id=$2 AND b.channel=$3`,[token,u.id,ch])).rows[0];
+  if(task&&canSee(u,task))return screen(u,ch,message,[[button('Открыть актуальную задачу','task',{id:task.id}),button('Нужно действие','inbox')]]);
+ }
+ return {text:message,buttons:(await botView(u,ch)).buttons};
 }
 export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>{
  const b=(await pool.query('SELECT * FROM bot_buttons WHERE token=$1 AND actor_id=$2 AND channel=$3 AND expires_at>now()',[token,u.id,ch])).rows[0];assert(b,409,'Кнопка устарела. Откройте меню заново.');const p=b.payload as Payload;

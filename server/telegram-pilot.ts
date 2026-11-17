@@ -15,7 +15,7 @@ import {readFile} from 'node:fs/promises';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {pool,transaction} from './db.js';
 import {assert,AppError} from './domain.js';
-import {botClick,botText,botView,clearBotDraft,alertScreen,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
+import {botClick,botClickError,botText,botView,clearBotDraft,alertScreen,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
 import {button,screen} from './bot-ui.js';
 import {voiceEnabled} from './transcription.js';
 import {transcribeTelegramVoice} from './telegram-voice.js';
@@ -121,10 +121,7 @@ export async function handlePilotUpdate(update:any){
  if(c){
   const acknowledged=call('answerCallbackQuery',{callback_query_id:c.id}).catch(()=>{});
   try{
-   const response=await botClick(u,ch,String(c.data)).catch(async error=>({
-    text:error instanceof AppError?error.message:'Не удалось завершить действие. Откройте задачу заново и проверьте историю.',
-    buttons:(await botView(u,ch)).buttons
-   }));
+   const response=await botClick(u,ch,String(c.data)).catch(error=>botClickError(u,ch,String(c.data),error));
    await reply(chat,response,started,m.message_id);
   }finally{await acknowledged;}
   return;

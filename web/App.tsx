@@ -164,6 +164,10 @@ export function App(){
    const unconfirmed=e instanceof ApiError&&(e.unconfirmed||e.status===401);
    if(unconfirmed)setConnectionIssue(e instanceof ApiError&&e.status===401?'expired':'unavailable');
    if(request&&!unconfirmed)pendingWrites.current.delete(request);
+   if(e instanceof ApiError&&e.status===409){
+    if(selected&&generation===detailGeneration.current)await refreshDetail(selected).catch(()=>{});
+    else await refresh().catch(()=>{});
+   }
    setError(unconfirmed&&request?'Сохранение не подтверждено. Когда связь восстановится, повторите отправку в этой вкладке с теми же данными.':
     e instanceof ApiError&&e.unconfirmed?'Результат действия неизвестен. Проверьте задачу или историю перед повтором.':(e as Error).message);
    return false;
