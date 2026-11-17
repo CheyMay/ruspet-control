@@ -56,7 +56,7 @@ const reportView=z.enum(['mine','team','company']);
 const reportParameters=z.object({view:reportView.optional(),actorId:z.string().max(100).optional(),from:date.optional(),to:date.optional(),assigneeId:z.string().max(100).optional(),creatorId:z.string().max(100).optional(),priceBand:z.enum(['low','medium','high','premium','unknown']).optional(),queue:z.enum(['all','front','overdue','today','review','completed','no_deadline']).optional()});
 const viewAsHeader='X-Ruspet-View-As';
 const viewAsReads=new Set(['/bootstrap','/journal','/management/progress','/alerts','/delegations','/reports']);
-const viewAsTaskRead=/^\/tasks\/[^/]+(?:\/(?:integration|delegation|reminders))?$/;
+const viewAsTaskRead=/^\/tasks\/[^/]+(?:\/(?:integration|delegation|reminders|discussion))?$/;
 const viewAsReportRead=/^\/reports\/[a-f0-9-]{36}$/i;
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
 const webBotChannel=(req:express.Request)=>req.query.channel==='mobile'?'mobile':'preview';
@@ -132,6 +132,8 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.put('/api/management/preferences',async(req,res)=>res.json(await setNudgePreference(req.actor,z.object({enabled:z.boolean()}).parse(req.body).enabled)));
  app.post('/api/management/nudge',async(req,res)=>res.json(await nudgeTeam(req.actor,z.object({confirmed:z.literal(true)}).parse(req.body).confirmed)));
  app.get('/api/tasks/:id/bitrix-activity',async(req,res)=>{assert(req.actor.role==='admin',403,'История интеграции доступна администратору.');res.json((await pool.query('SELECT kind,external_id,occurred_at,author,body FROM bitrix_task_activity WHERE task_id=$1 AND kind=$2 ORDER BY occurred_at DESC,external_id DESC LIMIT 100',[req.params.id,req.query.kind==='history'?'history':'comment'])).rows);});
+ app.get('/api/tasks/:id/discussion',compress,async(req,res)=>res.json(
+  await service.taskBitrixDiscussion(req.actor,String(req.params.id),req.get(viewAsHeader)===undefined)));
  app.get('/api/tasks/:id/integration',async(req,res)=>res.json(await taskIntegration(req.actor,String(req.params.id))));
  app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
  app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));

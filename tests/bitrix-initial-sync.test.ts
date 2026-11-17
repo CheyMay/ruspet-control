@@ -130,6 +130,19 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9004');
   assert.deepEqual((await db.pool.query("SELECT DISTINCT state FROM bitrix_refresh_queue WHERE external_id='9004'")).rows,[{state:'ignored'}]);
   assert.equal((await db.pool.query("SELECT count(*)::int n FROM tasks WHERE id='9004'")).rows[0].n,0);
+  await db.pool.query(`INSERT INTO bitrix_task_activity(task_id,kind,external_id,occurred_at,author,body)
+   VALUES($1,'comment','708',now(),'Сотрудник Битрикса','[B]Текст обсуждения[/B]'),
+         ($1,'history','709',now(),'Сотрудник Битрикса','Служебная запись')`,[id]);
+  assert.equal((await api(employee,'/tasks/2403/discussion')).status,404);
+  for(let attempt=0;attempt<2;attempt++){
+   const discussion=await api(employee,'/tasks/'+id+'/discussion');
+   assert.equal(discussion.status,200);
+   assert.equal(discussion.body.state,'pending');
+   assert.deepEqual(discussion.body.messages.map((message:{body:string})=>message.body),['[B]Текст обсуждения[/B]']);
+  }
+  const sync=(await db.pool.query("SELECT generation::text,state FROM bitrix_refresh_queue WHERE external_id=$1 AND resource='task_inbound_comments'",[id])).rows;
+  assert.deepEqual(sync,[{generation:'1',state:'pending'}]);
+  assert.equal((await api(employee,'/tasks/'+id)).body.bitrixCommentCount,1);
  }finally{
   delete process.env.BITRIX_INBOUND_TASKS;
   delete process.env.BITRIX_INBOUND_AUTHORITATIVE;

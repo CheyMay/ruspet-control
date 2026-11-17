@@ -15,7 +15,7 @@ import {plannedMinutesOn,plannedInterval} from '../shared/analytics.js';
 import { taskQueue } from '../shared/queues.js';
 import { randomUUID } from 'node:crypto';
 import { pool, transaction, type Db } from './db.js';
-import type { Task, User, Rules, Approval, ControlRequest, Step } from '../shared/types.js';
+import type { Task, User, Rules, Approval, ControlRequest, Step, BitrixDiscussion } from '../shared/types.js';
 import { assert, canAccess, canSee, canRequest, canManage, globalAccess, evaluate, metrics, moscowDay } from './domain.js';
 import { providers } from './providers.js';
 const adapters=providers();
@@ -83,11 +83,34 @@ export async function detail(user:User,id:string,db:Db=pool) {
   task,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
   comments:(await db.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,
+  bitrixCommentCount:(await db.query<{count:number}>("SELECT count(*)::int AS count FROM bitrix_task_activity WHERE task_id=$1 AND kind='comment'",[id])).rows[0].count,
   events:(await db.query('SELECT * FROM task_events WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,
   approvals:(await db.query('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,
   decisions:(await db.query('SELECT d.*,EXISTS(SELECT 1 FROM decision_retractions r WHERE r.decision_id=d.id) retracted FROM decisions d JOIN approvals a ON a.id=d.approval_id WHERE a.task_id=$1 ORDER BY d.created_at',[id])).rows,
   controls:(await db.query('SELECT * FROM control_requests WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows
  };
+}
+export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):Promise<BitrixDiscussion>{
+ await taskFor(pool,id,user);
+ const portal=process.env.BITRIX_PORTAL;
+ const origin=portal&&/^[a-z0-9.-]+$/i.test(portal)?'https://'+portal:null;
+ const [stored,links]=await Promise.all([
+  pool.query<BitrixDiscussion['messages'][number]>(`SELECT external_id,occurred_at,author,body FROM bitrix_task_activity
+   WHERE task_id=$1 AND kind='comment' ORDER BY occurred_at DESC,external_id DESC LIMIT 100`,[id]),
+  pool.query<{external_id:string;state:string|null}>(`SELECT l.external_id::text,q.state FROM bitrix_task_links l
+   LEFT JOIN bitrix_refresh_queue q ON q.portal=$2 AND q.resource='task_inbound_comments' AND q.external_id=l.external_id::text
+   WHERE l.task_id=$1 AND NOT l.live_enabled`,[id,portal??null])
+ ]);
+ const link=links.rows[0];
+ let state:BitrixDiscussion['state']='ready';
+ if(link?.state==='pending'||link?.state==='failed'||link?.state==='processing')state='pending';
+ else if(link?.state==='blocked')state='unavailable';
+ else if(link&&!link.state&&allowQueue&&portal&&process.env.BITRIX_INBOUND_TASKS==='true'){
+  await pool.query(`INSERT INTO bitrix_refresh_queue(portal,resource,external_id)
+   VALUES($1,'task_inbound_comments',$2) ON CONFLICT DO NOTHING`,[portal,link.external_id]);
+  state='pending';
+ }
+ return {state,origin,messages:stored.rows};
 }
 async function addCommentCore(user:User,id:string,body:string,approvalId?:string) {
  return transaction(async db=>{

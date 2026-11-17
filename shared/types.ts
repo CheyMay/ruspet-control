@@ -6,6 +6,11 @@ export interface Task { delegated_from_id?:string|null; company_id?:string|null;
 export interface Finding { id: string; task_id: string; rule: string; severity: string; message: string; status: 'open' | 'resolved'; first_seen: string }
 export interface Event { id: string; task_id: string | null; actor_id: string | null; kind: string; message: string; data: Record<string, unknown>; created_at: string }
 export interface Comment { approval_id?:string|null; id: string; task_id: string; author_id: string; body: string; kind: string; created_at: string }
+export interface BitrixDiscussion {
+ state:'ready'|'pending'|'unavailable';
+ origin:string|null;
+ messages:{external_id:string;occurred_at:string;author:string;body:string}[];
+}
 export interface Step { userId: string; label: string }
 export interface Approval { action_revision:number; canceled_at?:string|null; id: string; task_id: string; requester_id: string; type: 'deadline' | 'completion'; reason: string; plan: string; proposed_deadline: string | null; task_version: number; state: 'pending' | 'approved' | 'rejected' | 'stale'; current_step: number; route: Step[]; route_version: number; created_at: string; deferred_until: string | null; clarification_question: string | null; clarification_answer: string | null; clarification_requested_at: string | null; clarification_answered_at: string | null }
 export interface Decision { retracted?:boolean; id: string; approval_id: string; actor_id: string; step_index: number; decision: string; comment: string; created_at: string }
@@ -18,4 +23,4 @@ export interface Report { parameters?:import('./report-parameters.js').ReportPar
 export interface SourceInfo { file_name:string; sheet_name:string; row_count:number; imported_at:string; assumptions:Record<string,unknown> }
 export interface Submission {automatic?:boolean;based_on_tasks?:string[];restored_from?:string|null;id:string;task_id:string;round:number;result:string;author_id:string;state:'review'|'returned'|'accepted';reviewer_id:string|null;remark:string|null;submitted_at:string;decided_at:string|null}
 export interface Bootstrap { teamIds?:string[]; managerPreview?:boolean; lastTaskChange?:string|null; approvalComments?:Comment[]; editRequests?:{id:string;task_id:string;creator_id:string;created_at:string}[]; selection?:{total:number;included:number;checklist:number;unfinishedAnalysis:number}; submissions:Submission[]; user: User; users: User[]; tasks: Task[]; findings: Finding[]; approvals: Approval[]; events: Event[]; controls: ControlRequest[]; notifications: Notification[]; reports: Report[]; rules: Rules; rulesVersion: number; serverTime: string; metrics: Metrics; source:SourceInfo|null }
-export interface TaskDetail { approvalWatch:{manual:boolean;byCode:boolean;canChange:boolean}|null; editAccess:import('./task-edit.js').TaskEditAccess; submissions:Submission[]; task: Task; comments: Comment[]; events: Event[]; approvals: Approval[]; decisions: Decision[]; controls: ControlRequest[] }
+export interface TaskDetail { approvalWatch:{manual:boolean;byCode:boolean;canChange:boolean}|null; editAccess:import('./task-edit.js').TaskEditAccess; submissions:Submission[]; task: Task; comments: Comment[]; bitrixCommentCount:number; events: Event[]; approvals: Approval[]; decisions: Decision[]; controls: ControlRequest[] }
