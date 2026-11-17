@@ -147,6 +147,7 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   delete process.env.BITRIX_INBOUND_TASKS;
   delete process.env.BITRIX_INBOUND_AUTHORITATIVE;
   delete process.env.BITRIX_INBOUND_NEW_TASKS;
+  await db.pool.query('DELETE FROM bitrix_task_activity WHERE task_id=$1',[id]);
   await db.pool.query("DELETE FROM bitrix_task_links WHERE task_id=ANY($1)",[[id,'9002','9003']]);
   await db.pool.query('DELETE FROM bitrix_user_links WHERE user_id=ANY($1)',[[admin.id,employee.id]]);
   await db.pool.query("DELETE FROM staff_directory WHERE source_key='fixture-inbound'");
