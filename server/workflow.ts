@@ -1,7 +1,7 @@
 import {lockDelegationChain} from './delegation-lock.js';
 import {taskEditAccess,useTaskEditPermission} from './task-edit-permissions.js';
 import {approvalHierarchy,approvalScope,hierarchyRoute,inControlScope} from './approval-hierarchy.js';
-import {canReview} from '../shared/actions.js';
+import {canComplete,canReview} from '../shared/actions.js';
 import {findDelegationClients,resolveCompanyResponsibility} from './company-responsibility.js';
 import {actingManager,delegatesFor} from './org.js';
 import {recordTaskAction,recordTaskBarrier} from './undo-record.js';
@@ -164,25 +164,27 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
  await refreshTaskFindings(db,after,u);
  await event(db,id,u.id,'task_edited','Изменены параметры задачи, проверки обновлены.',{before,after,reason,editPermissionId});return {id};
 });}
-async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return',comment:string,version:number){return transaction(async db=>{
+async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return'|'complete',comment:string,version:number){return transaction(async db=>{
  const before=(await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0] as Task;assert(before&&canSee(u,before),404,'Задача недоступна.');assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
  const hierarchy=await approvalHierarchy(db,action==='submit');
  const managed=inControlScope(hierarchy,before.assignee_id);
  const reviewer=canReview(u,before,approvalScope(hierarchy));
  if(action==='submit'){assert(canRequest(u,before),403,'Нет права сдавать задачу.');assert(before.status==='active',409,'Задача уже передана или завершена.');}
+ else if(action==='complete')assert(canComplete(u,before,approvalScope(hierarchy)),403,'Завершить задачу может постановщик. Для задач под контролем требуется решение согласующего.');
  else {assert(reviewer,403,'Решение принимает постановщик или руководитель.');assert(before.status==='review',409,'Задача не ожидает приёмки.');assert(u.id!==before.assignee_id,403,'Нельзя принимать собственную работу.');}
- if(action!=='accept')assert(comment.trim().length>=5,400,'Укажите результат или причину возврата, минимум 5 символов.');
+ if(action==='submit'||action==='return')assert(comment.trim().length>=5,400,'Укажите результат или причину возврата, минимум 5 символов.');
  assert(!(await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rowCount,409,'Сначала завершите активное согласование.');
- const status=action==='submit'?'review':action==='accept'?'completed':'active';
+ const completing=action==='accept'||action==='complete';
+ const status=action==='submit'?'review':completing?'completed':'active';
  const after=(await db.query("UPDATE tasks SET status=$2,completed_at=CASE WHEN $2='completed' THEN now() ELSE NULL END,version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[id,status])).rows[0];
  await provider.applyApprovedChange(db,after,before.version);
  if(action==='submit')await db.query("INSERT INTO task_submissions(id,task_id,round,result,author_id,state) SELECT $1,$2,coalesce(max(round),0)+1,$3,$4,'review' FROM task_submissions WHERE task_id=$2",[randomUUID(),id,comment,u.id]);
- else await db.query("UPDATE task_submissions SET state=$2,reviewer_id=$3,remark=$4,decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[id,action==='accept'?'accepted':'returned',u.id,comment||null]);
- const labels={submit:'Работа передана на приёмку',accept:'Результат принят, задача завершена',return:'Задача возвращена в работу'};
+ else await db.query("UPDATE task_submissions SET state=$2,reviewer_id=$3,remark=$4,decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[id,completing?'accepted':'returned',u.id,comment||null]);
+ const labels={submit:'Работа передана на приёмку',accept:'Результат принят, задача завершена',return:'Задача возвращена в работу',complete:'Задача завершена постановщиком'};
  if(comment.trim())await db.query("INSERT INTO comments(id,task_id,author_id,body,kind) VALUES($1,$2,$3,$4,'review')",[randomUUID(),id,u.id,comment]);
- await event(db,id,u.id,action==='accept'?'task_completed':action==='submit'?'review_submitted':'review_returned',labels[action],{before,after,comment});
+ await event(db,id,u.id,completing?'task_completed':action==='submit'?'review_submitted':'review_returned',labels[action],{before,after,comment});
  await refreshTaskFindings(db,after,u);
- if(action==='accept')await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);
+ if(completing)await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);
  if(action==='submit'&&hierarchy&&managed&&(hierarchy.direct_assignee_ids||!before.delegated_from_id)){
   const route=await hierarchyRoute(db,hierarchy,after,u.id,'completion'),approvalId=randomUUID(),cfg=await config(db);
   await db.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version)

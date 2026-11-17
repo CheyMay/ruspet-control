@@ -4,7 +4,7 @@ import {compactTaskTitle} from '../shared/task-title.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import {formatPrice,priceBand,priceLabels} from '../shared/pricing.js';
 import {canRequest} from './domain.js';
-import {canReview} from '../shared/actions.js';
+import {canComplete,canReview} from '../shared/actions.js';
 import {detail,config} from './service.js';
 import {canDelegateTask} from './workflow.js';
 import {lastUndo} from './undo.js';
@@ -47,7 +47,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  ]:[];
  const paged=async(label:string,text:string,rows:ReturnType<typeof button>[][]=[])=>{
   const pages=botTextPages(text),page=Math.max(0,Math.min(p.page||0,pages.length-1));
-  return htmlScreen(u,ch,`<b>${h(label)} · #${h(t.id)}</b>${pages.length>1?` · ${page+1}/${pages.length}`:''}\n\n${h(pages[page])}`,[
+  return htmlScreen(u,ch,`<b>${h(label)} · #${h(t.id)}</b>${pages.length>1?` · ${page+1}/${pages.length}`:''}\nИсполнитель · ${h(name(t.assignee_id))}\nПостановщик · ${h(name(t.creator_id))}\n\n${h(pages[page])}`,[
    [...(page?[button('← Предыдущая часть',p.op,{...extra,page:page-1})]:[]),...(page+1<pages.length?[button('Продолжение →',p.op,{...extra,page:page+1})]:[])],...rows,back]);
  };
  if(p.op==='task_edit_permission'){
@@ -125,7 +125,8 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   rows.push([button(mine?(waiting?'Ответить на уточнение':'Рассмотреть запрос'):'Посмотреть согласование','task_approval',extra)]);
  }else if(t.status==='active'&&canRequest(u,t)){
   if(last?.state==='returned')context.push('Есть замечания к результату');
-  rows.push([form(last?.state==='returned'?'Отправить доработку':'Сдать результат','submit')]);
+  rows.push([canComplete(u,t,d.approvalScope)?form('Завершить задачу','complete'):
+   form(last?.state==='returned'?'Отправить доработку':'Сдать результат','submit')]);
   if(overdue){
    if(explained)context.push('Объяснение сохранено. Крайний срок истёк.');
    rows.push([deadlineProposalButton(t,p.list,explained)]);
@@ -135,7 +136,8 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const status=botTaskStatus(t,now,!!pending),facts:string[]=[];
  if(t.status==='completed'&&t.completed_at)facts.push('Закрыта '+date(t.completed_at)+' МСК');
  if(t.status!=='completed')facts.push(t.deadline?'Крайний срок '+date(t.deadline)+' МСК':'Без крайнего срока');
- facts.push(t.assignee_id===u.id?'Вы исполнитель':'Исполнитель · '+name(t.assignee_id));
+ if(t.status==='review'&&!pending&&canComplete(u,t,d.approvalScope))rows.push([form('Завершить задачу','complete')]);
+ facts.push('Исполнитель · '+name(t.assignee_id),'Постановщик · '+name(t.creator_id));
  const preview=botExcerpt(t.description,155);
  const text=[
   `<b>${h(botExcerpt(t.title,300))}</b>\n#${h(t.id)} · <b>${h(status)}</b>${t.important?' · Важно':''}`,

@@ -68,8 +68,28 @@
 .edit-permission-panel textarea { width:100%; min-height:80px; resize:vertical; padding:10px; border:1px solid var(--line); border-radius:6px; background:var(--theme-surface); }
 .edit-permission-summary { display:grid; gap:5px; margin:0 0 8px; }
 .edit-permission-summary p { white-space:pre-wrap; }
-.task-compose-editor { width:min(760px,95vw); }
+.modal.task-compose-editor { width:min(1020px,calc(100vw - 32px)); max-height:calc(100dvh - 32px); padding:0; display:flex; flex-direction:column; overflow:hidden; }
+.task-compose-editor>.panel-heading { flex:none; padding:18px 24px; margin:0; border-bottom:1px solid var(--line); }
+.task-compose-body { min-height:0; overflow-y:auto; overscroll-behavior:contain; padding:22px 24px; }
+.task-compose-editor .task-mode>div { grid-template-columns:repeat(3,minmax(0,1fr)); }
+.task-compose-editor .task-mode input[type=radio] { width:18px; height:18px; min-width:18px; padding:0; margin:1px 0 0; }
+.task-compose-editor .task-mode label { align-items:center; padding:13px; }
+.task-compose-editor .task-mode span { min-width:0; }
+.task-compose-editor .task-editor-actions { position:static; flex:none; margin:0; padding:14px 24px; }
+.task-people { display:grid; gap:4px; margin:8px 0; font-size:12px; line-height:1.5; }
+.task-people>span { overflow-wrap:anywhere; }
+.task-people .muted { display:inline; margin-right:6px; font-size:11px; }
+.task-row-actions { display:flex; align-items:center; justify-content:flex-end; gap:8px; flex-wrap:wrap; }
+.personal-task-row { display:flex; align-items:center; gap:12px; padding-right:18px; border-bottom:1px solid var(--line); }
+.personal-task-row>.focus-task { flex:1; min-width:0; border-bottom:0; }
 @media(max-width:700px){
+ .modal.task-compose-editor { width:calc(100vw - 16px); max-height:calc(100dvh - 16px); }
+ .modal-backdrop:has(.task-compose-editor) { padding:8px; }
+ .task-compose-editor>.panel-heading,.task-compose-body,.task-compose-editor .task-editor-actions { padding:16px; }
+ .task-compose-editor .task-mode>div,.task-compose-editor .editor-grid { grid-template-columns:1fr; }
+ .task-compose-editor .task-mode label { padding:10px 12px; }
+ .personal-task-row { flex-wrap:wrap; padding:0 14px 12px; gap:0; }
+ .personal-task-row>.focus-task { flex-basis:100%; padding-inline:0; }
  .drawer.task-card { width:100vw; }
  .task-approval-progress { margin-inline:16px; flex-wrap:wrap; }
  .task-approval-progress .text-button { margin-left:28px; }

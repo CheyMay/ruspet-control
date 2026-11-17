@@ -287,7 +287,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   await taskWrite(req,res,200,()=>classifyTaskBranch(req.actor,String(req.params.id),branchId,expectedVersion));
  });
  app.post('/api/tasks/:id/review',async(req,res)=>{
-  const input=z.object({action:z.enum(['submit','accept','return']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);
+  const input=z.object({action:z.enum(['submit','accept','return','complete']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);
   await taskWrite(req,res,200,()=>reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));
  });
  app.get('/api/tasks/:id',compress,async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));

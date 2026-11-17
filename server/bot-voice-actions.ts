@@ -1,7 +1,7 @@
 import type {Db} from './db.js';
 import {assert,canManage,canRequest,canSee,globalAccess} from './domain.js';
 import {taskEditAccess} from './task-edit-permissions.js';
-import {canReview} from '../shared/actions.js';
+import {canComplete,canReview} from '../shared/actions.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 import {branchCovers} from '../shared/branches.js';
 import {parsePrice} from '../shared/pricing.js';
@@ -12,10 +12,10 @@ import {spokenDeadline,spokenPrice,spokenTime,type VoiceIntent,type VoiceKind} f
 import type {Payload} from './bot-ui.js';
 
 export type Field={key:string;label:string;min:number;max?:number};
-export const voiceLabels:Record<VoiceKind,string>={
+export const voiceLabels:Record<VoiceKind|'complete',string>={
  create_task:'Поставить задачу',comment:'Добавить комментарий',submit:'Передать результат на приёмку',
  deadline:'Запросить перенос срока',accept:'Принять результат',return:'Вернуть на доработку',
- approve:'Согласовать запрос',reject:'Отклонить запрос',clarify:'Запросить уточнение',clarification:'Ответить на уточнение',answer:'Дать объяснение',
+ approve:'Согласовать запрос',reject:'Отклонить запрос',clarify:'Запросить уточнение',clarification:'Ответить на уточнение',answer:'Дать объяснение',complete:'Завершить задачу',
  edit_title:'Изменить название',edit_description:'Изменить описание',edit_price:'Изменить цену',edit_assignee:'Сменить исполнителя',
  delegate:'Делегировать задачу',reminder_once:'Поставить разовое напоминание',reminder:'Поставить напоминание по расписанию',
  reminder_cancel_voice:'Отменить напоминание',undo:'Отменить последнее действие',
@@ -40,6 +40,7 @@ export function taskActionFields(kind:string|undefined,min:number,withAssignee=t
   case 'permission_request':return [field('reason','Что нужно изменить в карточке?')];
   case 'permission_reject':return [field('comment','Почему редактирование отклонено?')];
   case 'permission_approve':return [];
+  case 'complete':return [];
   case 'delegate':return [assigneeField,field('instruction','Поручение сотруднику или «пропустить»',1)];
   case 'delegate_client':return [field('client','Введите название клиента или ИНН',2,150)];
   case 'answer':return [field('reason','Что помешало выполнить задачу?',min),field('progress','Что уже сделано?',min),field('plan','Что будете делать дальше?',min)];
@@ -135,13 +136,15 @@ export async function prepareVoiceAction(actor:User,intent:VoiceIntent,db:Db){
  if(intent.kind==='create_task')return {payload:{op:'form',kind:intent.kind} as Payload,title:''};
  const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[intent.id])).rows[0];
  assert(task&&canSee(actor,task),404,'Задача не найдена или недоступна. Проверьте номер в «Мои задачи».');
- let kind=intent.kind;
- const reviewer=task.status==='review'&&canReview(actor,task,approvalScope(await approvalHierarchy(db)));
- if(kind==='submit'&&reviewer)kind='accept';
+ let kind:string=intent.kind;
+ const scope=approvalScope(await approvalHierarchy(db));
+ const reviewer=task.status==='review'&&canReview(actor,task,scope);
+ if(kind==='submit'&&canComplete(actor,task,scope))kind='complete';
+ else if(kind==='submit'&&reviewer)kind='accept';
  const payload:Payload={op:'form',id:task.id,kind,version:task.version};
  const pending=(await db.query<Approval>("SELECT * FROM approvals WHERE task_id=$1 AND state='pending' ORDER BY created_at DESC LIMIT 1",[task.id])).rows[0];
- if(kind==='submit'||kind==='deadline'){
-  assert(canRequest(actor,task)&&task.status==='active',409,'Действие доступно по задаче в работе.');
+ if(kind==='submit'||kind==='deadline'||kind==='complete'){
+  assert(canRequest(actor,task)&&(task.status==='active'||kind==='complete'&&task.status==='review'),409,'Действие доступно по незавершённой задаче.');
   assert(!pending,409,'Сначала завершите активное согласование.');
  }
  if(kind==='accept'||kind==='return')assert(reviewer&&!pending,409,'Результат должен ожидать вашей приёмки.');

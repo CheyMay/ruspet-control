@@ -175,6 +175,42 @@ test('archive searches all stored days, paginates without duplicate rows and enf
 });
 
 const botButton=(view:any,label:string)=>{const b=view.buttons.flat().find((b:any)=>b.text===label);assert.ok(b,'Button missing: '+label);return b.token as string};
+test('administrators see other employees actions as team work instead of personal duties',async()=>{
+ const {actionItems}=await import('../shared/actions.js');
+ const id=(await request('director','/tasks',{...taskInput,assigneeId:'olga'})).data.id;
+ await db.pool.query("INSERT INTO control_requests(id,task_id,assignee_id,state,due_at) VALUES($1,$2,'olga','waiting',now())",[randomUUID(),id]);
+ const admin=users.find(user=>user.id==='admin')!;
+ let actions=actionItems(await service.bootstrap(admin,true)).filter(action=>action.taskId===id);
+ assert(actions.some(action=>action.kind==='answer'));
+ assert(actions.every(action=>!action.mine));
+ assert.equal((await request('olga','/tasks/'+id+'/review',{action:'submit',comment:'Результат для проверки личной очереди',expectedVersion:1})).status,200);
+ actions=actionItems(await service.bootstrap(admin,true)).filter(action=>action.taskId===id);
+ assert(actions.some(action=>action.kind==='review'&&!action.mine));
+ assert(!actions.some(action=>action.kind==='answer'));
+ const director=users.find(user=>user.id==='director')!;
+ assert(actionItems(await service.bootstrap(director,true)).some(action=>action.taskId===id&&action.kind==='review'&&action.mine));
+});
+test('a creator completes a personal task from the bot with one confirmation and no self review',async()=>{
+ const bot=await import('../server/bot.js'),anna=users.find(user=>user.id==='anna')!;
+ const id=(await request('anna','/tasks',{...taskInput,title:'Личная задача без отдельного согласования'})).data.id;
+ const view=await bot.botView(anna,'self-complete',{op:'task',id});
+ assert(view.text.includes('Исполнитель · '+anna.name)&&view.text.includes('Постановщик · '+anna.name));
+ assert(!view.buttons.flat().some(button=>button.text==='Сдать результат'));
+ const confirmation=await bot.botClick(anna,'self-complete',botButton(view,'Завершить задачу'));
+ assert.match(confirmation.text,/Завершить задачу/);
+ assert.equal((await request('anna','/tasks/'+id)).data.task.status,'active');
+ const token=botButton(confirmation,'Подтвердить и отправить');
+ const response=await bot.botClick(anna,'self-complete',token);
+ assert.match(response.text,/Задача завершена/);
+ assert.deepEqual(await bot.botClick(anna,'self-complete',token),response);
+ const closed=(await request('anna','/tasks/'+id)).data;
+ assert.equal(closed.task.status,'completed');
+ assert.deepEqual(closed.submissions,[]);
+ assert.deepEqual(closed.approvals,[]);
+ const another=(await request('anna','/tasks',taskInput)).data.id;
+ assert.equal((await request('director','/tasks/'+another+'/review',{action:'complete',comment:'',expectedVersion:1})).status,403);
+ assert.equal((await request('anna','/tasks/'+another+'/review',{action:'complete',comment:'',expectedVersion:2})).status,409);
+});
 test('an overdue explanation preserves the deadline and offers a separate prefilled transfer',async()=>{
  const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,ch='preview-explanation';
  const deadline=new Date(Date.now()-2*86400000).toISOString();
@@ -569,6 +605,7 @@ test('launch routing uses the task branch and adds the sales head selectively or
   assert.equal((await request(branch,'/approvals/'+movedApproval.id+'/decision',decision)).status,403);
   assert.equal((await request(sales,'/approvals/'+movedApproval.id+'/decision',decision)).data.state,'approved');
   const directTask=await make('РЗМ* Один согласующий');
+  assert.equal((await request('admin',task(directTask)+'/review',{action:'complete',comment:'',expectedVersion:1})).status,403);
   assert.equal((await propose(directTask)).status,201);
   assert.deepEqual(await routeUsers(directTask),[sales]);
   const outsideId=(await request('admin','/tasks',{...taskInput,title:'РЗМ* Вне контроля',assigneeId:'anna'})).data.id;

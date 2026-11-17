@@ -167,7 +167,7 @@ async function draftSummary(d:Dialog,db:Db){
 }
 async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string){
  const summary=await draftSummary(d,db);
- const action=d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':'Проверьте перед отправкой';
+ const action=d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
  const title=heading??(d.payload.id?action+' · #'+d.payload.id:'Проверьте новую задачу');
  const redo={...d.payload,values:d.payload.kind==='reminder'?{days:d.values.days}:undefined};
  return screen(u,ch,`${title}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
@@ -178,9 +178,10 @@ async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string){
 async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Date):Promise<BotScreen>{
  let response:BotScreen;
  const {payload,title}=await prepareVoiceAction(u,intent,db);
- const kind=payload.kind as typeof intent.kind;
+ const kind=payload.kind as typeof intent.kind|'complete';
  if(intent.values.dueDay)payload.values={dueDay:intent.values.dueDay};
- const fields=kind==='accept'&&!intent.values.comment?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
+ const fields:Field[]=kind==='complete'&&intent.values.comment?[{key:'comment',label:'Результат',min:1,max:4000}]:
+  kind==='accept'&&!intent.values.comment?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
  const values:Record<string,string>={};
  if(kind==='create_task'){
   if(u.role==='employee'&&!intent.values.assignee)values.assignee=u.id;
@@ -379,7 +380,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   else if(p.kind==='deadline'){const outcome=await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,plan:v.plan,proposedDeadline:v.deadline,expectedVersion:p.version!});result=outcome.applied?'Крайний срок изменён.':'Новый срок предложен. Текущий крайний срок изменится после согласования.'}
   else if(p.kind==='clarification'){await answerClarification(u,p.target!,v.answer);result='Ответ отправлен согласующему. Этап ожидает его решения.'}
   else if(['approve','reject','later','clarify'].includes(p.kind!)){const r=await decide(u,p.target!,{decision:p.kind as 'approve'|'reject'|'later'|'clarify',comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':'Согласование завершено.'}
-  else{await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return',v.comment||'',p.version!);result=p.kind==='submit'?'Результат передан на приёмку. Ожидается решение руководителя.':p.kind==='return'?'Задача возвращена. Замечания сохранены для исполнителя.':'Результат принят. Задача завершена.'}
+  else{await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return'|'complete',v.comment||'',p.version!);result=p.kind==='submit'?'Результат передан на приёмку. Ожидается решение руководителя.':p.kind==='return'?'Задача возвращена. Замечания сохранены для исполнителя.':'Задача завершена.'}
   const undo=await lastUndo(u,undefined,db);
   if(p.id&&(await db.query("SELECT 1 FROM bitrix_operations WHERE task_id=$1 AND payload->>'actorId'=$2 AND created_at>=transaction_timestamp() AND state='pending' LIMIT 1",[p.id,u.id])).rowCount)result+='\n\nДействие сохранено в РУСПЭТ. Обмен с Битрикс24 выполняется по очереди; состояние видно в карточке задачи.';
   if(resultTask&&p.kind==='delegate')result+='\nПоручение создано локально: автоматическое создание задач в Битрикс24 пока не включено.';

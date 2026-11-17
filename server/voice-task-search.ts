@@ -2,7 +2,7 @@ import type {Db} from './db.js';
 import {canManage,canRequest} from './domain.js';
 import {okbConfigured,okbPool} from './okb.js';
 import {visibleTasks} from './service.js';
-import {canReview} from '../shared/actions.js';
+import {canComplete,canReview} from '../shared/actions.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 import type {Approval,ApprovalScope,Task,User} from '../shared/types.js';
 import type {VoiceKind} from './voice-intent.js';
@@ -42,7 +42,7 @@ function companyScore(name:string,query:string[]){
 }
 function applicable(actor:User,task:Task,kind:VoiceKind,scope:ApprovalScope|null,pending?:Approval){
  if(kind==='deadline')return !pending&&task.status==='active'&&canRequest(actor,task);
- if(kind==='submit')return !pending&&(task.status==='active'&&canRequest(actor,task)||task.status==='review'&&canReview(actor,task,scope));
+ if(kind==='submit')return !pending&&(task.status==='active'&&canRequest(actor,task)||task.status==='review'&&(canReview(actor,task,scope)||canComplete(actor,task,scope)));
  if(kind==='accept'||kind==='return')return !pending&&task.status==='review'&&canReview(actor,task,scope);
  if(kind==='clarification')return !!pending?.clarification_requested_at&&!pending.clarification_answered_at&&pending.requester_id===actor.id;
  if(kind==='approve'||kind==='reject'||kind==='clarify')return !!pending&&

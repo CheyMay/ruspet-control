@@ -2,7 +2,8 @@ import {button,htmlScreen,type Payload,type ListOrigin} from './bot-ui.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 import {botDue,botTaskStatus,sortBotTasks} from './bot-presentation.js';
 import {escapeHtml as h} from '../shared/report-links.js';
-import {actionItems} from '../shared/actions.js';
+import {actionItems,canComplete} from '../shared/actions.js';
+import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
 import {bootstrap,visibleTasks} from './service.js';
@@ -23,15 +24,16 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
  const lines=slice.map(({task:t,hint,pending})=>{
   const facts=['#'+t.id,hint||botTaskStatus(t,now,pending)];
   if(t.status!=='completed')facts.push(botDue(t,now));
-  if(t.assignee_id!==u.id)facts.push(name(t.assignee_id));
-  return `<b>${h(compactTaskTitle(t.title,126))}</b>\n${h(facts.join(' · '))}`;
+  return `<b>${h(compactTaskTitle(t.title,126))}</b>\n${h(facts.join(' · '))}\nИсполнитель · ${h(name(t.assignee_id))}\nПостановщик · ${h(name(t.creator_id))}`;
  });
  const list:ListOrigin={op:p.op,page,filter:p.filter,owner:p.owner,query:p.query,target:p.target};
- const choices=slice.map(({task:t})=>button('#'+t.id,'task',{id:t.id,list}));
+ const scope=approvalScope(await approvalHierarchy(db));
+ const choices=slice.map(({task:t,pending})=>[button('#'+t.id,'task',{id:t.id,list}),
+  ...(!pending&&canComplete(u,t,scope)?[button('Завершить #'+t.id,'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
  const range=slice.length===1?String(start+1):`${start+1}–${start+slice.length}`;
  const count=pages>1?`${range} из ${items.length}`:String(items.length);
  return htmlScreen(u,ch,`<b>${h(label)}</b> · ${count}\n\n${lines.join('\n\n')||'Здесь пока нет задач.'}`,[
-  ...Array.from({length:Math.ceil(choices.length/2)},(_,i)=>choices.slice(i*2,i*2+2)),
+  ...choices,
   [...(page?[button('← Назад',p.op,{...list,page:page-1})]:[]),...(page+1<pages?[button('Дальше →',p.op,{...list,page:page+1})]:[])],
   [...(p.op==='director_batch'?[]:[button('Фильтры','task_filters',{owner:p.owner})]),...(p.owner&&p.owner!==u.id?[button('К команде','team')]:[]),button('Меню','home')]
  ],db);

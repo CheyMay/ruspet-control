@@ -1,5 +1,5 @@
 import type {Task} from './types.js';
-export const priceLabels={low:'Низкобюджетные',medium:'Средние',high:'Высокие',premium:'Премиум',unknown:'Цена не указана'} as const;
+export const priceLabels={low:'Низкобюджетные',medium:'Среднебюджетные',high:'Высокобюджетные',premium:'Премиум',unknown:'Цена не указана'} as const;
 export type PriceBand=keyof typeof priceLabels;
 export function parsePrice(value:unknown):number|null {
  if(value===null||value===undefined||value==='')return null;
@@ -11,4 +11,4 @@ export function taskPrice(t:Pick<Task,'price'|'source_fields'>){return parsePric
 export function priceBand(t:Pick<Task,'price'|'source_fields'>):PriceBand{const n=taskPrice(t);return n===null?'unknown':n<5000?'low':n<55000?'medium':n<500000?'high':'premium';}
 export function priceCounts(tasks:Task[]){const counts={low:0,medium:0,high:0,premium:0,unknown:0};for(const task of tasks)counts[priceBand(task)]++;return counts;}
 export const formatPrice=(t:Pick<Task,'price'|'source_fields'>)=>taskPrice(t)===null?'Цена не указана':taskPrice(t)!.toLocaleString('ru-RU',{maximumFractionDigits:2})+' ₽';
-export function priceSummary(tasks:Task[]){const c=priceCounts(tasks);return `${c.low} низкобюджетных · ${c.medium} средних · ${c.high} высоких · ${c.premium} премиум${c.unknown?' · '+c.unknown+' без цены':''}`;}
+export function priceSummary(tasks:Task[]){const c=priceCounts(tasks);return `${c.low} низкобюджетных · ${c.medium} среднебюджетных · ${c.high} высокобюджетных · ${c.premium} премиум${c.unknown?' · '+c.unknown+' без цены':''}`;}
