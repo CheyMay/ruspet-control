@@ -14,4 +14,5 @@ import './staff-onboarding.css';
 import './personal-workspace.css';
 import './mobile-workspace.css';
 import './task-card.css';
+import './search-filter.css';
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

@@ -2,6 +2,8 @@ import {useEffect,useState} from 'react';
 import type {User} from '../shared/types.js';
 import {api,viewAsLink} from './api.js';
 import {EmployeeProfileEditor} from './EmployeeProfileEditor.js';
+import {matchesFilter} from './SearchFilter.js';
+import {useRememberedFilter} from './remembered-filter.js';
 
 export function moscowTimestamp(value:string|null|undefined){
  return value?new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'})+' МСК':'—';
@@ -70,8 +72,20 @@ export function SystemHealth(){
 }
 
 type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean;password_login?:boolean}[];visibleTasks:number;paired_at:string|null;telegram_id:string|null;invitation_expires:string|null};
+const accessFilters={all:'Все',ready:'Вход настроен',setup:'Нужно подключить',disabled:'Вход отключён'} as const;
+type StaffAccess=Exclude<keyof typeof accessFilters,'all'>;
+function staffLogin(person:AccessPerson):{state:StaffAccess;label:string}{
+ const enabled=person.accounts.filter(account=>account.enabled);
+ if(enabled.some(account=>account.password_login!==false||person.paired_at))return {state:'ready',label:accessFilters.ready};
+ if(enabled.length)return {state:'setup',label:'Нужна привязка Telegram'};
+ if(person.accounts.length)return {state:'disabled',label:accessFilters.disabled};
+ return {state:'setup',label:'Профиль без входа'};
+}
+
 export function AccessDirectory({roles,currentUserId}:{roles:Record<string,string>;currentUserId:string}){
  const {value,error,busy,refresh}=usePanelData<AccessPerson[]>('/system/access');
+ const [access,setAccess]=useRememberedFilter(currentUserId,'AccessDirectory.access','all');
+ const [sort,setSort]=useRememberedFilter(currentUserId,'AccessDirectory.sort','name');
  const [query,setQuery]=useState(''),[invite,setInvite]=useState<{name:string;url:string}|null>(null),[creating,setCreating]=useState(false),[notice,setNotice]=useState(''),[inviteError,setInviteError]=useState('');
  const [accountPerson,setAccountPerson]=useState<AccessPerson|null>(null),[accountLogin,setAccountLogin]=useState(''),[accountBusy,setAccountBusy]=useState(false),[accountError,setAccountError]=useState(''),[newAccount,setNewAccount]=useState<{name:string;username:string;password:string}|null>(null);
  const [profile,setProfile]=useState<AccessPerson|null>(null);
@@ -103,11 +117,16 @@ export function AccessDirectory({roles,currentUserId}:{roles:Record<string,strin
   try{await api('/system/access/'+encodeURIComponent(telegramPerson.id)+'/telegram','PUT',{telegramId:telegramPerson.paired_at?null:telegramId.trim(),confirmed:true});setTelegramPerson(null);setInvite(null);refresh();}
   catch(e){setInviteError((e as Error).message)}finally{setTelegramBusy(false)}
  }
- const people=value?.filter(p=>[p.name,p.position,p.branch_id,roles[p.role],...p.accounts.map(a=>a.username)].some(s=>s.toLocaleLowerCase('ru-RU').includes(query.trim().toLocaleLowerCase('ru-RU'))));
+ const entries=value?.map(person=>({person,login:staffLogin(person)}));
+ const counts={all:entries?.length??0,ready:0,setup:0,disabled:0};
+ for(const entry of entries??[])counts[entry.login.state]++;
+ const rank=sort==='ready'?['ready','setup','disabled']:['setup','disabled','ready'];
+ const people=entries?.filter(({person:p,login})=>(access==='all'||access===login.state)&&
+  matchesFilter([p.name,p.position,p.branch_id,roles[p.role],login.label,...p.accounts.map(a=>a.username)].join(' '),query))
+  .sort((a,b)=>(sort==='name'?0:rank.indexOf(a.login.state)-rank.indexOf(b.login.state))||a.person.name.localeCompare(b.person.name,'ru'));
  return <section className="panel automation-settings">
   <div className="automation-heading"><div><h2>Доступы сотрудников</h2><p className="muted">Роль, вход в панель, подключение к боту и число доступных рабочих задач.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
   {(error||inviteError)&&<p className="alert error" role="alert">{inviteError||error}</p>}
-  <p className="muted">Пользователей с активным входом: <strong>{value?.filter(p=>p.accounts.some(a=>a.enabled)).length??'—'}</strong>. Количество входов не ограничено десятью. Роль и доступ к задачам сохраняются при создании логина.</p>
   {accountError&&<p className="alert error" role="alert">{accountError}</p>}
   {profile&&<EmployeeProfileEditor person={profile} own={profile.id===currentUserId} close={()=>setProfile(null)} saved={refresh}/>}
   {telegramPerson&&<form className="source-banner" onSubmit={e=>void saveTelegram(e)}><strong>{telegramPerson.paired_at?'Отключение Telegram':'Привязка Telegram'} · {telegramPerson.name}</strong>
@@ -117,11 +136,20 @@ export function AccessDirectory({roles,currentUserId}:{roles:Record<string,strin
   {newAccount&&<div className="source-banner"><strong>Вход создан · {newAccount.name}</strong><p>Сохраните данные и передайте лично сотруднику. Пароль показывается один раз и не хранится в списке доступов.</p><label>Логин<input aria-label="Созданный логин" readOnly value={newAccount.username}/></label><label>Пароль<input aria-label="Созданный пароль" readOnly autoComplete="off" value={newAccount.password}/></label><button className="button secondary" onClick={()=>void navigator.clipboard.writeText(`Сотрудник: ${newAccount.name}\nЛогин: ${newAccount.username}\nПароль: ${newAccount.password}`).then(()=>setNotice('Данные скопированы')).catch(()=>setNotice('Выделите данные и скопируйте вручную.'))}>Копировать доступы</button><button className="button secondary" onClick={()=>{setNewAccount(null);setNotice('');}}>Скрыть данные</button><span role="status">{notice}</span></div>}
   {invite&&<div className="source-banner"><strong>{invite.name} · ссылка на 15 минут</strong><input aria-label="Ссылка подключения" readOnly value={invite.url} onFocus={e=>e.currentTarget.select()}/><button className="button secondary" onClick={()=>void navigator.clipboard.writeText(invite.url).then(()=>setNotice('Ссылка скопирована')).catch(()=>setNotice('Выделите ссылку и скопируйте вручную.'))}>Копировать</button><span role="status">{notice}</span></div>}
   {!value&&busy&&<p role="status">Загружаем список сотрудников…</p>}
-  {people&&<><div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, должность, подразделение или логин" value={query} onChange={e=>setQuery(e.target.value)}/></div>
-   <div className="table-scroll"><table><thead><tr><th>Сотрудник и должность</th><th>Права в системе</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th><th>Просмотр</th></tr></thead><tbody>{people.map(p=><tr key={p.id}>
+  {people&&<>
+   <div className="tabs access-filter-tabs" role="group" aria-label="Состояние входа">
+    {(Object.keys(accessFilters) as (keyof typeof accessFilters)[]).map(id=><button type="button" key={id} aria-pressed={access===id}
+     className={access===id?'selected':''} onClick={()=>setAccess(id)}>{accessFilters[id]} <small>{counts[id]}</small></button>)}
+   </div>
+   <div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, должность, подразделение или логин" value={query} onChange={e=>setQuery(e.target.value)}/>
+    <select aria-label="Сортировка сотрудников" value={sort} onChange={e=>setSort(e.target.value)}>
+     <option value="name">По имени</option><option value="ready">С входом сначала</option><option value="setup">Без входа сначала</option>
+    </select>
+   </div>
+   <div className="table-scroll"><table><thead><tr><th>Сотрудник и должность</th><th>Права в системе</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th><th>Просмотр</th></tr></thead><tbody>{people.map(({person:p,login})=><tr key={p.id}>
     <td><strong>{p.name}</strong><br/><small>{[p.position,p.branch_id].filter(Boolean).join(' · ')}</small></td>
     <td>{p.root_access?'Владелец':roles[p.role]}{!p.root_access&&<div><button className="text-button" aria-label={'Изменить доступ для '+p.name} onClick={()=>setProfile(p)}>Изменить</button></div>}</td><td>{p.visibleTasks}</td>
-    <td>{p.accounts.length?p.accounts.map(a=><div key={a.username}>
+    <td><small className="access-login-status" data-state={login.state}>{login.label}</small>{p.accounts.length?p.accounts.map(a=><div key={a.username}>
      {a.password_login===false?'Telegram / QR':a.username}{a.enabled?'':' · отключён'}
      {!p.root_access&&p.id!==currentUserId&&<div className="notice-actions">
       <button className="text-button" disabled={accountBusy} onClick={()=>void changeAccount(p,a.username,a.enabled?'disable':'enable')}>{a.enabled?'Отключить вход':'Включить вход'}</button>
