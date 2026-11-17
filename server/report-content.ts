@@ -16,6 +16,23 @@ export function reportText(r:Report,includeTeam=true){
   if(subset&&count)links.push({text,url:taskLink(origin,{...base,subset,...(subset==='tomorrow'?{day:s.tomorrow.day,sort:'work_priority'}:{})})});
  };
  lines.push(...Object.entries(s.filters||{}).filter(([,value])=>value).map(([label,value])=>label+' · '+String(value).slice(0,70)));
+ if(r.kind==='nextday'){
+  const day=new Date(s.tomorrow.day+'T12:00:00+03:00').toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long',timeZone:'Europe/Moscow'});
+  lines.push('',day);
+  add('Просрочки к началу дня',s.tomorrow.overdue);
+  add('Крайний срок в этот день',s.tomorrow.today);
+  add('Открыть рабочий список',s.tomorrow.total,'tomorrow');
+  lines.push(...s.notes.map(note=>'\n'+note));
+  return {text:lines.join('\n'),links};
+ }
+ const creator=s.creatorProgress;
+ if(creator){
+  lines.push('','Мои поставленные задачи');
+  add('Открыты',creator.openIds.length,'creator_open');
+  add('Были действия за период',creator.movedIds.length,'creator_moved');
+  add('Просрочены без действий за период',creator.idleOverdueIds.length,'creator_idle');
+  if(s.approvalQueue)add('Ждут моего решения',creator.myDecisionIds.length,'creator_decision');
+ }
  lines.push('','Что требует внимания');
  add('Просрочены с прошлых дней',r.metrics.overdue,'overdue');
  add('Срок истёк сегодня',s.elapsedToday,'elapsed_today');
@@ -29,7 +46,11 @@ export function reportText(r:Report,includeTeam=true){
  add(s.outcomes?'Срок изменён':'Переносы и объяснения',s.activity.transfers,s.outcomes?'transferred':undefined);
  if(s.outcomes)add('Запрошен перенос',s.outcomes.requestedTransferIds.length,'requested_transfer');
  add('Дано объяснение',s.activity.answers,s.outcomes?'explained':undefined);
- if(r.kind==='daily'){
+ if(creator){
+  add('Закрыты в срок',creator.closedOnTimeIds.length,'creator_on_time');
+  add('Закрыты после срока',creator.closedLateIds.length,'creator_late');
+ }
+ if(r.kind==='daily'&&!creator){
   lines.push('',`Следующий рабочий день · ${s.tomorrow.day}`);
   add('Предстоит',s.tomorrow.total,'tomorrow');
  }

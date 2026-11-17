@@ -54,6 +54,7 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   const rows:ReturnType<typeof button>[][]=[];
   if(report){
    const content=reportText(report);
+   if(report.kind==='nextday')rows.push([button('Задачи из плана','plan_tasks',{target:report.id,filter:report.parameters?.view||view})]);
    rows.push([button('PDF отчёта','report_pdf',{id:report.id})],
     [button('К архиву','reports',{page,filter:report.parameters?.view||view})],[button('Меню','home')]);
    const result=await screen(u,ch,content.text.slice(0,3900),rows);
@@ -63,7 +64,7 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   const archive=await listReports(u,{view,page:Math.floor(page/2)});
   for(const r of archive.items.slice((page%2)*10,(page%2)*10+10))rows.push([button(date(r.summary?.to||r.created_at)+' · '+({snapshot:'Снимок',daily:'Итоги и завтра',period:'За период',today:'Сегодня',overdue:'Просрочки',review:'Приёмка',nextday:'План'} as Record<string,string>)[r.kind||'snapshot'],'reports',{id:r.id,page,filter:view})]);
   rows.push([...(page?[button('← Назад','reports',{page:page-1,filter:view})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1,filter:view})]:[])],
-   [button('Отчёт сейчас','report_now',{filter:view}),button('Итоги дня','report_evening',{filter:view})],
+   [button('Отчёт сейчас','report_now',{filter:view}),view==='mine'?button('План на завтра','report_plan',{filter:view}):button('Итоги дня','report_evening',{filter:view})],
    reportViews(u).filter(mode=>mode!==view).map(mode=>button(reportViewLabels[mode],'reports',{filter:mode})),[button('Меню','home')]);
   return screen(u,ch,'Отчёты · '+reportViewLabels[view]+'\nСохранённых снимков: '+archive.total,rows);
  }
@@ -125,9 +126,9 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   if(view==='company')result.links=[{text:'Аналитика компании на сайте',url:new URL('/?view=overview',publicOrigin()).href}];
   return result;
  }
- if(p.op==='report_now'||p.op==='report_evening'){
+ if(p.op==='report_now'||p.op==='report_evening'||p.op==='report_plan'){
   const view=(p.filter||defaultReportView(u)) as ReportView;
-  const report=await (await import('./service.js')).makeReport(u,p.op==='report_now'?'snapshot':'daily','bot:'+randomBytes(12).toString('hex'),new Date(),{view});
+  const report=await (await import('./service.js')).makeReport(u,p.op==='report_plan'?'nextday':p.op==='report_now'?'snapshot':'daily','bot:'+randomBytes(12).toString('hex'),new Date(),{view});
   return botView(u,ch,{op:'reports',id:report.id,filter:view});
  }
  return renderBotNavigation(u,ch,p);

@@ -23,9 +23,29 @@ export function ReportSummaryView({report}:{report:Report}){
  })}</div>;
  const filters=Object.entries(summary.filters||{}).filter(([,value])=>value).map(([label,value])=>label+' · '+value);
  const outcomes=summary.outcomes,queue=summary.approvalQueue;
+ const creator=summary.creatorProgress;
+ if(report.kind==='nextday')return <div className="work-report">
+  <h3>{new Date(summary.tomorrow.day+'T12:00:00+03:00').toLocaleDateString('ru-RU',{weekday:'long',day:'numeric',month:'long',timeZone:'Europe/Moscow'})}</h3>
+  {cards([
+   {label:'Просрочки к началу дня',count:summary.tomorrow.overdue},
+   {label:'Крайний срок в этот день',count:summary.tomorrow.today},
+   {label:'Открыть рабочий список',count:summary.tomorrow.total,subset:'tomorrow'},
+  ])}
+  {summary.tomorrow.total>0&&<p>В рабочем списке просрочки идут первыми, внутри очереди задачи расположены по цене и сроку.</p>}
+  {summary.notes.map(note=><p className="source-banner" key={note}>{note}</p>)}
+ </div>;
  return <div className="work-report">
   <p className="report-period"><strong>{date(summary.from)} — {date(summary.to)} МСК</strong></p>
   {!!filters.length&&<p className="report-filters">{filters.join(' / ')}</p>}
+  {creator&&<>
+   <h3>Мои поставленные задачи</h3>
+   {cards([
+    {label:'Открыты',count:creator.openIds.length,subset:'creator_open'},
+    {label:'Были действия за период',count:creator.movedIds.length,subset:'creator_moved'},
+    {label:'Просрочены без действий за период',count:creator.idleOverdueIds.length,subset:'creator_idle'},
+    ...(queue?[{label:'Ждут моего решения',count:creator.myDecisionIds.length,subset:'creator_decision'}]:[]),
+   ])}
+  </>}
   <h3>Что требует внимания</h3>
   {cards([
    {label:'Просрочены с прошлых дней',count:report.metrics.overdue,subset:'overdue'},
@@ -42,13 +62,15 @@ export function ReportSummaryView({report}:{report:Report}){
    {label:outcomes?'Срок изменён':'Переносы и объяснения',count:summary.activity.transfers,subset:outcomes?'transferred':undefined},
    ...(outcomes?[{label:'Запрошен перенос',count:outcomes.requestedTransferIds.length,subset:'requested_transfer'}]:[]),
    {label:'Дано объяснение',count:summary.activity.answers,subset:outcomes?'explained':undefined},
+   ...(creator?[{label:'Закрыты в срок',count:creator.closedOnTimeIds.length,subset:'creator_on_time'},
+    {label:'Закрыты после срока',count:creator.closedLateIds.length,subset:'creator_late'}]:[]),
   ])}
   {!!summary.team.length&&<><h3>По задачам сотрудников</h3>
    <div className="table-scroll"><table><thead><tr><th>Исполнитель</th><th>Просрочено ранее</th><th>Закрыто</th><th>Сдано</th><th>Срок изменён</th></tr></thead>
     <tbody>{summary.team.map(person=><tr key={person.id}><th scope="row">{person.name}</th><td>{person.overdue}</td><td>{person.closed}</td><td>{person.submitted}</td><td>{person.transfers}</td></tr>)}</tbody>
    </table></div>
   </>}
-  {report.kind==='daily'&&<><h3>Следующий рабочий день · {summary.tomorrow.day}</h3>
+  {report.kind==='daily'&&!creator&&<><h3>Следующий рабочий день · {summary.tomorrow.day}</h3>
    <p>Просрочены к началу дня · {summary.tomorrow.overdue}. Срок в этот день · {summary.tomorrow.today}.</p>
    <a className="button secondary" href={link('tomorrow')}>Открыть рабочий список · {summary.tomorrow.total}</a>
   </>}

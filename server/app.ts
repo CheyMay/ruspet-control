@@ -52,7 +52,7 @@ declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
 const selector=z.enum(['branchManager','salesHead','director','creator']);
 const rules=z.object({requiredPrice:z.boolean().optional(),showPlanning:z.boolean().optional(),writtenRules:z.array(z.object({text:z.string().trim().min(1).max(500),severity:z.enum(['critical','warning','info'])})).max(30).optional(),overdue:z.boolean(),missingDeadline:z.boolean(),plannedOverdue:z.boolean(),requiredFields:z.boolean(),code:z.boolean(),planning:z.boolean().optional(),responseMinLength:z.number().int().min(5).max(200),reminderMinutes:z.number().int().min(1).max(1440),maxReminders:z.number().int().min(0).max(10),routes:z.object({deadline:z.array(selector).min(1).max(4),completion:z.array(selector).min(1).max(4)})});
-const reportView=z.enum(['mine','team','company']);
+const reportView=z.enum(['mine','created','team','company']);
 const reportParameters=z.object({view:reportView.optional(),actorId:z.string().max(100).optional(),from:date.optional(),to:date.optional(),assigneeId:z.string().max(100).optional(),creatorId:z.string().max(100).optional(),priceBand:z.enum(['low','medium','high','premium','unknown']).optional(),queue:z.enum(['all','front','overdue','today','review','completed','no_deadline']).optional()});
 const viewAsHeader='X-Ruspet-View-As';
 const viewAsReads=new Set(['/bootstrap','/journal','/management/progress','/alerts','/delegations','/reports']);
@@ -199,7 +199,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/operations/retry',async(req,res)=>{await retryJob(req.actor,z.object({key:text}).parse(req.body).key);await tick();res.json({ok:true});});
  app.get('/api/telegram/status',async(req,res)=>{res.json(await pilotStatus(req.actor));});
  app.post('/api/telegram/pairing',async(req,res)=>res.json(await pairPilot(req.actor,z.object({userId:z.string().max(100).optional()}).parse(req.body||{}).userId)));
- app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean(),taskDelivery:z.boolean().optional(),deadlineDelivery:z.boolean().optional()}).parse(req.body));res.json({ok:true})});
+ app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean(),taskDelivery:z.boolean().optional(),deadlineDelivery:z.boolean().optional(),workdayDelivery:z.boolean().optional()}).parse(req.body));res.json({ok:true})});
  app.post('/api/bot/screen',async(req,res)=>{
   const {screen}=z.object({screen:z.enum(['home','tasks','notices','inbox','search_prompt']).default('home')}).parse(req.body||{});
   const channel=webBotChannel(req);

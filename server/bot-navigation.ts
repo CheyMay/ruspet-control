@@ -1,12 +1,12 @@
 import {button,htmlScreen,type Payload,type ListOrigin} from './bot-ui.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 import {botDue,botTaskStatus,sortBotTasks} from './bot-presentation.js';
-import {escapeHtml as h} from '../shared/report-links.js';
+import {escapeHtml as h,workdayReports} from '../shared/report-links.js';
 import {actionItems,activeTaskApproval,canComplete,taskNextAction} from '../shared/actions.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
-import {bootstrap,visibleTasks} from './service.js';
+import {bootstrap,getReport,visibleTasks} from './service.js';
 import {assert,canManage} from './domain.js';
 import {hasCompanyOverview} from '../shared/report-parameters.js';
 import {directorBatchTasks} from './management-notices.js';
@@ -14,7 +14,7 @@ import {lastUndo} from './undo.js';
 import {pool,type Db} from './db.js';
 import {personalNotifications} from './notifications.js';
 import {groupNotifications} from '../shared/notifications.js';
-import type {User,Task} from '../shared/types.js';
+import type {Report,User,Task} from '../shared/types.js';
 
 const tasksPerPage=4;
 type TaskListItem={task:Task;hint?:string;pending?:boolean};
@@ -35,11 +35,22 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
  return htmlScreen(u,ch,`<b>${h(label)}</b> · ${count}\n\n${lines.join('\n\n')||'Здесь пока нет задач.'}`,[
   ...choices,
   [...(page?[button('← Назад',p.op,{...list,page:page-1})]:[]),...(page+1<pages?[button('Дальше →',p.op,{...list,page:page+1})]:[])],
-  [...(p.op==='director_batch'?[]:[button('Фильтры','task_filters',{owner:p.owner})]),...(p.owner&&p.owner!==u.id?[button('К команде','team')]:[]),button('Меню','home')]
+  [...(p.op==='plan_tasks'?[button('К плану','reports',{id:p.target,filter:p.filter})]:p.op==='director_batch'?[]:[button('Фильтры','task_filters',{owner:p.owner})]),...(p.owner&&p.owner!==u.id?[button('К команде','team')]:[]),button('Меню','home')]
  ],db);
 }
 
 export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool){
+ if(p.op==='plan_tasks'){
+  const report:Report=await getReport(u,p.target!);
+  assert(report.kind==='nextday',404,'План не найден.');
+  const taskIds=new Set(report.summary?.tomorrow.ids??report.rows.map(t=>t.id));
+  const tasks=new Map((await visibleTasks(u,db)).filter(t=>taskIds.has(t.id)&&t.status==='active').map(t=>[t.id,t]));
+  const people=new Map((await db.query<{id:string;name:string}>('SELECT id,name FROM users WHERE id=ANY($1)',[
+   [...new Set([...tasks.values()].flatMap(t=>[t.assignee_id,t.creator_id]))],
+  ])).rows.map(person=>[person.id,person.name]));
+  const items=[...taskIds].flatMap(id=>tasks.has(id)?[{task:tasks.get(id)!}]:[]);
+  return taskList(u,ch,p,items,'Задачи из плана',new Date(),id=>people.get(id)||id,db);
+ }
  if(p.op==='notice_menu')return htmlScreen(u,ch,'Уведомления',[[button('Открыть уведомления','notices'),button('Нужно действие','inbox')]]);
  if(p.op==='notices'){
   const groups=groupNotifications(await personalNotifications(u,true)).slice(0,5);
@@ -52,7 +63,8 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   return htmlScreen(u,ch,'<b>Новые уведомления</b>\n\n'+(lines.join('\n\n')||'Все уведомления прочитаны.'),[
    ...groups.filter(group=>group[0].task_id).map(group=>[button('Открыть #'+group[0].task_id,'task',{id:group[0].task_id!,list:{op:'notices'}})]),
    ...groups.flatMap(([item])=>item.management_notice?.kind==='director-approvals'?[[button('Открыть пакет','director_batch',{target:item.management_notice.batchId})]]:
-    item.management_notice?.kind==='morning-report'?[[button('Открыть утренний отчёт','reports',{id:item.management_notice.reportId})]]:[]),
+    item.management_notice?.kind==='morning-report'?[[button('Открыть утренний отчёт','reports',{id:item.management_notice.reportId})]]:
+    workdayReports(item.management_notice).map(report=>[button(report.label,'reports',{id:report.id,filter:report.view})])),
    [...(taskNotices.some(notice=>notice?.hasDeadlines)?[button('Мои сроки','tasks',{filter:'my_due'})]:[]),
     ...(taskNotices.some(notice=>notice?.hasAssignments)?[button('Мои задачи','tasks',{filter:'mine'})]:[])],
    ...(groups.length?[[button('Отметить показанные прочитанными','notices_read',{noticeIds:groups.flat().map(item=>item.id)})]]:[]),
@@ -140,7 +152,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  if(p.op==='menu_more'){
   const last=await lastUndo(u);
   return htmlScreen(u,ch,'<b>Другие разделы</b>\n\nНапоминания, отчёты и помощь.',[
-   [button('🔔 Напоминания','alerts'),...(u.role!=='employee'?[button('📁 Отчёты','reports')]:[])],
+   [button('🔔 Напоминания','alerts'),button('📁 Отчёты','reports')],
    ...(canManage(u)?[[button('Сводка команды','brief',{filter:'team'})]]:[]),
    ...(last?[[button('Отменить последнее действие','undo_prepare',{id:last.task_id,target:last.id})]]:[]),
    [button('Поиск','search_prompt'),button('Как пользоваться','help')],[button('Меню','home')]

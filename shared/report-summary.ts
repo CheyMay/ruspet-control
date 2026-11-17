@@ -60,4 +60,7 @@ export function summarizeWork(tasks:Task[],users:User[],events:Event[],p:ReportP
   tomorrow:{day:tomorrowDay,total:tomorrow.length,overdue:tomorrow.filter(t=>t.deadline&&businessDay(t.deadline)<tomorrowDay).length,today:tomorrow.filter(t=>t.deadline&&businessDay(t.deadline)===tomorrowDay).length,prices:priceCounts(tomorrow),ids:tomorrow.map(t=>t.id)},
   previous:null as null|{id:string;at:string;closedChange:number;processedChange:number;openChange:number},notes:[] as string[]};
 }
-export type ReportSummary=ReturnType<typeof summarizeWork>&{approvalQueue?:{decisionIds:string[];clarificationIds:string[]}};
+export type ReportSummary=ReturnType<typeof summarizeWork>&{
+ approvalQueue?:{decisionIds:string[];clarificationIds:string[]};
+ creatorProgress?:{openIds:string[];movedIds:string[];idleOverdueIds:string[];myDecisionIds:string[];closedOnTimeIds:string[];closedLateIds:string[]};
+};

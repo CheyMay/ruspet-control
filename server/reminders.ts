@@ -103,7 +103,6 @@ export async function tickTaskReminders(now=new Date()){
     if(hhmm>='09:00'&&hhmm<'12:00'&&Date.parse(u.paired_at)<=at(day,'09:00').getTime())await sendReport('snapshot',`morning:${u.id}:${day}`,'morning',at(day,'09:00'),at(day,'12:00'));
     if(!remaining.length)await db.query("UPDATE task_alerts SET canceled_at=$2 WHERE recipient_id=$1 AND kind='noon' AND acknowledged_at IS NULL AND canceled_at IS NULL",[u.id,now.toISOString()]);
     if(hhmm>='12:00'&&remaining.length&&Date.parse(u.paired_at)<=at(day,'12:00').getTime())await sendReport('overdue',`noon:${u.id}:${day}`,'noon',at(day,'12:00'),expires);
-    if(hhmm>='19:01'&&Date.parse(u.paired_at)<=at(day,'19:01').getTime())await sendReport('daily',`evening:${u.id}:${day}`,'evening',at(day,'19:01'),expires);
 
    }
   }

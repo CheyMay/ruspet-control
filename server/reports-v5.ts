@@ -4,15 +4,17 @@ import {assert,canSee,globalAccess,metrics,moscowDay} from './domain.js';
 import {config} from './service.js';
 import {reportAnalysis} from '../shared/reporting.js';
 import {summarizeWork,frontTasks,matchesParameters,type FrontSnapshot,workKinds,reportOutcome} from '../shared/report-summary.js';
-import {defaultReportView,localDayStart,nextBusinessDay,reportViews,type ReportParameters,type ReportView} from '../shared/report-parameters.js';
-import {taskQueue,elapsedToday} from '../shared/queues.js';
+import {compareWorkPlan,defaultReportView,localDayStart,nextBusinessDay,reportViews,type ReportParameters,type ReportView} from '../shared/report-parameters.js';
+import {businessDay,taskQueue,elapsedToday} from '../shared/queues.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {teamMemberIds} from './org.js';
 import type {User,Task,Event,Report,Approval} from '../shared/types.js';
-import {activeTaskApproval,approvalTurn} from '../shared/actions.js';
+import type {ReportSummary} from '../shared/report-summary.js';
+import {activeTaskApproval,approvalTurn,taskNextAction} from '../shared/actions.js';
 import {branchCovers} from '../shared/branches.js';
+import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 
-const scopeForView=(u:User,view:ReportView)=>view==='mine'?'user:'+u.id:view==='team'?'team:'+u.id:'company';
+const scopeForView=(u:User,view:ReportView)=>view==='mine'?'user:'+u.id:view==='created'?'created:'+u.id:view==='team'?'team:'+u.id:'company';
 export function reportScopes(u:User,view?:ReportView){
  const allowed=reportViews(u);
  if(view)assert(allowed.includes(view),403,'Этот раздел отчётов недоступен.');
@@ -44,6 +46,7 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   const p:ReportParameters={...raw,view};
   if(p.queue==='all')delete p.queue;
   if(view==='mine'){assert(!p.assigneeId||p.assigneeId===u.id,403,'Личный отчёт формируется только по своим задачам.');p.assigneeId=u.id;}
+  if(view==='created'){assert(!p.creatorId||p.creatorId===u.id,403,'В этом отчёте видны только поставленные вами задачи.');p.creatorId=u.id;}
   if(view==='team')assert(p.assigneeId!==u.id,400,'Для своих задач откройте личный отчёт.');
   const from=p.from?new Date(p.from):localDayStart(moscowDay(now)),to=p.to?new Date(p.to):now;
   assert(Number.isFinite(from.getTime())&&Number.isFinite(to.getTime())&&from<=to&&to<=now,400,'Укажите корректный период, не позже текущего времени.');
@@ -53,8 +56,8 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   if(old){assert(old.comparison_key===key,409,'Этот запрос уже использован с другими параметрами. Создайте новый отчёт.');return old;}
   const team=view==='team'?new Set(await teamMemberIds(u,db)):null;
   if(team&&p.assigneeId)assert(team.has(p.assigneeId),403,'Исполнитель вне вашей команды.');
-  const inView=(task:Task)=>view==='mine'?task.assignee_id===u.id:team?team.has(task.assignee_id):true;
-  const current=(await db.query<Task>('SELECT * FROM tasks ORDER BY deadline NULLS LAST,id')).rows.filter(t=>canSee(u,t));
+  const inView=(task:Task)=>view==='mine'?task.assignee_id===u.id:view==='created'?task.creator_id===u.id:team?team.has(task.assignee_id):true;
+  const current=(await db.query<Task>('SELECT * FROM tasks WHERE ($1::text IS NULL OR creator_id=$1) ORDER BY deadline NULLS LAST,id',[view==='created'?u.id:null])).rows.filter(t=>canSee(u,t));
   const allowedIds=current.map(t=>t.id),allowed=new Set(allowedIds);
   const history=(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) ORDER BY created_at,id',[allowedIds])).rows as Event[];
   const byCurrent=new Map(current.map(t=>[t.id,t]));const byHistory=new Map<string,Event[]>();for(const e of history){const list=byHistory.get(e.task_id!)||[];list.push(e);byHistory.set(e.task_id!,list);}
@@ -66,12 +69,13 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   const scoped=atEnd.filter(t=>matchesParameters(t,{...p,queue:'all'},to));
   const filtered=atEnd.filter(t=>matchesParameters(t,p,to));
   const users=(await db.query('SELECT id,name,role,branch_id,position FROM users')).rows as User[];
+  const currentAssignees=new Set(current.map(t=>t.assignee_id));
   const eligible=users.filter(person=>(view==='mine'?person.id===u.id:!team||team.has(person.id))&&
-   (globalAccess(u)||person.id===u.id||u.role==='branch_manager'&&branchCovers(u.branch_id,person.branch_id)||current.some(t=>t.assignee_id===person.id)));
+   (view==='created'?currentAssignees.has(person.id):globalAccess(u)||person.id===u.id||u.role==='branch_manager'&&branchCovers(u.branch_id,person.branch_id)||currentAssignees.has(person.id)));
   if(p.assigneeId)assert(eligible.some(person=>person.id===p.assigneeId),403,'Исполнитель вне доступной области.');
   const owners=p.assigneeId?[p.assigneeId]:[...new Set(eligible.map(person=>person.id))];
   // Only a live report may establish today's baseline; historical reports never invent it.
-  if(day===moscowDay(now)&&Math.abs(to.getTime()-now.getTime())<1000)await captureFronts(db,owners,now);
+  if(view!=='created'&&day===moscowDay(now)&&Math.abs(to.getTime()-now.getTime())<1000)await captureFronts(db,owners,now);
   const fronts=(await db.query('SELECT * FROM work_fronts WHERE user_id=ANY($1) AND day=$2 AND captured_at<=$3',[owners,day,to.toISOString()])).rows.map((f:FrontSnapshot)=>({...f,rows:f.rows.filter(t=>canSee(u,t)&&inView(t))}));
   const selectedQueue=p.queue?p.queue:['today','overdue','review'].includes(kind)?kind:'all';
   const queueMatches=(t:Task)=>selectedQueue==='all'||selectedQueue==='today'&&!!t.deadline&&moscowDay(t.deadline)===day||selectedQueue==='overdue'&&!!t.deadline&&new Date(t.deadline)<to||selectedQueue==='review'&&t.status==='review'||selectedQueue==='completed'&&t.status==='completed'||selectedQueue==='no_deadline'&&!t.deadline||selectedQueue==='front'&&t.status!=='completed'&&frontTasks([t],day).length>0;
@@ -82,35 +86,64 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   });
   const closedIds=new Set(inRange.filter(e=>reportOutcome(e)==='task_completed').map(e=>e.task_id));
   const touched=new Set(inRange.filter(e=>workKinds.has(reportOutcome(e))).map(e=>e.task_id));
+  const live=Math.abs(+now-+to)<1000;
+  const nextDay=nextBusinessDay(day);
+  const candidates=kind==='nextday'?filtered.filter(t=>t.status==='active'&&t.deadline&&businessDay(t.deadline)<=nextDay):[];
+  const approvalTasks=kind==='nextday'?candidates:scoped;
+  const approvals=live?(await db.query<Approval>("SELECT * FROM approvals WHERE state='pending' AND canceled_at IS NULL AND task_id=ANY($1)",[approvalTasks.map(t=>t.id)])).rows:[];
+  const byApprovalTask=new Map(approvalTasks.map(t=>[t.id,t]));
+  const currentApproval=new Map(approvals.filter(a=>activeTaskApproval(byApprovalTask.get(a.task_id)!,a)&&
+   (a.type!=='deadline'||!a.proposed_deadline||Date.parse(a.proposed_deadline)>+to)).map(a=>[a.task_id,a]));
   let tasks:Task[];
-  if(p.queue)tasks=filtered;
+  if(kind==='nextday')tasks=candidates.filter(t=>!currentApproval.has(t.id)||taskNextAction(t,currentApproval.get(t.id))?.userId===t.assignee_id)
+   .sort((a,b)=>compareWorkPlan(a,b,nextDay));
+  else if(p.queue)tasks=filtered;
   else if(['today','overdue','review'].includes(kind))tasks=scoped.filter(t=>taskQueue(t,to)===kind||kind==='overdue'&&elapsedToday(t,to));
-  else if(kind==='nextday')tasks=frontTasks(scoped,nextBusinessDay(day)).filter(t=>t.status==='active');
+  else if(view==='created')tasks=scoped.filter(t=>t.status!=='completed'||closedIds.has(t.id));
   else tasks=scoped.filter(t=>frontTasks([t],day).length>0||closedIds.has(t.id)||kind==='period'&&touched.has(t.id));
   if(p.actorId)tasks=tasks.filter(t=>touched.has(t.id));
   const relevant=new Set(scoped.map(t=>t.id));const summary=summarizeWork(tasks,users,inRange.filter(e=>relevant.has(e.task_id||'')),{...p,queue:selectedQueue as ReportParameters['queue']},from,to,fronts,tracked,stateAvailable,atEnd);
   if(!stateAvailable)summary.notes.push('На конец выбранного периода ещё не было данных в системе. Историческое состояние недоступно.');
-  else if(!summary.completeHistory)summary.notes.push('История действий покрывает период частично: учёт начат '+new Date(tracked!).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})+' МСК. Более ранняя история не восстановлена.');
-  if(!summary.front.capturedAt)summary.notes.push('Утренний фронт на выбранную дату не был сохранён. Сравнение «ожидалось / сделано» недоступно.');
-  else if(new Date(summary.front.capturedLatest||summary.front.capturedAt).getTime()>localDayStart(day).getTime()+9*3600000+60000)summary.notes.push('Фронт впервые сохранён после 09:00; сравнение начинается с фактического времени снимка.');
+  else if(tracked&&!summary.completeHistory)summary.notes.push('История действий покрывает период частично: учёт начат '+new Date(tracked).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'})+' МСК. Более ранняя история не восстановлена.');
+  if(!summary.front.capturedAt&&view!=='created'&&kind!=='nextday')summary.notes.push('Утренний фронт на выбранную дату не был сохранён. Сравнение «ожидалось / сделано» недоступно.');
+  else if(summary.front.capturedAt&&new Date(summary.front.capturedLatest||summary.front.capturedAt).getTime()>localDayStart(day).getTime()+9*3600000+60000)summary.notes.push('Фронт впервые сохранён после 09:00; сравнение начинается с фактического времени снимка.');
   const previous=(await db.query('SELECT id,created_at,rows,summary,analysis FROM reports WHERE scope=$1 AND kind=$2 AND comparison_key=$3 AND (summary->>\'to\')::timestamptz<=$4 ORDER BY created_at DESC,id DESC LIMIT 1',[scope,kind,key,to.toISOString()])).rows[0]||null;
   if(previous?.summary){summary.previous={id:previous.id,at:previous.summary.to,closedChange:summary.activity.closed-previous.summary.activity.closed,processedChange:summary.activity.processed-previous.summary.activity.processed,openChange:tasks.filter(t=>t.status!=='completed').length-Number(previous.summary.openCount||0)};}
-  const approvalQueue=Math.abs(+now-+to)<1000 ? {decisionIds:[] as string[],clarificationIds:[] as string[]}:undefined;
-  const approvalTasks=approvalQueue&&!p.queue&&!p.actorId&&['snapshot','daily'].includes(kind)?scoped:tasks;
-  const a=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=ANY($1)',[approvalTasks.map(t=>t.id)])).rows,c=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1)',[tasks.map(t=>t.id)])).rows,cfg=await config(db);
+  const approvalQueue=live&&kind!=='nextday'?{decisionIds:[] as string[],clarificationIds:[] as string[]}:undefined;
+  const taskIds=new Set(tasks.map(t=>t.id));
   if(approvalQueue){
-   const byId=new Map(approvalTasks.map(t=>[t.id,t]));
-   for(const approval of a){
-    const task=byId.get(approval.task_id);
-    if(!task||!activeTaskApproval(task,approval)||!approvalTurn(approval).userId)continue;
-    if(approval.type==='deadline'&&approval.proposed_deadline&&Date.parse(approval.proposed_deadline)<=+to)continue;
+   for(const approval of currentApproval.values()){
+    if(!approvalTurn(approval).userId||((p.queue||p.actorId||!['snapshot','daily'].includes(kind))&&!taskIds.has(approval.task_id)))continue;
     const ids=approvalTurn(approval).clarification?approvalQueue.clarificationIds:approvalQueue.decisionIds;
-    if(!ids.includes(task.id))ids.push(task.id);
+    ids.push(approval.task_id);
    }
   }
+  const c=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1)',[[...taskIds]])).rows,cfg=await config(db);
+  const stored:ReportSummary&{openCount:number}={...summary,approvalQueue,openCount:tasks.filter(t=>t.status!=='completed').length};
+  if(kind==='nextday'){
+   stored.tomorrow={...summary.tomorrow,ids:[...taskIds],total:tasks.length,prices:summary.prices,
+    overdue:tasks.filter(t=>businessDay(t.deadline!)<nextDay).length,today:tasks.filter(t=>businessDay(t.deadline!)===nextDay).length};
+  }
+  if(view==='created'){
+   const reviewScope=live?approvalScope(await approvalHierarchy(db)):null;
+   const open=tasks.filter(t=>t.status!=='completed');
+   const moved=new Set(inRange.filter(e=>e.task_id&&taskIds.has(e.task_id)&&workKinds.has(reportOutcome(e))).map(e=>e.task_id!));
+   const closedOnTime=new Set<string>(),closedLate=new Set<string>();
+   for(const e of inRange){
+    if(!e.task_id||!taskIds.has(e.task_id)||reportOutcome(e)!=='task_completed')continue;
+    const before=e.data.before as Task|undefined,after=e.data.after as Task|undefined;
+    if(!before?.deadline)continue;
+    const late=Date.parse(after?.completed_at??e.created_at)>Date.parse(before.deadline);
+    (late?closedLate:closedOnTime).add(e.task_id);
+    (late?closedOnTime:closedLate).delete(e.task_id);
+   }
+   stored.creatorProgress={openIds:open.map(t=>t.id),movedIds:[...moved],closedOnTimeIds:[...closedOnTime],closedLateIds:[...closedLate],
+    idleOverdueIds:open.filter(t=>t.status==='active'&&(taskQueue(t,to)==='overdue'||elapsedToday(t,to))&&!moved.has(t.id)&&
+     taskNextAction(t,currentApproval.get(t.id))?.userId===t.assignee_id).map(t=>t.id),
+    myDecisionIds:live?open.filter(t=>(t.status==='review'||currentApproval.has(t.id))&&taskNextAction(t,currentApproval.get(t.id),reviewScope)?.userId===u.id).map(t=>t.id):[]};
+  }
   const analysis=reportAnalysis(tasks,users,to,previous,source);
-  const stored={...summary,approvalQueue,openCount:tasks.filter(t=>t.status!=='completed').length};
-  const report=(await db.query("INSERT INTO reports(id,day,scope,kind,slot,metrics,rows,rules_version,activity,formula_version,analysis,parameters,summary,comparison_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'v5-workday',$10,$11,$12,$13) RETURNING *",[randomUUID(),day,scope,kind,slot,JSON.stringify(metrics(tasks,a,c,to)),JSON.stringify(tasks),cfg.version,JSON.stringify({completed:summary.activity.closed,transfers:summary.activity.transfers,returned:summary.activity.returned,answers:summary.activity.answers}),JSON.stringify(analysis),JSON.stringify(p),JSON.stringify(stored),key])).rows[0];
+  const report=(await db.query("INSERT INTO reports(id,day,scope,kind,slot,metrics,rows,rules_version,activity,formula_version,analysis,parameters,summary,comparison_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'v5-workday',$10,$11,$12,$13) RETURNING *",[randomUUID(),day,scope,kind,slot,JSON.stringify(metrics(tasks,[...currentApproval.values()],c,to)),JSON.stringify(tasks),cfg.version,JSON.stringify({completed:summary.activity.closed,transfers:summary.activity.transfers,returned:summary.activity.returned,answers:summary.activity.answers}),JSON.stringify(analysis),JSON.stringify(p),JSON.stringify(stored),key])).rows[0];
   return report;
  });
 }

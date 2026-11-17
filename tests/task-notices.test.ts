@@ -7,7 +7,7 @@ import {join} from 'node:path';
 import type {Server} from 'node:http';
 import pg from 'pg';
 import webpush from 'web-push';
-import type {User} from '../shared/types.js';
+import type {Report,User} from '../shared/types.js';
 
 const name='ruspet_task_notices_'+randomBytes(5).toString('hex'),chat='123456789';
 let admin:pg.Client,db:typeof import('../server/db.js'),workflow:typeof import('../server/workflow.js');
@@ -19,6 +19,10 @@ const at=(day:string,time:string)=>new Date(day+'T'+time+':00+03:00');
 async function api(user:User,path:string,method='GET',body?:unknown){
  const res=await fetch(origin+'/api'+path,{method,headers:{Cookie:cookies.get(user.id)||'','Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
  return {status:res.status,body:await res.json() as any};
+}
+async function login(user:User){
+ const res=await fetch(origin+'/api/demo/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:user.id})});
+ assert.equal(res.status,200);cookies.set(user.id,res.headers.get('set-cookie')!.split(';')[0]);
 }
 async function makeTask(title:string,deadline:Date|null,assignee=worker){
  return (await workflow.createTask(director,{title,description:'Фикстура уведомлений',assigneeId:assignee.id,price:1200,deadline:deadline?.toISOString()??null,
@@ -49,10 +53,7 @@ before(async()=>{
  workflow=await import('../server/workflow.js');notices=await import('../server/task-notices.js');push=await import('../server/web-push.js');
  server=(await import('../server/app.js')).createApp().listen(0,'127.0.0.1');
  await new Promise<void>(resolve=>server.once('listening',resolve));origin='http://127.0.0.1:'+(server.address() as {port:number}).port;
- for(const user of [worker,other]){
-  const res=await fetch(origin+'/api/demo/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:user.id})});
-  assert.equal(res.status,200);cookies.set(user.id,res.headers.get('set-cookie')!.split(';')[0]);
- }
+ for(const user of [worker,other])await login(user);
 });
 after(async()=>{
  if(server)await new Promise<void>(resolve=>server.close(()=>resolve()));
@@ -237,4 +238,54 @@ test('personal, team and company reports are independent and use the reporting h
  const entry=await bot.botView(branch,'team-reports');
  const archive=await bot.botClick(branch,'team-reports',entry.buttons.flat().find(button=>button.text==='Мои отчёты')!.token);
  assert.match(archive.text,/Отчёты · Мои задачи/);
+});
+
+test('Friday evening sends one private digest with the Monday plan and creator report',async()=>{
+ const service=await import('../server/service.js'),automation=await import('../server/automation.js'),telegram=await import('../server/telegram-pilot.js');
+ const day='2035-01-12',now=at(day,'19:02'),monday='2035-01-15';
+ const work=await makeTask('Задача к понедельнику',at(monday,'12:00'));
+ const tooLate=await makeTask('Задача на вторник',at('2035-01-16','11:00'));
+ const withoutDate=await makeTask('Задача без срока в плане',null);
+ const placed=await makeTask('Моя поставленная просрочка',at(day,'12:00'),other);
+ await db.pool.query('UPDATE tasks SET creator_id=$2 WHERE id=$1',[placed,worker.id]);
+ await db.pool.query('UPDATE approval_hierarchy SET direct_assignee_ids=ARRAY[$1,$2]::text[] WHERE id=1',[worker.id,other.id]);
+ await db.pool.query("UPDATE automation_config SET enabled=true,morning='09:00',evening='19:01' WHERE id=1");
+ await db.pool.query('UPDATE telegram_settings SET enabled=true,delivery=false,task_delivery=false,deadline_delivery=false,workday_delivery=true WHERE id=1');
+ assert.equal((await db.pool.query("SELECT 1 FROM outbox WHERE dedupe_key=$1",['workday:'+day+':'+worker.id])).rows.length,0);
+ await automation.tick(now);await automation.tick(now);
+ const rows=(await db.pool.query("SELECT body,management_notice FROM outbox WHERE dedupe_key=$1",['workday:'+day+':'+worker.id])).rows;
+ assert.equal(rows.length,1);
+ const {planReportId,creatorReportId}=rows[0].management_notice;
+ const plan:Report=await service.getReport(worker,planReportId),creator:Report=await service.getReport(worker,creatorReportId);
+ assert.equal(plan.summary?.tomorrow.day,monday);
+ assert(plan.summary?.tomorrow.ids.includes(work));
+ assert(!plan.summary?.tomorrow.ids.some(id=>[tooLate,withoutDate,placed].includes(id)));
+ assert.deepEqual(creator.summary?.creatorProgress?.idleOverdueIds,[placed]);
+ assert.deepEqual(creator.rows.map(t=>t.id),[placed]);
+ await login(worker);await login(other);
+ const archive=await api(worker,'/reports?view=created');
+ assert.equal(archive.status,200,JSON.stringify(archive.body));
+ assert.equal(archive.body.items[0].id,creatorReportId);
+ assert.equal((await api(other,'/reports/'+creatorReportId)).status,404);
+ assert.equal((await api(worker,'/reports','POST',{kind:'daily',parameters:{view:'created',creatorId:director.id}})).status,403);
+ assert(rows[0].body.includes('понедельник'));
+ const previous=process.env.TELEGRAM_BOT_TOKEN,fetch=globalThis.fetch,sent:any[]=[];
+ process.env.TELEGRAM_BOT_TOKEN='fixture-workday';
+ globalThis.fetch=(async(_url,options)=>{
+  sent.push(JSON.parse(String(options?.body)));
+  return new Response(JSON.stringify({ok:true,result:{message_id:901}}));
+ }) as typeof globalThis.fetch;
+ try{
+  await Promise.all([telegram.deliver(now),telegram.deliver(now)]);
+  assert.equal(sent.length,1);assert.equal(sent[0].chat_id,chat);
+  const buttons=sent[0].reply_markup.inline_keyboard.flat();
+  assert.equal(buttons.length,2);
+  const bot=await import('../server/bot.js');
+  const view=await bot.botClick(worker,'telegram:'+chat,buttons[0].callback_data);
+  const tasks=await bot.botClick(worker,'telegram:'+chat,view.buttons.flat().find(b=>b.text==='Задачи из плана')!.token);
+  assert.match(tasks.text,/Задачи из плана/);
+ }finally{
+  globalThis.fetch=fetch;
+  if(previous===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previous;
+ }
 });

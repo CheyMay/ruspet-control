@@ -9,9 +9,9 @@ import {branchCovers,canApproveBranch,unassignedBranch} from '../shared/branches
 import {workKinds} from '../shared/report-summary.js';
 import type {ManagementNotice,Task,User} from '../shared/types.js';
 
-export async function managementNotice(db:Db,recipient:string,body:string,key:string,details:ManagementNotice){
- await db.query(`INSERT INTO outbox(id,recipient_id,body,dedupe_key,management_notice)
-  VALUES($1,$2,$3,$4,$5) ON CONFLICT(dedupe_key) DO NOTHING`,[randomUUID(),recipient,body,key,JSON.stringify(details)]);
+export async function managementNotice(db:Db,recipient:string,body:string,key:string,details:ManagementNotice,now=new Date()){
+ await db.query(`INSERT INTO outbox(id,recipient_id,body,dedupe_key,management_notice,created_at)
+  VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(dedupe_key) DO NOTHING`,[randomUUID(),recipient,body,key,JSON.stringify(details),now.toISOString()]);
 }
 
 const ready=`a.state='pending' AND a.canceled_at IS NULL AND a.route->a.current_step->>'userId'=$1

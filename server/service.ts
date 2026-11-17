@@ -328,7 +328,7 @@ export async function listReports(user:User,input:{kind?:string;from?:string;to?
  return transaction(async db=>{
   await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
   const args=[reportScopes(user,input.view),input.kind||null,input.from||null,input.to||null,!!(await config(db)).config.showPlanning];
-  const condition='scope=ANY($1) AND ($2::text IS NULL OR kind=$2) AND ($3::date IS NULL OR day>=$3) AND ($4::date IS NULL OR day<=$4) AND ($5::boolean OR kind<>\'nextday\')';
+  const condition="scope=ANY($1) AND ($2::text IS NULL OR kind=$2) AND ($3::date IS NULL OR day>=$3) AND ($4::date IS NULL OR day<=$4) AND ($5::boolean OR kind<>'nextday' OR scope LIKE 'user:%')";
   const total=Number((await db.query('SELECT count(*) n FROM reports WHERE '+condition,args)).rows[0].n);
   const items=(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE '+condition+' ORDER BY created_at DESC,id DESC LIMIT 20 OFFSET $6',[...args,input.page*20])).rows;
   return {items,total,page:input.page,pageSize:20};
