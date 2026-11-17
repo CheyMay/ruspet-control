@@ -25,8 +25,11 @@ export async function updateEmployeeProfile(actor:User,id:string,body:unknown){
    if(hasLogin)assert((await db.query("SELECT 1 FROM users u JOIN login_accounts a ON a.user_id=u.id WHERE u.role='admin' AND u.id<>$1 AND a.enabled LIMIT 1",[id])).rowCount,409,'Сначала обеспечьте вход в панель другому администратору.');
   }
   if(before.name===value.name&&before.position===value.position&&before.branch_id===value.branchId&&before.role===value.role)return {user:before,changed:false};
+  const approvalBranchLead=value.role==='admin'&&before.branch_id===value.branchId&&
+   (before.role==='branch_manager'||before.role==='admin'&&!!before.approval_branch_lead);
   const after=(await db.query<User&{version:number}>(`UPDATE users SET name=$2,position=$3,branch_id=$4,role=$5,
-   company_branch_access=company_branch_access AND $5='branch_manager',version=version+1 WHERE id=$1 RETURNING *`,[id,value.name,value.position,value.branchId,value.role])).rows[0];
+   company_branch_access=company_branch_access AND $5='branch_manager',approval_branch_lead=$6,version=version+1 WHERE id=$1 RETURNING *`,
+   [id,value.name,value.position,value.branchId,value.role,approvalBranchLead])).rows[0];
   const related:Record<string,unknown>={};
   if(before.role!==value.role||before.branch_id!==value.branchId){
    related.substitutionsRevoked=(await db.query('UPDATE org_substitutions SET revoked_at=now() WHERE revoked_at IS NULL AND ends_at>now() AND (manager_id=$1 OR deputy_id=$1) RETURNING id',[id])).rows;

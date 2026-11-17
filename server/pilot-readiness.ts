@@ -3,6 +3,7 @@ import {access,stat,readFile} from 'node:fs/promises';
 import {bitrixClient} from './bitrix-rest.js';
 import {canManage,canSee} from './domain.js';
 import {exclusionReason} from '../shared/task-selection.js';
+import {branchCovers,canApproveBranch} from '../shared/branches.js';
 import type {User,Task,Rules} from '../shared/types.js';
 export async function pilotReadiness(){
  const checks:{level:'block'|'warning'|'ok';message:string}[]=[];
@@ -44,7 +45,7 @@ export async function pilotReadiness(){
    add(members.has(task.creator_id),`#${task.id}: постановщик участвует в пилоте и получит сдачу на приёмку.`);
    const setting=rules.rows[0]?.config as Rules|undefined;
    for(const selector of new Set([...(setting?.routes.deadline||[]),...(setting?.routes.completion||[])])){
-    const matches=people.rows.filter(p=>selector==='creator'?p.id===task.creator_id:selector==='branchManager'?p.role==='branch_manager'&&p.branch_id===task.branch_id:p.role===selectorRole[selector]);
+    const matches=people.rows.filter(p=>selector==='creator'?p.id===task.creator_id:selector==='branchManager'?canApproveBranch(p)&&branchCovers(p.branch_id,task.branch_id):p.role===selectorRole[selector]);
     add(matches.length===1&&members.has(matches[0].id)&&matches[0].id!==person.id&&canSee(matches[0],task),`#${task.id}: этап «${selector}» однозначен, доступен и назначен участнику пилота.`);
    }
   }

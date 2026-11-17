@@ -5,7 +5,7 @@ import {approvalHierarchy} from './approval-hierarchy.js';
 import {teamMemberIds} from './org.js';
 import {event,visibleTasks} from './service.js';
 import {businessDay,taskQueue} from '../shared/queues.js';
-import {branchCovers,unassignedBranch} from '../shared/branches.js';
+import {branchCovers,canApproveBranch,unassignedBranch} from '../shared/branches.js';
 import {workKinds} from '../shared/report-summary.js';
 import type {ManagementNotice,Task,User} from '../shared/types.js';
 
@@ -88,8 +88,8 @@ export async function reviewInactivity(day:string,now:Date){
  return transaction(async db=>{
   const hierarchy=await approvalHierarchy(db);
   if(!hierarchy)return;
-  const managers=(await db.query<User>("SELECT * FROM users WHERE role='branch_manager' AND (branch_id<>$1 OR (id=$2 AND company_branch_access)) ORDER BY id",
-   [unassignedBranch,hierarchy.branch_manager_id])).rows;
+  const managers=(await db.query<User>("SELECT * FROM users WHERE role IN ('branch_manager','admin') AND (branch_id<>$1 OR (id=$2 AND company_branch_access)) ORDER BY id",
+   [unassignedBranch,hierarchy.branch_manager_id])).rows.filter(canApproveBranch);
   const combined=new Map<string,Inactive>();
   const byManager=new Map<string,Inactive[]>();
   for(const manager of managers){

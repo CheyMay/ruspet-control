@@ -1,6 +1,6 @@
 import {pool,transaction,type Db} from './db.js';
 import {assert,canSee} from './domain.js';
-import {branchCovers,unassignedBranch} from '../shared/branches.js';
+import {branchCovers,canApproveBranch,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain} from './delegation-lock.js';
 import {event} from './service.js';
 import {taskCode} from '../shared/queues.js';
@@ -43,7 +43,7 @@ export async function setApprovalHierarchy(actor:User,branchId:string,salesId:st
   await db.query('SELECT pg_advisory_xact_lock(431036)');
   const people=(await db.query<User>('SELECT * FROM users WHERE id=ANY($1) ORDER BY id FOR UPDATE',[[branchId,salesId]])).rows;
   const branch=people.find(person=>person.id===branchId),sales=people.find(person=>person.id===salesId);
-  assert(branch&&!branch.root_access&&branch.role==='branch_manager',400,'Первый этап — сотрудник с ролью руководителя филиала.');
+  assert(branch&&canApproveBranch(branch),400,'Выберите руководителя подразделения для первого этапа.');
   assert(sales&&!sales.root_access&&(sales.role==='director'||sales.role==='sales_head'),400,'Второй этап — директор или руководитель продаж.');
   const current=await approvalHierarchy(db);
   const revoked=await db.query('UPDATE users SET company_branch_access=false,version=version+1 WHERE company_branch_access');
@@ -57,7 +57,7 @@ export async function setApprovalHierarchy(actor:User,branchId:string,salesId:st
 
 export async function hierarchyRoute(db:Db,hierarchy:Hierarchy,task:Task,requesterId:string,type:'deadline'|'completion'){
  const people=(await db.query<User>(`SELECT * FROM users WHERE NOT root_access
-  AND (role='branch_manager' OR id=$1 OR id=$2)`,[hierarchy.sales_head_id,task.creator_id])).rows;
+  AND (role IN ('branch_manager','admin') OR id=$1 OR id=$2)`,[hierarchy.sales_head_id,task.creator_id])).rows;
  const head=people.find(person=>person.id===hierarchy.sales_head_id);
  assert(head&&(head.role==='director'||head.role==='sales_head'),422,'Назначьте руководителя продаж для согласования.');
  const eligible=(person:User)=>person.id!==requesterId&&(type!=='completion'||person.id!==task.assignee_id);
@@ -74,7 +74,7 @@ export async function hierarchyRoute(db:Db,hierarchy:Hierarchy,task:Task,request
 }
 
 export function branchApprover(people:User[],task:Task,preferredId?:string){
- const scoped=people.filter(person=>person.role==='branch_manager'&&!person.root_access&&branchCovers(person.branch_id,task.branch_id));
+ const scoped=people.filter(person=>canApproveBranch(person)&&branchCovers(person.branch_id,task.branch_id));
  const longest=Math.max(0,...scoped.map(person=>person.branch_id.length));
  const closest=scoped.filter(person=>person.branch_id.length===longest);
  const preferred=closest.find(person=>person.id===preferredId);

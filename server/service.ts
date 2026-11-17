@@ -15,7 +15,7 @@ import {plannedMinutesOn,plannedInterval} from '../shared/analytics.js';
 import { taskQueue } from '../shared/queues.js';
 import { randomUUID } from 'node:crypto';
 import { pool, transaction, type Db } from './db.js';
-import type { Task, User, Rules, Approval, ControlRequest, Step, BitrixDiscussion } from '../shared/types.js';
+import type { Task, User, Rules, Approval, ControlRequest, Step, BitrixDiscussion, TaskApprovalProgress } from '../shared/types.js';
 import { assert, canAccess, canSee, canRequest, canManage, globalAccess, evaluate, metrics, moscowDay } from './domain.js';
 import { providers } from './providers.js';
 const adapters=providers();
@@ -79,13 +79,30 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false) {
 }
 export async function detail(user:User,id:string,db:Db=pool) {
  const task=await taskFor(db,id,user);
+ const approvals=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows;
+ const current=task.status==='completed'?undefined:approvals.find(a=>a.state==='pending'&&!a.canceled_at&&a.task_version===task.version&&a.route[a.current_step]);
+ let approvalProgress:TaskApprovalProgress|null=null;
+ if(current){
+  const step=current.route[current.current_step];
+  const waiting=!!current.clarification_requested_at&&!current.clarification_answered_at;
+  const people=(await db.query<Pick<User,'id'|'name'>>('SELECT id,name FROM users WHERE id=ANY($1)',[
+   waiting?[step.userId,current.requester_id]:[step.userId]
+  ])).rows;
+  approvalProgress={
+   type:current.type,step:current.current_step+1,total:current.route.length,
+   label:step.label==='Руководитель филиала'?'Руководитель подразделения':step.label,
+   approver:people.find(person=>person.id===step.userId)?.name??null,
+   clarificationBy:waiting?people.find(person=>person.id===current.requester_id)?.name??'Автор запроса':null,
+   deferredUntil:current.deferred_until,
+  };
+ }
  return {
-  task,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
+  task,approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
   comments:(await db.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,
   bitrixCommentCount:(await db.query<{count:number}>("SELECT count(*)::int AS count FROM bitrix_task_activity WHERE task_id=$1 AND kind='comment'",[id])).rows[0].count,
   events:(await db.query('SELECT * FROM task_events WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,
-  approvals:(await db.query('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,
+  approvals,
   decisions:(await db.query('SELECT d.*,EXISTS(SELECT 1 FROM decision_retractions r WHERE r.decision_id=d.id) retracted FROM decisions d JOIN approvals a ON a.id=d.approval_id WHERE a.task_id=$1 ORDER BY d.created_at',[id])).rows,
   controls:(await db.query('SELECT * FROM control_requests WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows
  };

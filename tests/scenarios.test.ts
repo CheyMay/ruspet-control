@@ -424,6 +424,7 @@ test('launch routing uses the task branch and adds the sales head only for watch
  const propose=(id:string)=>request(assignee,task(id)+'/approvals',{type:'deadline',reason:'Проверяем перенос крайнего срока',plan:'Уточнить данные и закончить работу',proposedDeadline:new Date(Date.now()+9*86400000).toISOString(),expectedVersion:1});
  const decide=(actor:string,id:string,decision:string,comment:string)=>request(actor,'/approvals/'+id+'/decision',{decision,comment});
  try{
+  assert.equal((await request(assignee,task(simple))).data.approvalProgress,null);
   assert.equal((await request(branch,task(simple))).status,200);
   assert.equal((await request(otherBranch,task(simple))).status,404);
   const explicit=(await request('admin','/tasks',{...taskInput,title:'РЗМ* Задача другого филиала',assigneeId:assignee,branchId:'Москва'})).data.id;
@@ -448,13 +449,30 @@ test('launch routing uses the task branch and adds the sales head only for watch
    const approval=await propose(id);assert.equal(approval.status,201);
    const view=await request(assignee,task(id));
    assert.deepEqual(view.data.approvals[0].route.map((step:any)=>step.userId),expected);
+   assert.deepEqual(view.data.approvalProgress,{type:'deadline',step:1,total:expected.length,label:'Руководитель подразделения',
+    approver:users.find(person=>person.id===branch)?.name,clarificationBy:null,deferredUntil:null});
+   if(id===coded){
+    assert.equal((await decide(branch,approval.data.id,'clarify','Уточните поставку и новый срок')).status,200);
+    const waiting=(await request(assignee,task(id))).data.approvalProgress;
+    assert.equal(waiting.step,1);
+    assert.equal(waiting.clarificationBy,users.find(person=>person.id===assignee)?.name);
+    assert.equal((await request(assignee,'/approvals/'+approval.data.id+'/clarification',{answer:'Поставка подтверждена на новую дату'})).status,200);
+    assert.equal((await request(assignee,task(id))).data.approvalProgress.clarificationBy,null);
+   }
    assert.equal((await decide(sales,approval.data.id,'approve','Одобряю перенос')).status,403);
    const first=await decide(branch,approval.data.id,'approve','Согласен с новым сроком');assert.equal(first.status,200);
    assert.equal(first.data.state,expected.length===1?'approved':'pending');
-   if(expected.length===2)assert.equal((await decide(sales,approval.data.id,'approve','Подтверждаю новый срок')).data.state,'approved');
+   if(expected.length===2){
+    const stage=(await request(assignee,task(id))).data.approvalProgress;
+    assert.equal(stage.step,2);
+    assert.equal(stage.approver,users.find(person=>person.id===sales)?.name);
+    assert.equal((await decide(sales,approval.data.id,'approve','Подтверждаю новый срок')).data.state,'approved');
+   }
+   assert.equal((await request(assignee,task(id))).data.approvalProgress,null);
   }
   const result=await make('РВМ* Работа на приёмку');
   assert.equal((await request(assignee,task(result)+'/review',{action:'submit',comment:'Проверили готовый результат',expectedVersion:1})).status,200);
+  assert.equal((await request(assignee,task(result))).data.approvalProgress.type,'completion');
   const first=(await request(assignee,task(result))).data.approvals[0].id;
   assert.equal((await decide(branch,first,'approve','')).data.state,'pending');
   assert.equal((await decide(sales,first,'reject','Уточните результат')).data.state,'rejected');
@@ -465,6 +483,19 @@ test('launch routing uses the task branch and adds the sales head only for watch
   assert.equal((await decide(branch,second,'approve','')).data.state,'pending');
   assert.equal((await decide(sales,second,'approve','')).data.state,'approved');
   assert.equal((await request(assignee,task(result))).data.task.status,'completed');
+  const manager=(await db.pool.query('SELECT * FROM users WHERE id=$1',[branch])).rows[0];
+  const profile={name:manager.name,position:manager.position,branchId:manager.branch_id,expectedVersion:manager.version,role:'admin'};
+  assert.equal((await request('admin','/system/access/'+branch,profile,'PATCH')).status,200);
+  try{
+   const overview=await request(branch,'/bootstrap');
+   assert.equal(overview.data.user.role,'admin');
+   assert(overview.data.approvals.some((approval:any)=>approval.task_id===explicit));
+   const afterPromotion=await make('РЗМ* Согласование в подразделении');
+   assert.equal((await propose(afterPromotion)).status,201);
+   assert.equal((await request(assignee,task(afterPromotion))).data.approvals[0].route[0].userId,branch);
+  }finally{
+   assert.equal((await request('admin','/system/access/'+branch,{...profile,expectedVersion:manager.version+1,role:'branch_manager'},'PATCH')).status,200);
+  }
  }finally{
   await db.pool.query('DELETE FROM approval_hierarchy WHERE id=1');
   await db.pool.query('UPDATE users SET company_branch_access=false WHERE id=$1',[branch]);

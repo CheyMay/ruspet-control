@@ -338,6 +338,19 @@ export function App(){
      <h2>{detail.task.title}</h2>
      <p>{[detail.task.branch_id,detail.task.code,'Версия '+detail.task.version].filter(Boolean).join(' · ')}</p>
     </div>
+    {detail.approvalProgress&&<section className="task-approval-progress" aria-label="Текущий этап согласования">
+     <GitPullRequest size={18} aria-hidden="true"/>
+     <div role="status">
+      <strong>На согласовании · {detail.approvalProgress.type==='deadline'?'перенос крайнего срока':'закрытие задачи'}</strong>
+      <p>Этап {detail.approvalProgress.step} из {detail.approvalProgress.total} · {detail.approvalProgress.label}
+       {detail.approvalProgress.approver&&<> · <b>{detail.approvalProgress.approver}</b></>}</p>
+      {detail.approvalProgress.clarificationBy
+       ?<p>Нужен ответ на уточнение · <b>{detail.approvalProgress.clarificationBy}</b></p>
+       :detail.approvalProgress.deferredUntil&&Date.parse(detail.approvalProgress.deferredUntil)>now.getTime()&&
+        <p>Решение отложено до {date(detail.approvalProgress.deferredUntil,true)}</p>}
+     </div>
+     {drawerTab!=='approvals'&&<button type="button" className="text-button" onClick={()=>setDrawerTab('approvals')}>К согласованию</button>}
+    </section>}
     <Tabs value={drawerTab} onChange={setDrawerTab} items={[
      {id:'info',label:'Обзор'},{id:'result',label:'Результат',count:detail.submissions.length||undefined},
      {id:'fields',label:'Поля'},{id:'discussion',label:'Обсуждение',count:detail.comments.length+detail.bitrixCommentCount||undefined},

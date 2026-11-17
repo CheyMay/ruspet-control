@@ -11,6 +11,16 @@
 .task-card > .tabs { flex:none; min-width:0; overflow-x:auto; }
 .task-card > .tabs button { flex-shrink:0; white-space:nowrap; }
 .task-card .drawer-body { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; }
+.task-approval-progress {
+ display:flex; align-items:flex-start; gap:10px; flex:none; min-width:0;
+ margin:0 28px 12px; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
+ background:var(--theme-surface-soft); color:var(--theme-text);
+}
+.task-approval-progress > svg { flex:none; margin-top:1px; color:var(--theme-warning); }
+.task-approval-progress > div { flex:1; min-width:0; }
+.task-approval-progress strong { font-size:13px; }
+.task-approval-progress p { margin:3px 0 0; font-size:12px; color:var(--theme-text-secondary); overflow-wrap:anywhere; }
+.task-approval-progress .text-button { flex:none; align-self:center; }
 .task-discussion { margin-bottom:18px; }
 .discussion-status { display:flex; align-items:center; gap:8px; margin:0 0 12px; }
 .discussion-messages { list-style:none; padding:0; margin:0; display:grid; gap:12px; }
@@ -61,6 +71,8 @@
 .task-compose-editor { width:min(760px,95vw); }
 @media(max-width:700px){
  .drawer.task-card { width:100vw; }
+ .task-approval-progress { margin-inline:16px; flex-wrap:wrap; }
+ .task-approval-progress .text-button { margin-left:28px; }
  .task-card-overview { grid-template-columns:1fr; gap:0; }
  .task-card-overview aside { grid-row:1; }
  .task-card-section { padding:14px; }
