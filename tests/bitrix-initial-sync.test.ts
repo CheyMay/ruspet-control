@@ -71,7 +71,8 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
     [{id:'9002',responsibleId:'202',createdDate:baseline.created_at}]} as T;
   }
   assert.equal(method,'tasks.task.get');
-  return {task:{...task(params.taskId),title:'Актуальная задача',description:'Из Битрикс24',createdDate:baseline.created_at,changedDate:baseline.created_at}} as T;
+  return {task:{...task(params.taskId),responsibleId:params.taskId==='9004'?'999999':'202',
+   title:'Актуальная задача',description:'Из Битрикс24',createdDate:baseline.created_at,changedDate:baseline.created_at}} as T;
  },{portal,mode:'webhook' as const});
  process.env.BITRIX_INBOUND_TASKS='true';
  try{
@@ -122,6 +123,13 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   assert.equal((await api(admin,'/bitrix/events',add)).body.accepted,false);
   assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9003');
   assert.equal((await db.pool.query("SELECT count(*)::int n FROM tasks WHERE id IN ('9002','9003')")).rows[0].n,2);
+  assert.equal((await api(admin,'/bitrix/events',{...add,data:{FIELDS_AFTER:{ID:'9004'}},ts:'1793872802'})).body.accepted,true);
+  const discussion={event:'ONTASKCOMMENTADD',data:{FIELDS_AFTER:{TASK_ID:'9004',MESSAGE_ID:'1234'}},ts:'1793872803',auth};
+  assert.equal((await api(admin,'/bitrix/events',discussion)).body.accepted,true);
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9004');
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9004');
+  assert.deepEqual((await db.pool.query("SELECT DISTINCT state FROM bitrix_refresh_queue WHERE external_id='9004'")).rows,[{state:'ignored'}]);
+  assert.equal((await db.pool.query("SELECT count(*)::int n FROM tasks WHERE id='9004'")).rows[0].n,0);
  }finally{
   delete process.env.BITRIX_INBOUND_TASKS;
   delete process.env.BITRIX_INBOUND_AUTHORITATIVE;

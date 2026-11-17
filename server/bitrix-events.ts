@@ -63,7 +63,7 @@ export async function receiveBitrixEvent(input:any){
    UNION ALL SELECT 1 FROM bitrix_task_links WHERE external_id=$1::bigint AND NOT live_enabled`,[id]);
   const adopt=!known.rowCount&&input.event==='ONTASKADD'&&process.env.BITRIX_INBOUND_NEW_TASKS==='true';
   if(!known.rowCount&&!adopt){
-   const planned=await db.query("SELECT 1 FROM bitrix_refresh_queue WHERE portal=$1 AND resource='task_inbound_new' AND external_id=$2 AND state<>'done'",[cfg.portal,id]);
+   const planned=await db.query("SELECT 1 FROM bitrix_refresh_queue WHERE portal=$1 AND resource='task_inbound_new' AND external_id=$2 AND state IN ('pending','failed','blocked')",[cfg.portal,id]);
    if(!planned.rowCount)return {accepted:false,ignored:true};
   }
   const inserted=await db.query(`INSERT INTO bitrix_event_inbox(portal,dedupe_key,event,data,occurred_at)

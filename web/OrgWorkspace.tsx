@@ -2,23 +2,28 @@ import {useEffect,useState,type FormEvent} from 'react';
 import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import {businessDay} from '../shared/queues.js';
+import {EmployeeProfileEditor} from './EmployeeProfileEditor.js';
+import {roleLabels} from './employee-roles.js';
+import type {User} from '../shared/types.js';
 
-type Person={id:string;name:string;role:string;branch_id:string;position:string;manager_id:string|null};
+type Person=User&{manager_id:string|null};
 type Substitution={id:string;manager_id:string;deputy_id:string;starts_at:string;ends_at:string};
 type Directory={people:Person[];substitutions:Substitution[]};
 type Entry={id:string;title:string;sourceId:string|null;sourceTitle:string|null;status:'active'|'review'|'completed';deadline:string|null;assignee:string;manager:string;substitution:boolean};
 const errorText=(e:unknown)=>e instanceof Error?e.message:'Не удалось выполнить запрос.';
 
-export function OrgWorkspace({roles}:{roles:Record<string,string>}){
+export function OrgWorkspace({currentUser}:{currentUser:User}){
  const [data,setData]=useState<Directory|null>(null),[query,setQuery]=useState(''),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [busy,setBusy]=useState(false),[reload,setReload]=useState(0);
+ const [profile,setProfile]=useState<Person|null>(null);
+ const canEdit=currentUser.role==='admin';
  useEffect(()=>{
   let active=true;
   void api<Directory>('/org').then(value=>{if(active)setData(value);}).catch(e=>{if(active)setError(errorText(e));});
   return()=>{active=false;};
  },[reload]);
  const people=data?.people??[],managers=people.filter(person=>person.role!=='employee');
- const visible=people.filter(p=>[p.name,p.branch_id,p.position].join(' ').toLowerCase().includes(query.trim().toLowerCase()));
+ const visible=people.filter(p=>[p.name,p.branch_id,p.position,roleLabels[p.role]].join(' ').toLowerCase().includes(query.trim().toLowerCase()));
  const name=(id:string)=>people.find(p=>p.id===id)?.name||'Сотрудник';
  async function save(path:string,method:string,body?:unknown){
   setBusy(true);setError('');setNotice('');
@@ -32,12 +37,16 @@ export function OrgWorkspace({roles}:{roles:Record<string,string>}){
  }
  return <>
   {error&&<p className="alert error" role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
+  {canEdit&&profile&&<EmployeeProfileEditor person={profile} own={profile.id===currentUser.id} close={()=>setProfile(null)}
+   saved={()=>{setNotice('Должность и доступ сохранены.');setReload(n=>n+1);}}/>}
   <section className="panel automation-settings"><h2>Оргструктура</h2>
    <p className="muted">Укажите прямого руководителя. Связь применяется при делегировании. Если руководитель ещё не настроил команду, используется прежняя выборка по роли и филиалу.</p>
    <div className="filters"><input aria-label="Найти сотрудника" placeholder="Имя, подразделение или должность" value={query} onChange={e=>setQuery(e.target.value)}/></div>
    {!data&&!error&&<p>Загружаем сотрудников…</p>}
-   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Должность</th><th>Подразделение и доступ</th><th>Прямой руководитель</th></tr></thead><tbody>
-    {visible.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.position||'—'}</td><td>{p.branch_id} · {roles[p.role]}</td><td><select aria-label={'Руководитель для '+p.name} value={p.manager_id??''} disabled={busy}
+   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Должность</th><th>Подразделение</th><th>Права в системе</th><th>Прямой руководитель</th></tr></thead><tbody>
+    {visible.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.position||'—'}</td><td>{p.branch_id}</td>
+     <td>{roleLabels[p.role]}{canEdit&&<div><button className="text-button" aria-label={'Изменить доступ для '+p.name} onClick={()=>setProfile(p)}>Изменить</button></div>}</td>
+     <td><select aria-label={'Руководитель для '+p.name} value={p.manager_id??''} disabled={busy}
      onChange={e=>void save('/org/reporting/'+encodeURIComponent(p.id),'PUT',{managerId:e.target.value||null})}>
       <option value="">Не назначен</option>{people.filter(m=>m.id!==p.id).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}
      </select></td></tr>)}

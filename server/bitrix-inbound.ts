@@ -19,6 +19,8 @@ type Values=Pick<Task,Property>;
 type Person={ID:string;NAME?:string;LAST_NAME?:string;SECOND_NAME?:string};
 type QueueRow={resource:string;external_id:string;generation:string;delete_hint:boolean};
 const taskResource='task_inbound',newTaskResource='task_inbound_new',commentsResource='task_inbound_comments';
+const missingDiscussionLink='Сначала нужно подтвердить связь задачи с Битрикс24.';
+const outsideRoster='Исполнитель вне подтверждённого состава обмена.';
 const readFields=['ID','TITLE','DESCRIPTION','STATUS','RESPONSIBLE_ID','CREATED_BY','DEADLINE','START_DATE_PLAN',
  'END_DATE_PLAN','CLOSED_DATE','CHAT_ID','CREATED_DATE','CHANGED_DATE'];
 const selection=()=>[...readFields,...(process.env.BITRIX_INBOUND_PRICE_FIELD?[process.env.BITRIX_INBOUND_PRICE_FIELD]:[])];
@@ -58,6 +60,14 @@ async function peopleFor(request:BitrixRequest,raw:Record<string,unknown>,db:Db=
 }
 async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=false){
  const remote=remoteTask(raw);
+ if(adopt&&remote.responsibleId){
+  const scope=await pool.query(`SELECT 1 FROM bitrix_user_links WHERE external_id=$1::text::bigint
+   UNION ALL SELECT 1 FROM staff_directory WHERE bitrix_id=$1::text AND enabled AND user_id IS NOT NULL LIMIT 1`,[remote.responsibleId]);
+  if(!scope.rowCount){
+   const known=await pool.query('SELECT 1 FROM bitrix_task_links WHERE external_id=$1::bigint',[remote.id]);
+   if(!known.rowCount)return {ignored:outsideRoster};
+  }
+ }
  const state=statuses[remote.status??''];
  assert(state,409,'Статус задачи Битрикс24 требует отдельного сопоставления.');
  const people=await peopleFor(request,raw);
@@ -98,6 +108,7 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
    await stage(remote,db,raw);
    await db.query('INSERT INTO bitrix_task_links(task_id,external_id,baseline,linked_version,checked_at) VALUES($1,$2,$3,$4,now())',
     [id,remote.id,JSON.stringify({...baseline,inbound:baseline}),created.version]);
+   await resumeInboundDiscussion(db,request.portal!,remote.id);
    await event(db,id,null,'imported','Новая задача получена из Битрикс24',{source:'bitrix24',initialSnapshot:created});
    await refreshTaskFindings(db,created,owner);
    return {changed:true,conflict:false,created:true};
@@ -146,8 +157,15 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
   await db.query(`INSERT INTO bitrix_task_links(task_id,external_id,baseline,linked_version,checked_at,conflict)
    VALUES($1,$2,$3,$4,now(),$5) ON CONFLICT(task_id) DO UPDATE SET baseline=excluded.baseline,checked_at=now(),conflict=excluded.conflict`,
    [id,remote.id,JSON.stringify({...carriedBase,inbound:carriedBase}),task.version,reason]);
+  if(!link)await resumeInboundDiscussion(db,request.portal!,remote.id);
   return {changed:changed.length>0,conflict:!!reason};
  });
+}
+
+async function resumeInboundDiscussion(db:Db,portal:string,externalId:string){
+ await db.query(`UPDATE bitrix_refresh_queue SET generation=generation+1,state='pending',error=NULL,retry_at=NULL,updated_at=now()
+  WHERE portal=$1 AND resource=$2 AND external_id=$3 AND (state='ignored' OR state='blocked' AND error=$4)`,
+  [portal,commentsResource,externalId,missingDiscussionLink]);
 }
 
 export async function enqueueInboundSnapshot(portal:string,id?:string,comments=false){
@@ -219,7 +237,8 @@ export async function discoverInboundTasks(request:BitrixRequest,since:string){
     SELECT $1,$2,x.id FROM unnest($3::text[]) x(id)
     WHERE NOT EXISTS(SELECT 1 FROM tasks t WHERE t.id=x.id) AND
      NOT EXISTS(SELECT 1 FROM bitrix_task_links l WHERE l.external_id=x.id::bigint)
-    ON CONFLICT DO NOTHING`,[portal,newTaskResource,ids])).rowCount??0;
+    ON CONFLICT(portal,resource,external_id) DO UPDATE SET generation=bitrix_refresh_queue.generation+1,
+     state='pending',error=NULL,retry_at=NULL,updated_at=now() WHERE bitrix_refresh_queue.state='ignored'`,[portal,newTaskResource,ids])).rowCount??0;
    if(ids.length<50){complete=true;break;}
   }
   assert(complete,409,'Достигнут предел страниц для поиска новых задач. Сузьте период.');
@@ -243,7 +262,11 @@ async function refreshTask(request:BitrixRequest,item:QueueRow){
 async function refreshComments(request:BitrixRequest,id:string){
  const result=(await pool.query(`SELECT l.task_id,s.snapshot FROM bitrix_task_links l JOIN bitrix_task_snapshots s USING(external_id)
   WHERE l.external_id=$1 AND NOT l.live_enabled`,[id])).rows[0];
- assert(result,409,'Сначала нужно подтвердить связь задачи с Битрикс24.');
+ if(!result){
+  const outOfScope=await pool.query("SELECT 1 FROM bitrix_refresh_queue WHERE portal=$1 AND resource=$2 AND external_id=$3 AND state='ignored'",[request.portal,newTaskResource,id]);
+  if(outOfScope.rowCount)return {ignored:outsideRoster};
+  assert(result,409,missingDiscussionLink);
+ }
  return syncActivity(request,result.task_id,undefined,{task:result.snapshot,commentsOnly:true});
 }
 export async function tickInboundTasks(request:BitrixRequest,id?:string){
@@ -262,8 +285,13 @@ export async function tickInboundTasks(request:BitrixRequest,id?:string){
   const args=[portal,item.resource,item.external_id,item.generation];
   try{
    const result=item.resource===commentsResource?await refreshComments(request,item.external_id):await refreshTask(request,item);
-   await pool.query(`UPDATE bitrix_refresh_queue SET done_generation=$4,state=CASE WHEN generation=$4 THEN 'done' ELSE 'pending' END,
-    error=NULL,retry_at=NULL WHERE portal=$1 AND resource=$2 AND external_id=$3`,args);
+   const ignored='ignored' in result?result.ignored:null;
+   await pool.query(`UPDATE bitrix_refresh_queue SET done_generation=$4,state=CASE WHEN generation=$4 THEN $5 ELSE 'pending' END,
+    error=CASE WHEN generation=$4 THEN $6 ELSE NULL END,retry_at=NULL WHERE portal=$1 AND resource=$2 AND external_id=$3`,[...args,ignored?'ignored':'done',ignored]);
+   if(ignored&&item.resource===newTaskResource)await pool.query(`UPDATE bitrix_refresh_queue
+    SET done_generation=generation,state='ignored',error=$4,retry_at=NULL
+    WHERE portal=$1 AND resource=$2 AND external_id=$3 AND state='blocked' AND error=$5`,
+    [portal,commentsResource,item.external_id,ignored,missingDiscussionLink]);
    return {resource:item.resource,id:item.external_id,result};
   }catch(error){
    const transient=!(error instanceof AppError)&&(!(error instanceof BitrixError)||

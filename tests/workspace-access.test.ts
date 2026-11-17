@@ -54,6 +54,21 @@ test('manager sections, employee profile edits and owner-only integration respec
  assert.equal((await http('/system/access/anna','admin','PATCH',body)).status,200);
  assert.equal((await http('/system/access/anna','admin','PATCH',body)).status,409);
  assert.equal((await db.pool.query('SELECT count(*)::int AS n FROM employee_profile_changes')).rows[0].n,1);
+ const directory=await http('/org','admin').then(r=>r.json());
+ const lead=directory.people.find((person:User)=>person.id==='lead-msk');
+ assert.equal((await http('/org/reporting/anna','admin','PUT',{managerId:lead.id})).status,200);
+ const leadProfile={name:lead.name,position:'Руководитель отдела',branchId:lead.branch_id,role:'employee',expectedVersion:lead.version};
+ assert.equal((await http('/system/access/'+lead.id,'admin','PATCH',leadProfile)).status,200);
+ const changedDirectory=await http('/org','admin').then(r=>r.json());
+ assert.equal(changedDirectory.people.find((person:User)=>person.id===lead.id).position,'Руководитель отдела');
+ assert.equal(changedDirectory.people.find((person:User)=>person.id===lead.id).role,'employee');
+ assert.equal(changedDirectory.people.find((person:User)=>person.id==='anna').manager_id,lead.id);
+ assert.equal((await http('/system/access/'+lead.id,'admin','PATCH',{...leadProfile,position:lead.position,role:lead.role,expectedVersion:lead.version+1})).status,200);
+ assert.equal((await http('/approval-hierarchy','admin','PUT',{branchId:lead.id,salesId:'director'})).status,200);
+ const director=directory.people.find((person:User)=>person.id==='director');
+ assert.equal((await http('/system/access/director','admin','PATCH',{name:director.name,position:director.position,branchId:director.branch_id,
+  role:'employee',expectedVersion:director.version})).status,409);
+ await db.pool.query('DELETE FROM approval_hierarchy WHERE id=1');
  assert.equal((await http('/owner/bitrix/exchange','admin','PUT',{enabled:false,confirmed:true})).status,403);
  await db.pool.query('UPDATE bitrix_live_config SET enabled=true WHERE id=1');
  assert.equal((await http('/owner/bitrix/exchange','root','PUT',{enabled:false,confirmed:true})).status,200);
