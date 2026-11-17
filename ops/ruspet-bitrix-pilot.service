@@ -9,11 +9,14 @@ User=ruspet
 Group=ruspet
 WorkingDirectory=/opt/ruspet
 Environment=NODE_ENV=production
-EnvironmentFile=/opt/ruspet/.bitrix-worker.env
+EnvironmentFile=-/etc/ruspet/bitrix-inbound.env
+EnvironmentFile=-/opt/ruspet/.bitrix-worker.env
+EnvironmentFile=-/etc/ruspet/bitrix-outbound.env
 ExecStart=/usr/bin/env node --import tsx /opt/ruspet/scripts/bitrix-pilot.ts watch
 Restart=on-failure
 RestartSec=10
-TimeoutStopSec=180
+TimeoutStopSec=360
+CPUQuota=35%
 UMask=0077
 NoNewPrivileges=true
 PrivateTmp=true

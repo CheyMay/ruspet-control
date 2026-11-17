@@ -112,8 +112,11 @@ export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):
  const portal=process.env.BITRIX_PORTAL;
  const origin=portal&&/^[a-z0-9.-]+$/i.test(portal)?'https://'+portal:null;
  const [stored,links]=await Promise.all([
-  pool.query<BitrixDiscussion['messages'][number]>(`SELECT external_id,occurred_at,author,body FROM bitrix_task_activity
-   WHERE task_id=$1 AND kind='comment' ORDER BY occurred_at DESC,external_id DESC LIMIT 100`,[id]),
+  pool.query<BitrixDiscussion['messages'][number]>(`SELECT external_id,occurred_at,author,body FROM bitrix_task_activity a
+   WHERE task_id=$1 AND kind='comment' AND NOT EXISTS(
+    SELECT 1 FROM bitrix_operations o WHERE o.task_id=a.task_id AND o.payload->>'kind'='comment'
+    AND position('[ruspet:'||o.event_id::text||']' IN a.body)>0)
+   ORDER BY occurred_at DESC,external_id DESC LIMIT 100`,[id]),
   pool.query<{external_id:string;state:string|null}>(`SELECT l.external_id::text,q.state FROM bitrix_task_links l
    LEFT JOIN bitrix_refresh_queue q ON q.portal=$2 AND q.resource='task_inbound_comments' AND q.external_id=l.external_id::text
    WHERE l.task_id=$1 AND NOT l.live_enabled`,[id,portal??null])

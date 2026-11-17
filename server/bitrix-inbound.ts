@@ -118,7 +118,13 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
   assert(link?.baseline?.inbound||baselineEvent,409,'Нет исходного снимка задачи для безопасной сверки.');
   const local=localValues(task);
   const base:Values=link?.baseline?.inbound??localValues(baselineEvent!);
-  const authoritative=process.env.BITRIX_INBOUND_AUTHORITATIVE==='true';
+  const linkedExchange=!!link&&(await db.query('SELECT sync_linked_tasks FROM bitrix_live_config WHERE id=1')).rows[0].sync_linked_tasks;
+  if(linkedExchange&&(await db.query(`SELECT 1 FROM bitrix_operations WHERE task_id=$1
+   AND state NOT IN ('sent','canceled') AND payload->'data'->>'after' IS NOT NULL LIMIT 1`,[id])).rowCount){
+   await stage(remote,db,raw);
+   return {changed:false,conflict:!!link.conflict};
+  }
+  const authoritative=!linkedExchange&&process.env.BITRIX_INBOUND_AUTHORITATIVE==='true';
   const next:Values={title:remote.title,description:remote.description,deadline:remote.deadline,status:state,
    assignee_id:people.get(remote.responsibleId!)!,creator_id:people.get(remote.createdBy!)!,
    planned_start:fieldValue(raw,'START_DATE_PLAN')===undefined?local.planned_start:readDate(raw,'START_DATE_PLAN'),
@@ -127,7 +133,8 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
   const workflowFields:Property[]=['status','assignee_id','creator_id','completed_at'];
   const permissionConflict=!authoritative&&workflowFields.some(key=>!equal(local[key],base[key])&&!equal(local[key],next[key]));
   const changed=properties.filter(key=>!equal(next[key],local[key])&&
-   (authoritative||equal(local[key],base[key])&&!(permissionConflict&&workflowFields.includes(key))));
+   (authoritative||equal(local[key],base[key])&&!(permissionConflict&&workflowFields.includes(key))||
+    linkedExchange&&key==='completed_at'&&local.status==='completed'&&next.status==='completed'&&!!next.completed_at));
   const conflicts=properties.filter(key=>!equal(next[key],local[key])&&!equal(next[key],base[key])&&!changed.includes(key));
   const merged={...local,...Object.fromEntries(changed.map(key=>[key,next[key]]))};
   const owner=(await db.query<User>('SELECT * FROM users WHERE id=$1',[merged.assignee_id])).rows[0];
@@ -211,27 +218,29 @@ export async function reconcileInboundTasks(request:BitrixRequest){
  return {tracked:tracked.length,queued};
 }
 
-export async function discoverInboundTasks(request:BitrixRequest,since:string){
+export async function discoverInboundTasks(request:BitrixRequest,since:string,ownerId?:string){
  const portal=request.portal;
  assert(request.mode==='webhook'&&portal&&Number.isFinite(Date.parse(since)),400,'Укажите дату начала сверки и входящий вебхук.');
  const people=(await pool.query<{id:string}>(`SELECT external_id::text id FROM bitrix_user_links
   UNION SELECT bitrix_id id FROM staff_directory WHERE enabled AND user_id IS NOT NULL AND bitrix_id ~ '^[1-9][0-9]{0,17}$'
   ORDER BY id`)).rows.map(person=>person.id);
+ if(ownerId)assert(people.includes(ownerId),409,'Сначала подтвердите связь сотрудника с Битрикс24.');
+ const selected=ownerId?[ownerId]:people;
  let queued=0;
- for(let offset=0;offset<people.length;offset+=40){
-  const owners=people.slice(offset,offset+40);
+ for(let offset=0;offset<selected.length;offset+=40){
+  const owners=selected.slice(offset,offset+40);
   let cursor='0',complete=false;
   for(let page=0;page<20;page++){
    const result=await request<{tasks:Record<string,unknown>[]}>('tasks.task.list',{
-    filter:{RESPONSIBLE_ID:owners,'>=CREATED_DATE':since,'>ID':cursor},select:['ID','RESPONSIBLE_ID','CREATED_DATE'],order:{ID:'asc'},start:0
+    filter:{RESPONSIBLE_ID:owners,'>=CREATED_DATE':since,'>ID':cursor},select:['ID','RESPONSIBLE_ID','CREATED_DATE',...(ownerId?['STATUS']:[])],order:{ID:'asc'},start:0
    });
    assert(Array.isArray(result.tasks)&&result.tasks.length<=50,502,'Битрикс24 не вернул страницу новых задач.');
-   const ids=result.tasks.map(task=>{
+   const ids=result.tasks.flatMap(task=>{
     const id=bitrixId(fieldValue(task,'ID')),owner=bitrixId(fieldValue(task,'RESPONSIBLE_ID')),created=readDate(task,'CREATED_DATE');
     assert(id&&BigInt(id)>BigInt(cursor)&&owner&&owners.includes(owner)&&created&&Date.parse(created)>=Date.parse(since),502,
      'Битрикс24 вернул задачу вне заданного периода или состава сотрудников.');
     cursor=id;
-    return id;
+    return !ownerId||['2','3','4'].includes(String(fieldValue(task,'STATUS')))?[id]:[];
    });
    if(ids.length)queued+=(await pool.query(`INSERT INTO bitrix_refresh_queue(portal,resource,external_id)
     SELECT $1,$2,x.id FROM unnest($3::text[]) x(id)
@@ -239,11 +248,11 @@ export async function discoverInboundTasks(request:BitrixRequest,since:string){
      NOT EXISTS(SELECT 1 FROM bitrix_task_links l WHERE l.external_id=x.id::bigint)
     ON CONFLICT(portal,resource,external_id) DO UPDATE SET generation=bitrix_refresh_queue.generation+1,
      state='pending',error=NULL,retry_at=NULL,updated_at=now() WHERE bitrix_refresh_queue.state='ignored'`,[portal,newTaskResource,ids])).rowCount??0;
-   if(ids.length<50){complete=true;break;}
+   if(result.tasks.length<50){complete=true;break;}
   }
   assert(complete,409,'Достигнут предел страниц для поиска новых задач. Сузьте период.');
  }
- return {owners:people.length,queued};
+ return {owners:selected.length,queued};
 }
 
 async function refreshTask(request:BitrixRequest,item:QueueRow){
@@ -267,7 +276,8 @@ async function refreshComments(request:BitrixRequest,id:string){
   if(outOfScope.rowCount)return {ignored:outsideRoster};
   assert(result,409,missingDiscussionLink);
  }
- return syncActivity(request,result.task_id,undefined,{task:result.snapshot,commentsOnly:true});
+ const {sync_linked_tasks:legacyFallback}=(await pool.query('SELECT sync_linked_tasks FROM bitrix_live_config WHERE id=1')).rows[0];
+ return syncActivity(request,result.task_id,undefined,{task:result.snapshot,commentsOnly:true,legacyFallback});
 }
 export async function tickInboundTasks(request:BitrixRequest,id?:string){
  const portal=request.portal;

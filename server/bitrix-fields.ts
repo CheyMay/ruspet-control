@@ -38,10 +38,11 @@ export async function taskIntegration(actor:User,id:string,includeFields=true){
  if(!link)return {linked:false,enabled:false,state:'local',fields:[],error:null};
  const op=(await pool.query("SELECT event_id,state,error FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 1",[id])).rows[0];
  const source=(await pool.query('SELECT raw,fetched_at FROM bitrix_task_snapshots WHERE external_id=$1',[link.external_id])).rows[0];
- const cfg=(await pool.query('SELECT enabled FROM bitrix_live_config WHERE id=1')).rows[0];
+ const cfg=(await pool.query('SELECT enabled,sync_linked_tasks FROM bitrix_live_config WHERE id=1')).rows[0];
+ const enabled=link.live_enabled||cfg.sync_linked_tasks;
  const showFields=includeFields&&(actor.role==='admin'||link.live_enabled&&!link.conflict);
  const catalog=showFields?(await pool.query('SELECT code,description FROM bitrix_field_catalog')).rows:[];
  const raw=source?.raw||{};
  const fields=showFields?Object.entries(raw).map(([code,value])=>{const title=catalog.find(f=>f.code.replaceAll('_','').toLowerCase()===code.replaceAll('_','').toLowerCase())?.description.title;return {code,title:typeof title==='string'?title:code,value}}):[];
- return {linked:true,enabled:link.live_enabled,operationId:op?.event_id||null,paused:link.live_enabled&&!cfg.enabled,state:op?.state||(link.live_enabled?(link.conflict?'blocked':cfg.enabled?'synced':'paused'):'read_only'),error:op?.error||link.conflict||null,checkedAt:link.checked_at,fetchedAt:source?.fetched_at,externalId:String(link.external_id),fields};
+ return {linked:true,enabled,operationId:op?.event_id||null,paused:enabled&&!cfg.enabled,state:op?.state||(enabled?(link.conflict?'blocked':cfg.enabled?'synced':'paused'):'read_only'),error:op?.error||link.conflict||null,checkedAt:link.checked_at,fetchedAt:source?.fetched_at,externalId:String(link.external_id),fields};
 }

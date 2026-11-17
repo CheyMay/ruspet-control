@@ -11,7 +11,7 @@ import {discoverInboundTasks,enqueueInboundSnapshot,reconcileInboundTasks,tickIn
 let stopped=false;
 for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{stopped=true;});
 try{
- const {positionals,values}=parseArgs({allowPositionals:true,options:{id:{type:'string'},since:{type:'string'},comments:{type:'boolean'}}});
+ const {positionals,values}=parseArgs({allowPositionals:true,options:{id:{type:'string'},since:{type:'string'},comments:{type:'boolean'},owner:{type:'string'}}});
  const [command]=positionals;
  const id=values.id;
  assert(positionals.length===1&&(!id||bitrixId(id)),400,'Команды: status, prepare, verify --id ID, enqueue [--id ID], discover --since DATE, watch.');
@@ -52,7 +52,7 @@ try{
    console.log({queued:await enqueueInboundSnapshot(portal,id,values.comments)});
   }else if(command==='discover'){
    assert(process.env.BITRIX_INBOUND_NEW_TASKS==='true'&&values.since,400,'Включите приём новых задач и укажите --since с часовым поясом.');
-   console.log({discovery:await discoverInboundTasks(request,values.since)});
+   console.log({discovery:await discoverInboundTasks(request,values.since,values.owner)});
   }else if(command==='watch'){
    let nextSnapshot=Date.now()+10*60*1000;
    while(!stopped){

@@ -106,12 +106,12 @@ export async function syncLinkedTask(request:BitrixRequest,taskId:string,allowWr
   return plan;
  });
 }
-export async function syncActivity(request:BitrixRequest,taskId:string,olderThan?:string,options:{task?:Remote;commentsOnly?:boolean}={}){
+export async function syncActivity(request:BitrixRequest,taskId:string,olderThan?:string,options:{task?:Remote;commentsOnly?:boolean;legacyFallback?:boolean}={}){
  const link=(await pool.query('SELECT external_id FROM bitrix_task_links WHERE task_id=$1',[taskId])).rows[0];
  if(!link)throw new BitrixError('Задача не связана с Битрикс24.');
  const task=options.task??await getRemote(request,String(link.external_id));
  if(task.id!==String(link.external_id))throw new BitrixError('Битрикс24 вернул другой ID задачи.');
- if(!task.chatId&&process.env.BITRIX_LEGACY_COMMENTS!=='true')throw new BitrixError('Чат задачи не доступен. Проверьте версию карточки и права вебхука.');
+ if(!task.chatId&&!options.legacyFallback&&process.env.BITRIX_LEGACY_COMMENTS!=='true')throw new BitrixError('Чат задачи не доступен. Проверьте версию карточки и права вебхука.');
  const result:{messages:Record<string,unknown>[];users:{id:number;name:string}[]}=task.chatId?
   await request<{messages:Record<string,unknown>[];users:{id:number;name:string}[]}>('im.dialog.messages.get',{DIALOG_ID:'chat'+task.chatId,LIMIT:50,...(olderThan?{LAST_ID:olderThan}:{})}):
   {messages:(await request<Record<string,unknown>[]>('task.commentitem.getlist',{TASKID:task.id,ORDER:{POST_DATE:'desc'},FILTER:{}}))

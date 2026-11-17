@@ -5,7 +5,7 @@ import {pool,transaction} from '../server/db.js';
 import {assert,AppError,canManage} from '../server/domain.js';
 import {bitrixClient,BitrixError} from '../server/bitrix-rest.js';
 import {discoverTaskFields,mapBitrixUser} from '../server/bitrix-fields.js';
-import {configureLive,activateLiveTask,deactivateLiveTask,tickLiveSync,recoverOperation} from '../server/bitrix-live.js';
+import {configureLive,activateLiveTask,deactivateLiveTask,tickLiveSync,recoverOperation,enableLinkedExchange} from '../server/bitrix-live.js';
 import {pilotReadiness,pilotQueue} from '../server/pilot-readiness.js';
 const {values,positionals}=parseArgs({allowPositionals:true,options:{manager:{type:'string',multiple:true},leader:{type:'string',multiple:true},confirm:{type:'boolean'},'accept-bitrix':{type:'boolean'}}});
 const [command,arg,extra]=positionals;
@@ -32,6 +32,7 @@ try{
    const status=await pilotReadiness();assert(status.ready,409,'Пилот не готов. Сначала выполните check.');
    await pool.query('UPDATE bitrix_live_config SET enabled=true,updated_at=now() WHERE id=1');console.log('Пилот включён только для явно активированных задач.');break;
   }
+  case 'enable-linked':assert(values.confirm,400,'Для включения записи по связанным задачам укажите --confirm.');console.log(await enableLinkedExchange(await bitrixClient()));break;
   case 'pause':await pool.query('UPDATE bitrix_live_config SET enabled=false,updated_at=now() WHERE id=1');console.log('Запись приостановлена. Очередь и локальные данные сохранены.');break;
   case 'retry':case 'verify':assert(arg&&values.confirm,400,'Укажите ID операции и --confirm после сверки.');console.log(await recoverOperation(await bitrixClient(),arg,command));break;
   case 'tick':console.log(await tickLiveSync(await bitrixClient()));break;

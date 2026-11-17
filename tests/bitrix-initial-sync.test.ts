@@ -174,6 +174,71 @@ after(async()=>{
  if(server)await new Promise<void>(r=>server.close(()=>r()));await okb?.closeOkb();await db?.pool.end();if(connection){await connection.query('DROP DATABASE IF EXISTS '+database);await connection.query('DROP DATABASE IF EXISTS '+database+'_okb');await connection.end();}if(directory)await rm(directory,{recursive:true,force:true});for(const key of ['BITRIX_PORTAL','DEMO_AUTH','BITRIX_EVENT_TOKEN_FILE','BITRIX_WEBHOOK_FILE','BITRIX_TRANSPORT','BITRIX_OAUTH_FILE','OKB_DATABASE_URL'])if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];
 });
 
+test('confirmed links exchange completed tasks and comments without overwriting pending local changes',async()=>{
+ const inbound=await import('../server/bitrix-inbound.js');
+ const live=await import('../server/bitrix-live.js');
+ const {event,taskBitrixDiscussion}=await import('../server/service.js');
+ const {MockTaskProvider}=await import('../server/providers.js');
+ const id='98001',created='2026-11-01T10:00:00.000Z';
+ const remote={...task(id),status:'2',createdDate:created,changedDate:created,closedDate:null as string|null};
+ const writes:BitrixMethod[]=[],messages:Record<string,unknown>[]=[];
+ const rest:BitrixRequest=Object.assign(async<T>(method:BitrixMethod,params:any):Promise<T>=>{
+  if(method==='tasks.task.get')return {task:{...remote}} as T;
+  if(method==='im.dialog.messages.get')return {messages,users:[]} as T;
+  writes.push(method);
+  if(method==='tasks.task.complete'){
+   remote.status='5';remote.closedDate='2026-11-17T12:00:10.000Z';
+   return {} as T;
+  }
+  if(method==='tasks.task.chat.message.send'){
+   messages.push({id:91,text:params.fields.text,date:'2026-11-17T12:00:12Z'});
+   return true as T;
+  }
+  throw Error('Unexpected fixture method '+method);
+ },{portal,mode:'webhook' as const});
+ process.env.BITRIX_TRANSPORT='balancer';
+ process.env.BITRIX_WRITE_ENABLED='true';
+ process.env.BITRIX_INBOUND_AUTHORITATIVE='true';
+ try{
+  await configureCapture();
+  await db.pool.query('INSERT INTO bitrix_user_links(user_id,external_id) VALUES($1,201),($2,202) ON CONFLICT DO NOTHING',[admin.id,employee.id]);
+  await events.queueRefresh(db.pool,portal,'task_inbound_new',id);
+  assert.equal((await inbound.tickInboundTasks(rest))?.id,id);
+  const before=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+  assert.equal(before.status,'active');
+  assert.equal((await live.enableLinkedExchange(rest)).scope,'linked');
+  await db.transaction(async client=>{
+   const after=(await client.query("UPDATE tasks SET status='completed',completed_at=$2,version=version+1 WHERE id=$1 RETURNING *",[id,'2026-11-17T12:00:00Z'])).rows[0];
+   await new MockTaskProvider().applyApprovedChange(client,after,before.version);
+   await event(client,id,admin.id,'task_completed','Результат принят',{before:{...before,status:'review'},after});
+   await event(client,id,admin.id,'comment','Добавлен комментарий',{body:'Проверено и принято'});
+  });
+  remote.title='Переименовано в Битрикс24';
+  await events.queueRefresh(db.pool,portal,'task_inbound',id);
+  const during=await inbound.tickInboundTasks(rest,id);
+  assert.equal(during?.id,id);
+  assert.equal((await db.pool.query('SELECT status,title FROM tasks WHERE id=$1',[id])).rows[0].title,before.title);
+  assert.equal((await live.tickLiveSync(rest)).sent,1);
+  assert.equal((await live.tickLiveSync(rest)).sent,1);
+  assert.deepEqual(writes,['tasks.task.complete','tasks.task.chat.message.send']);
+  assert.equal((await live.tickLiveSync(rest)).sent,0);
+  assert.equal((await inbound.tickInboundTasks(rest,id))?.resource,'task_inbound');
+  assert.equal((await inbound.tickInboundTasks(rest,id))?.resource,'task_inbound_comments');
+  const current=(await db.pool.query('SELECT status,title,completed_at FROM tasks WHERE id=$1',[id])).rows[0];
+  assert.equal(current.status,'completed');
+  assert.equal(current.title,remote.title);
+  assert.equal(current.completed_at,remote.closedDate);
+  assert.equal((await taskBitrixDiscussion(admin,id,false)).messages.length,0);
+ }finally{
+  await db.pool.query('UPDATE bitrix_live_config SET enabled=false,sync_linked_tasks=false WHERE id=1');
+  await db.pool.query('DELETE FROM bitrix_user_links WHERE user_id=ANY($1)',[[admin.id,employee.id]]);
+  await db.pool.query('UPDATE bitrix_task_links SET conflict=NULL WHERE task_id=$1',[id]);
+  for(const key of ['BITRIX_TRANSPORT','BITRIX_WRITE_ENABLED','BITRIX_INBOUND_AUTHORITATIVE']){
+   if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];
+  }
+ }
+});
+
 test('resumable full archive preserves custom/multiple fields, closed tasks, all chat pages and every related section without modifying working tasks',async()=>{
  const before=(await db.pool.query('SELECT count(*)::int count FROM tasks')).rows[0].count,id=await runFull();
  const status=await archive.archiveStatus(admin,id);assert.equal(status.run.state,'captured');assert.deepEqual(status.issues,[]);assert.equal(status.complete,false);assert.equal(status.run.scope.includesClosed,true);
