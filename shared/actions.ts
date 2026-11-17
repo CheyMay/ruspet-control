@@ -1,4 +1,4 @@
-import type {ApprovalScope,Bootstrap,Task,User} from './types.js';
+import type {Approval,ApprovalScope,Bootstrap,Task,User} from './types.js';
 import {branchCovers} from './branches.js';
 export type ActionItem={key:string;kind:'answer'|'decision'|'review'|'rework'|'clarification'|'edit_permission';taskId:string;title:string;label:string;ownerId:string;since:string|null;due:string|null;mine:boolean;targetId:string};
 export function canReview(u:User,t:Task,scope?:ApprovalScope|null){
@@ -10,11 +10,27 @@ export function canReview(u:User,t:Task,scope?:ApprovalScope|null){
 export function canComplete(u:User,t:Task,scope?:ApprovalScope|null){
  return t.status!=='completed'&&u.id===t.creator_id&&!scope?.assigneeIds.includes(t.assignee_id);
 }
+export function activeTaskApproval(task:Task,approval:Approval){
+ return task.status!=='completed'&&approval.task_id===task.id&&approval.state==='pending'&&!approval.canceled_at&&approval.task_version===task.version;
+}
+export function approvalTurn(approval:Approval){
+ const clarification=!!approval.clarification_requested_at&&!approval.clarification_answered_at;
+ return {clarification,userId:clarification?approval.requester_id:approval.route[approval.current_step]?.userId};
+}
+export function taskNextAction(task:Task,approval?:Approval,scope?:ApprovalScope|null){
+ if(approval&&activeTaskApproval(task,approval)){
+  const {clarification,userId}=approvalTurn(approval);
+  return {userId,label:clarification?'Ответить на уточнение':approval.type==='deadline'?'Решить вопрос о переносе':'Принять результат'};
+ }
+ if(task.status==='review')return {userId:scope?.assigneeIds.includes(task.assignee_id)?scope.approverId:task.creator_id,label:'Принять результат'};
+ if(task.status==='active')return {userId:task.assignee_id,label:'Выполнить задачу'};
+ return null;
+}
 export function actionItems(data:Bootstrap):ActionItem[]{
  const result:ActionItem[]=[],tasks=new Map(data.tasks.map(t=>[t.id,t]));
  const activeApprovals=data.approvals.filter(approval=>{
   const task=tasks.get(approval.task_id);
-  return task&&task.status!=='completed'&&approval.state==='pending'&&!approval.canceled_at&&approval.task_version===task.version;
+  return task&&activeTaskApproval(task,approval);
  });
  const pending=new Set(activeApprovals.map(approval=>approval.task_id));
  const latest=new Map<string,Bootstrap['submissions'][number]>(),review=new Map<string,Bootstrap['submissions'][number]>();

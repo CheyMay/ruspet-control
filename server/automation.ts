@@ -4,7 +4,7 @@ import {businessDay} from '../shared/queues.js';
 import {remind,makeReport,event} from './service.js';
 import type {User} from '../shared/types.js';
 import {nextRuns,jobLabel} from '../shared/schedule.js';
-import {morningManagementReport,reviewInactivity} from './management-notices.js';
+import {morningManagementReport,remindAboutApprovalBatch,reviewInactivity} from './management-notices.js';
 export async function operationsStatus(){
  const config=(await pool.query('SELECT * FROM automation_config WHERE id=1')).rows[0];
  const runs=(await pool.query("SELECT * FROM job_runs WHERE job_key NOT LIKE 'reminders:%' ORDER BY updated_at DESC LIMIT 20")).rows.map(r=>({...r,label:jobLabel(r.job_key)}));
@@ -24,7 +24,9 @@ export async function tick(now=new Date()){
   await lock.query("DELETE FROM task_write_receipts WHERE created_at < now()-interval '7 days'");
   const cfg=(await pool.query('SELECT * FROM automation_config WHERE id=1')).rows[0];if(!cfg.enabled)return;
   const shifted=new Date(now.getTime()+10800000),weekday=shifted.getUTCDay(),workday=weekday!==0&&weekday!==6;
-  const hhmm=shifted.toISOString().slice(11,16),day=businessDay(now),actor=(await pool.query("SELECT * FROM users WHERE id='admin'")).rows[0] as User;
+  const hhmm=shifted.toISOString().slice(11,16),day=businessDay(now);
+  const actor=(await pool.query<User>("SELECT * FROM users WHERE role='admin' ORDER BY root_access DESC,(id='admin') DESC,id LIMIT 1")).rows[0];
+  if(!actor)return;
   const batch=async(kinds:string[],slot:string)=>{const ids:string[]=[];for(const kind of kinds)ids.push((await makeReport(actor,kind,slot,now)).id);return ids;};
   const jobs:{key:string;run:()=>Promise<string[]>}[]=[];
   if(workday&&hhmm>=cfg.morning)jobs.push({key:`reports-v5:morning:${day}`,run:()=>batch(['snapshot'],'scheduled-morning')});
@@ -37,6 +39,7 @@ export async function tick(now=new Date()){
    await reviewInactivity(day,now);
    return [];
   }});
+  if(workday&&hhmm>='14:45'&&hhmm<'15:00')jobs.push({key:`approval-batch-ready:${day}`,run:async()=>{await remindAboutApprovalBatch(day);return [];}});
   if(workday&&hhmm>=cfg.evening)jobs.push({key:`reports-v5:evening:${day}`,run:()=>batch(['daily'],'scheduled-evening')});
   if(workday&&hhmm>=cfg.morning&&hhmm<cfg.evening)jobs.push({key:`reminders:${day}:${Math.floor(now.getTime()/60000)}`,run:async()=>{await remind(actor);return [];}});
   for(const job of jobs){const previous=(await pool.query('SELECT * FROM job_runs WHERE job_key=$1',[job.key])).rows[0];

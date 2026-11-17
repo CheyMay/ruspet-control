@@ -43,8 +43,10 @@ export function NotificationCenter({items,readOnly,open,refresh}:{items:Notifica
      <div className="notice-actions">
       {latest.task_id&&<button className="text-button" onClick={()=>open(latest.task_id!)}>Открыть #{latest.task_id}</button>}
       {latest.task_notice?.taskIds.slice(0,3).map(id=><button key={id} className="text-button" onClick={()=>open(id)}>#{id}</button>)}
+      {latest.task_notice?.hasDeadlines&&<a className="text-button" href="/?view=tasks&scope=mine&filter=my_due">Мои сроки</a>}
       {latest.staff_review&&!readOnly&&<a className="text-button" href="/?view=registrations">Открыть заявки</a>}
       {latest.management_notice?.kind==='director-approvals'&&<a className="text-button" href={'/?view=approvals&batch='+latest.management_notice.batchId}>Открыть пакет</a>}
+      {latest.management_notice?.kind==='approval-batch-ready'&&<a className="text-button" href="/?view=approvals">Открыть согласования</a>}
       {latest.management_notice?.kind==='morning-report'&&<a className="text-button" href={'/?view=reports&report='+latest.management_notice.reportId}>Открыть отчёт</a>}
       {latest.management_notice?.kind==='inactivity'&&<a className="text-button" href="/?view=tasks&scope=team&filter=overdue">Проверить просрочки</a>}
       {!readOnly&&rows.some(row=>!row.read_at)&&<button className="text-button" disabled={busy} onClick={()=>void mark(rows)}>Прочитано</button>}
@@ -78,19 +80,19 @@ export function NotificationSettings({userId}:{userId:string}){
 }
 
 export function TelegramDeliverySettings(){
- type Status={settings:{enabled:boolean;delivery:boolean;task_delivery:boolean}};
+ type Status={settings:{enabled:boolean;delivery:boolean;task_delivery:boolean;deadline_delivery:boolean}};
  const [status,setStatus]=useState<Status['settings']|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
  useEffect(()=>{
   let live=true;
   api<Status>('/telegram/status').then(value=>{if(live)setStatus(value.settings);}).catch(e=>{if(live)setError(e.message);});
   return()=>{live=false;};
  },[]);
- async function change(field:'delivery'|'task_delivery',value:boolean){
+ async function change(field:'delivery'|'task_delivery'|'deadline_delivery',value:boolean){
   if(!status)return;
   setBusy(true);setError('');
   const next={...status,[field]:value};
   try{
-   await api('/telegram/settings','PUT',{enabled:next.enabled,delivery:next.delivery,taskDelivery:next.task_delivery});
+   await api('/telegram/settings','PUT',{enabled:next.enabled,delivery:next.delivery,taskDelivery:next.task_delivery,deadlineDelivery:next.deadline_delivery});
    setStatus(next);
   }catch(e){setError((e as Error).message);}finally{setBusy(false);}
  }
@@ -98,7 +100,11 @@ export function TelegramDeliverySettings(){
   <h2>Доставка сотрудникам</h2>
   {error&&<p className="alert error" role="alert">{error}</p>}
   <label className="toggle-row">
-   <span><strong>Сроки и назначения в Telegram</strong><small>Один список просроченных каждые 30 минут с 09:00 до 19:00 МСК. Новые назначения собираются 10 минут.</small></span>
+   <span><strong>Напоминания о сроках в Telegram</strong><small>Просрочки каждые 30 минут в рабочее время. Подготовка задач к согласованию к 15:00 МСК.</small></span>
+   <input type="checkbox" checked={status?.deadline_delivery??false} disabled={busy||!status?.enabled} onChange={e=>void change('deadline_delivery',e.target.checked)}/>
+  </label>
+  <label className="toggle-row">
+   <span><strong>Новые назначения в Telegram</strong><small>Новые задачи собираются в один список за 10 минут.</small></span>
    <input type="checkbox" checked={status?.task_delivery??false} disabled={busy||!status?.enabled} onChange={e=>void change('task_delivery',e.target.checked)}/>
   </label>
   <label className="toggle-row">

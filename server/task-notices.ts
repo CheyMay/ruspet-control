@@ -9,30 +9,36 @@ import {escapeHtml as h} from '../shared/report-links.js';
 import type {Task,User} from '../shared/types.js';
 
 const minute=60_000,repeatEvery=30*minute,assignmentWindow=10*minute;
-type TodaySlot='morning'|'afternoon'|'last_hour';
+type TodaySlot='morning'|'afternoon'|'last_hour'|'prepare'|'last_call';
 type NoticeRecord={created_at:string;task_notice:{overdue:boolean;today:TodaySlot[]}};
 type Assignment={id:string;task_id:string;created_at:string};
-type TaskNotice={overdue:Task[];elapsedToday:Task[];today:Task[];assignments:Task[]};
+type Delivery={deadlines:boolean;assignments:boolean;since:string|null};
+type TaskNotice={overdue:Task[];elapsedToday:Task[];today:Task[];assignments:Task[];prepare?:'prepare'|'last_call';waiting?:number};
 
 function deadlinePlan(tasks:Task[],now:Date,previous:NoticeRecord[]){
- const day=businessDay(now),hour=new Date(+now+3*60*minute).getUTCHours();
- const workingHours=hour>=9&&hour<19;
+ const day=businessDay(now),moscow=new Date(+now+3*60*minute),hour=moscow.getUTCHours();
+ const workingHours=hour>=9&&hour<19&&moscow.getUTCDay()!==0&&moscow.getUTCDay()!==6;
  const recent=previous.filter(row=>Date.parse(row.created_at)>+now-repeatEvery);
  const dated=tasks.filter(task=>task.deadline).sort((a,b)=>a.deadline!.localeCompare(b.deadline!)||a.id.localeCompare(b.id));
  const late=workingHours&&!recent.some(row=>row.task_notice.overdue)?dated.filter(task=>Date.parse(task.deadline!)<=+now):[];
  const today=workingHours?dated.filter(task=>businessDay(task.deadline!)===day&&Date.parse(task.deadline!)>+now):[];
  const sent=new Set(previous.flatMap(row=>row.task_notice.today));
  const todaySlots:TodaySlot[]=[];
+ const clock=hour*60+moscow.getUTCMinutes();
+ const prepare:TaskNotice['prepare']=clock>=14*60+30&&clock<15*60?'last_call':clock>=13*60&&clock<14*60+30?'prepare':undefined;
+ const hasWork=dated.some(task=>businessDay(task.deadline!)<=day);
+ const checkpoint=workingHours&&prepare&&hasWork&&!sent.has(prepare)&&!recent.length?prepare:undefined;
  if(today.length&&!recent.some(row=>row.task_notice.today.length)){
   const part=hour<14?'morning':'afternoon';
   if(!sent.has(part))todaySlots.push(part);
   if(Date.parse(today[0].deadline!)<=+now+60*minute&&!sent.has('last_hour'))todaySlots.push('last_hour');
  }
+ if(checkpoint)todaySlots.push(checkpoint);
  return {
   overdue:late.filter(task=>businessDay(task.deadline!)<day),
   elapsedToday:late.filter(task=>businessDay(task.deadline!)===day),
   today:todaySlots.length?today:[],
-  todaySlots
+  todaySlots,checkpoint
  };
 }
 
@@ -45,34 +51,39 @@ function readyAssignments(rows:Assignment[],now:Date){
  return rows.filter(row=>Date.parse(row.created_at)<=cutoff);
 }
 
-async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],channel:'web'|'telegram',since:string|null){
-  const tasks=(await db.query<Task>(`SELECT t.* FROM tasks t
-   WHERE t.assignee_id=$1 AND t.status='active'
-    AND NOT EXISTS(SELECT 1 FROM approvals a WHERE a.task_id=t.id AND a.state='pending' AND a.type='completion')`,[user.id])).rows.filter(task=>canSee(user,task));
+async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],channel:'web'|'telegram',delivery:Delivery){
+  const tasks=(await db.query<Task&{awaiting_decision:boolean}>(`SELECT t.*,EXISTS(
+   SELECT 1 FROM approvals a WHERE a.task_id=t.id AND a.state='pending' AND a.canceled_at IS NULL AND a.task_version=t.version
+   AND (CASE WHEN a.clarification_requested_at IS NOT NULL AND a.clarification_answered_at IS NULL
+    THEN a.requester_id ELSE a.route->a.current_step->>'userId' END) IS DISTINCT FROM $1) AS awaiting_decision
+   FROM tasks t WHERE t.assignee_id=$1 AND t.status IN ('active','review')`,[user.id])).rows.filter(task=>canSee(user,task));
   if(!tasks.length)return null;
 
-  const stamp=now.toISOString(),byId=new Map(tasks.map(task=>[task.id,task]));
+  const stamp=now.toISOString(),byId=new Map(tasks.filter(task=>task.status==='active').map(task=>[task.id,task]));
   const scope=(await db.query<{direct_assignee_ids:string[]|null}>('SELECT direct_assignee_ids FROM approval_hierarchy WHERE id=1')).rows[0]?.direct_assignee_ids;
-  const {overdue,elapsedToday,today,todaySlots}=deadlinePlan(!scope||scope.includes(user.id)?tasks:[],now,previous);
+  const actionable=tasks.filter(task=>task.status==='active'&&!task.awaiting_decision);
+  const {overdue,elapsedToday,today,todaySlots,checkpoint}=deadlinePlan(delivery.deadlines&&(!scope||scope.includes(user.id))?actionable:[],now,previous);
+  const waiting=tasks.filter(task=>task.status==='review'||task.awaiting_decision).length;
   const alreadyDelivered=channel==='telegram'?'SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text':
    "SELECT 1 FROM outbox d WHERE d.task_notice IS NOT NULL AND (d.task_notice->'assignmentIds') ? o.id::text";
-  const rows=(await db.query<Assignment>(`SELECT o.id,o.task_id,o.created_at FROM outbox o
+  const rows=delivery.assignments?(await db.query<Assignment>(`SELECT o.id,o.task_id,o.created_at FROM outbox o
    WHERE o.task_assignment AND o.recipient_id=$1 AND o.task_id=ANY($2) AND o.read_at IS NULL AND o.withdrawn_at IS NULL
     AND o.created_at BETWEEN greatest($3::timestamptz,$4::timestamptz-interval '2 days') AND $4
     AND NOT EXISTS(${alreadyDelivered})
-   ORDER BY o.created_at,o.id`,[user.id,[...byId.keys()],since,stamp])).rows;
+   ORDER BY o.created_at,o.id`,[user.id,[...byId.keys()],delivery.since,stamp])).rows:[];
   const ready=readyAssignments(rows,now),hasOverdue=!!(overdue.length||elapsedToday.length);
-  if(!hasOverdue&&!today.length&&!ready.length)return null;
+  if(!hasOverdue&&!today.length&&!ready.length&&!checkpoint)return null;
 
   const assignments=[...new Set(ready.map(row=>row.task_id))].map(taskId=>byId.get(taskId)!);
-  return {notice:{overdue,elapsedToday,today,assignments},overdue:hasOverdue,today:todaySlots,assignmentIds:ready.map(row=>row.id)};
+  return {notice:{overdue,elapsedToday,today,assignments,prepare:checkpoint,waiting},overdue:hasOverdue,today:todaySlots,assignmentIds:ready.map(row=>row.id)};
 }
 
 export async function claimTelegramTaskNotice(user:User,chatId:string,now:Date):Promise<(TaskNotice&{id:string})|null>{
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['telegram-task-notice:'+user.id]);
-  const settings=(await db.query<{since:string}>(`SELECT greatest(b.paired_at,s.task_delivery_enabled_at) AS since
-   FROM telegram_binding b JOIN telegram_settings s ON s.id=1 AND s.enabled AND s.task_delivery
+  const settings=(await db.query<Delivery>(`SELECT greatest(b.paired_at,s.task_delivery_enabled_at) AS since,
+    s.task_delivery AS assignments,s.deadline_delivery AS deadlines
+   FROM telegram_binding b JOIN telegram_settings s ON s.id=1 AND s.enabled AND (s.task_delivery OR s.deadline_delivery)
    LEFT JOIN notification_preferences p ON p.user_id=b.user_id
    WHERE b.user_id=$1 AND b.chat_id=$2 AND COALESCE(p.telegram_digest,true)
     AND (NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=b.user_id)
@@ -81,7 +92,7 @@ export async function claimTelegramTaskNotice(user:User,chatId:string,now:Date):
   const stamp=now.toISOString(),dayStart=businessDay(now)+'T00:00:00+03:00';
   const previous=(await db.query<NoticeRecord>(`SELECT created_at,task_notice FROM telegram_delivery
    WHERE chat_id=$1 AND task_notice IS NOT NULL AND task_notice->>'userId'=$2 AND created_at BETWEEN $3 AND $4`,[chatId,user.id,dayStart,stamp])).rows;
-  const plan=await planNotice(db,user,now,previous,'telegram',settings.since);
+  const plan=await planNotice(db,user,now,previous,'telegram',settings);
   if(!plan)return null;
   const id=randomUUID();
   await db.query(`INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state,created_at,task_notice)
@@ -97,6 +108,8 @@ function noticeContent(notice:TaskNotice,now:Date){
  const assigned=new Set(notice.assignments.map(task=>task.id)),shown=new Set(topDeadlines.map(task=>task.id));
  const onlyNew=notice.assignments.filter(task=>!shown.has(task.id));
  const sections:{heading:string;lines:string[]}[]=[];
+ if(notice.prepare)sections.push({heading:notice.prepare==='last_call'?'До 15:00 осталось меньше получаса':'Подготовьте задачи к 15:00',
+  lines:['Сдайте готовый результат. Если срок нужно перенести, отправьте запрос с новой датой.',...(notice.waiting?['Уже ждут решения или приёмки · '+notice.waiting]:[])]});
  const add=(label:string,tasks:Task[],total=tasks.length,listedAbove=0)=>{
   if(!total)return;
   const lines=tasks.slice(0,3).map(task=>{
@@ -115,7 +128,7 @@ function noticeContent(notice:TaskNotice,now:Date){
  add('Новые задачи',onlyNew,notice.assignments.length,notice.assignments.length-onlyNew.length);
 
  const taskIds=[...topDeadlines,...onlyNew.slice(0,3)].slice(0,5).map(task=>task.id);
- return {sections,taskIds,hasDeadlines:!!deadlines.length,hasAssignments:!!assigned.size};
+ return {sections,taskIds,hasDeadlines:!!deadlines.length||!!notice.prepare,hasAssignments:!!assigned.size};
 }
 
 export async function taskNoticeScreen(user:User,ch:string,notice:TaskNotice,now:Date){
@@ -123,7 +136,7 @@ export async function taskNoticeScreen(user:User,ch:string,notice:TaskNotice,now
  const buttons=taskIds.map(id=>button('#'+id,'task',{id}));
  return htmlScreen(user,ch,sections.map(s=>'<b>'+h(s.heading)+'</b>\n'+s.lines.map(h).join('\n')).join('\n\n'),[
   ...Array.from({length:Math.ceil(buttons.length/3)},(_,i)=>buttons.slice(i*3,i*3+3)),
-  [...(hasDeadlines?[button('Мои сроки','tasks',{filter:'my_due'})]:[]),...(hasAssignments?[button('Мои задачи','tasks',{filter:'mine'})]:[])]
+  [...(hasDeadlines?[button(notice.prepare?'Задачи к 15:00':'Мои сроки','tasks',{filter:'my_due'})]:[]),...(hasAssignments?[button('Мои задачи','tasks',{filter:'mine'})]:[])]
  ]);
 }
 
@@ -138,7 +151,7 @@ export async function generateWebTaskNotices(now=new Date()){
   const stamp=now.toISOString(),dayStart=businessDay(now)+'T00:00:00+03:00';
   const previous=(await db.query<NoticeRecord>(`SELECT created_at,task_notice FROM outbox
    WHERE recipient_id=$1 AND task_notice IS NOT NULL AND created_at BETWEEN $2 AND $3`,[user.id,dayStart,stamp])).rows;
-  const plan=await planNotice(db,user,now,previous,'web',null);
+  const plan=await planNotice(db,user,now,previous,'web',{deadlines:true,assignments:true,since:null});
   if(!plan)return;
   const id=randomUUID(),{sections,taskIds,hasDeadlines,hasAssignments}=noticeContent(plan.notice,now);
   const body=sections.map(section=>[section.heading,...section.lines].join('\n')).join('\n\n');

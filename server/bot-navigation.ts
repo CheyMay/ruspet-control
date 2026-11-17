@@ -2,7 +2,7 @@ import {button,htmlScreen,type Payload,type ListOrigin} from './bot-ui.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 import {botDue,botTaskStatus,sortBotTasks} from './bot-presentation.js';
 import {escapeHtml as h} from '../shared/report-links.js';
-import {actionItems,canComplete} from '../shared/actions.js';
+import {actionItems,activeTaskApproval,canComplete,taskNextAction} from '../shared/actions.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
@@ -104,13 +104,15 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  const owner=p.owner||u.id;
  const scoped=data.tasks.filter(task=>task.assignee_id===owner);
  if(p.owner&&owner!==u.id)assert(canManage(u)&&scoped.length&&(teamIds.has(owner)||hasCompanyOverview(u)),404,'Сотрудник вне доступной команды.');
- const matches=(t:Task,filter:string)=>filter==='my_due'?['today','overdue'].includes(taskQueue(t,now)):
+ const activeApprovals=new Map(data.approvals.filter(a=>a.state==='pending'&&!a.canceled_at).map(a=>[a.task_id,a]));
+ const matches=(t:Task,filter:string)=>filter==='my_due'?['today','overdue'].includes(taskQueue(t,now))&&taskNextAction(t,activeApprovals.get(t.id),data.approvalScope)?.userId===owner:
   filter==='open'||filter==='mine'?t.status!=='completed':filter==='active'?t.status==='active':taskQueue(t,now)===filter;
  const myActions=actionItems(data).filter(a=>a.mine),actionTasks=new Set(myActions.map(a=>a.taskId));
  if(p.op==='task_filters'){
   const count=(filter:string)=>filter==='created'?data.tasks.filter(t=>t.status!=='completed'&&t.creator_id===u.id).length:scoped.filter(t=>matches(t,filter)).length;
   const choice=(text:string,filter:string)=>button(`${text} · ${count(filter)}`,'tasks',{filter,owner});
   return htmlScreen(u,ch,'<b>'+h(owner===u.id?'Мои задачи':name(owner))+' · фильтры</b>\n\nВремя — московское.',[
+   ...(owner===u.id?[[choice('Мои сроки','my_due')]]:[]),
    [choice('Просрочены','overdue'),choice('Срок сегодня','today')],
    [choice('В работе','active'),choice('На приёмке','review')],
    [choice('Без срока','no_deadline'),choice('Завершены','completed')],
@@ -126,9 +128,14 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   }
   const filter=p.op==='day'?'today':p.filter||'mine',labels:Record<string,string>={open:'Незавершённые',active:'В работе',today:'Срок сегодня',overdue:'Просрочены',review:'На приёмке',completed:'Завершены',no_deadline:'Без срока',mine:'Мои задачи',my_due:'Мои сроки',created:'Я постановщик'};
   const tasks=sortBotTasks(filter==='created'?data.tasks.filter(t=>t.status!=='completed'&&t.creator_id===u.id):scoped.filter(t=>matches(t,filter)),now);
-  const pending=new Set(data.approvals.filter(a=>a.state==='pending').map(a=>a.task_id));
   const label=owner===u.id?labels[filter]||'Мои задачи':name(owner)+' · '+(labels[filter]||'Задачи');
-  return taskList(u,ch,{...p,owner},tasks.map(task=>({task,pending:pending.has(task.id)})),label,now,name);
+  return taskList(u,ch,{...p,owner},tasks.map(task=>{
+   const approval=activeApprovals.get(task.id);
+   const onApproval=!!approval&&activeTaskApproval(task,approval);
+   const next=taskNextAction(task,approval,data.approvalScope);
+   const hint=(onApproval||task.status==='review')&&next?.userId?next.label+' · '+name(next.userId):undefined;
+   return {task,pending:onApproval,hint};
+  }),label,now,name);
  }
  if(p.op==='menu_more'){
   const last=await lastUndo(u);
@@ -139,13 +146,14 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    [button('Поиск','search_prompt'),button('Как пользоваться','help')],[button('Меню','home')]
   ]);
  }
- if(p.op==='help')return htmlScreen(u,ch,'<b>Как пользоваться ботом</b>\n\n1. «Нужно действие» — ответы, приёмка и согласования лично для вас.\n2. «Срок сегодня» и «Просрочены» — срочные задачи.\n3. Откройте задачу: сверху ближайшее действие, ниже описание и обсуждение.\n4. «Ещё действия» — новый срок, редактирование, напоминания и история.\n\nДля поиска просто напишите название, номер или имя исполнителя. Изменения выполняются после отдельного подтверждения.',[[button('Найти задачу','search_prompt')],[button('Меню','home')]]);
+ if(p.op==='help')return htmlScreen(u,ch,'<b>Как пользоваться ботом</b>\n\n1. «Нужно действие» — ответы, приёмка и согласования лично для вас.\n2. «Мои сроки» — задачи на сегодня и просрочки, где ход за вами.\n3. В карточке сверху ближайшее действие, ниже описание и обсуждение.\n4. В «Ещё действиях» есть перенос срока, редактирование, напоминания и история.\n\nДля поиска просто напишите название, номер или имя исполнителя. Изменения выполняются после подтверждения.',[[button('Найти задачу','search_prompt')],[button('Меню','home')]]);
  const s=summarize(own,now);
+ const dueCount=own.filter(t=>matches(t,'my_due')).length;
  const company=hasCompanyOverview(u);
  const total=company?summarize(data.tasks,now):null;
  const overview=total?`\n\n<b>Вся компания</b>\nОткрыто: ${total.unfinished} · Просрочено: ${total.overdue} · Сегодня: ${total.today} · Приёмка: ${total.review}`:'';
- return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nМои задачи в работе и на приёмке: <b>${s.unfinished}</b>\nМои сроки · Сегодня: ${s.today} · Просрочено: ${s.overdue}\nНужно ваше действие: <b>${actionTasks.size}</b>${overview}`,[
-  [button(`📥 Нужно действие · ${actionTasks.size}`,'inbox')],
+ return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nСроки, по которым ход за вами · ${dueCount}\nРешения и ответы для вас · ${actionTasks.size}${overview}`,[
+  [button(`📥 Нужно действие · ${actionTasks.size}`,'inbox'),button(`Мои сроки · ${dueCount}`,'tasks',{filter:'my_due'})],
   [button(`Сегодня · ${s.today}`,'day'),button(`Просрочены · ${s.overdue}`,'tasks',{filter:'overdue'})],
   [button('Мои задачи','tasks',{owner:u.id}),...(canManage(u)?[button('Задачи команды','team')]:[button('Поиск','search_prompt')])],
   ...(company?[[button('Сводка компании','brief',{filter:'company'}),button('Отчёты','reports')]]:

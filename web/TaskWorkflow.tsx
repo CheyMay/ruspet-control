@@ -5,6 +5,7 @@ import {useEffect,useState} from 'react';
 import type {ApprovalScope,Task,User} from '../shared/types.js';
 import {canComplete,canReview} from '../shared/actions.js';
 import {TaskPeople} from './TaskPeople.js';
+import {EmployeeFilter} from './SearchFilter.js';
 import {plannedInterval} from '../shared/analytics.js';
 import {branchCovers,unassignedBranch} from '../shared/branches.js';
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
@@ -32,6 +33,17 @@ export function CompleteTaskDialog({task,users,busy,error,save,close}:{
  </form></div>;
 }
 const localDate=(value:string|null|undefined)=>value?new Date(new Date(value).getTime()+10800000).toISOString().slice(0,16):'';
+type TaskDraft={
+ title:string;description:string;price:string;owner:string;deadline:string;branch:string;companyId:string|null;
+ important:boolean|null;risk:boolean|null;mode:string;fields:NonNullable<Task['custom_fields']>;
+ schedule:Record<string,string>;extra:Record<string,string>;
+};
+function readDraft(key:string):Partial<TaskDraft>{
+ try{return JSON.parse(sessionStorage.getItem(key)||'{}')??{};}catch{return {};}
+}
+function storeDraft(key:string,value?:TaskDraft){
+ try{if(value)sessionStorage.setItem(key,JSON.stringify(value));else sessionStorage.removeItem(key);}catch{}
+}
 export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,showPlanning,onConditional,companyId:initialCompany,canLink,availableTasks}:{
  task:Task|null;showPlanning:boolean;users:User[];user:User;busy:boolean;save:Act;close:()=>void;
  copyOf?:Task;
@@ -40,15 +52,24 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
  companyId?:string|null;canLink:boolean;availableTasks:Task[];
 }){
  const initial=task??copyOf;
+ const draftKey='ruspet-task-draft:'+user.id+':'+(task?'edit:'+task.id+':'+task.version:copyOf?'copy:'+copyOf.id:'new:'+(initialCompany??''));
+ const [draft]=useState(()=>readDraft(draftKey));
  const [copyRequestId]=useState(()=>copyOf?crypto.randomUUID():undefined);
  const [error,setError]=useState(''),[assignees,setAssignees]=useState(users);
- const [title,setTitle]=useState(initial?.title??''),[description,setDescription]=useState(initial?.description??'');
- const [price,setPrice]=useState(initial?String(taskPrice(initial)??''):'');
- const [owner,setOwner]=useState(initial?.assignee_id||user.id),[deadline,setDeadline]=useState(localDate(copyOf?.deadline));
- const [branch,setBranch]=useState(initial&&initial.branch_id!==unassignedBranch?initial.branch_id:'');
- const [companyId,setCompanyId]=useState(initial?.company_id??initialCompany??null);
- const [important,setImportant]=useState(initial?.important??null),[risk,setRisk]=useState(initial?.customer_risk??null);
- const [mode,setMode]=useState('once'),[fields,setFields]=useState(initial?.custom_fields??[]);
+ const [title,setTitle]=useState(draft.title??initial?.title??''),[description,setDescription]=useState(draft.description??initial?.description??'');
+ const [price,setPrice]=useState(draft.price??(initial?String(taskPrice(initial)??''):''));
+ const [owner,setOwner]=useState(draft.owner??initial?.assignee_id??user.id),[deadline,setDeadline]=useState(draft.deadline??localDate(copyOf?.deadline));
+ const [branch,setBranch]=useState(draft.branch??(initial&&initial.branch_id!==unassignedBranch?initial.branch_id:''));
+ const [companyId,setCompanyId]=useState(draft.companyId===undefined?initial?.company_id??initialCompany??null:draft.companyId);
+ const [important,setImportant]=useState(draft.important===undefined?initial?.important??null:draft.important);
+ const [risk,setRisk]=useState(draft.risk===undefined?initial?.customer_risk??null:draft.risk);
+ const [mode,setMode]=useState(draft.mode==='conditional'&&!onConditional?'once':draft.mode??'once'),[fields,setFields]=useState(draft.fields??initial?.custom_fields??[]);
+ const [schedule,setSchedule]=useState(draft.schedule??{});
+ const [extra,setExtra]=useState(draft.extra??{});
+ const [edited,setEdited]=useState(false);
+ useEffect(()=>{
+  if(edited)storeDraft(draftKey,{title,description,price,owner,deadline,branch,companyId,important,risk,mode,fields,schedule,extra});
+ },[edited,draftKey,title,description,price,owner,deadline,branch,companyId,important,risk,mode,fields,schedule,extra]);
  useEffect(()=>{
   if(!task)return;
   let live=true;
@@ -56,6 +77,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   return()=>{live=false;};
  },[task?.id,user.id]);
  function applyTemplate(value:TemplateContent){
+  setEdited(true);
   if(!title.trim())setTitle(value.title);
   if(!description.trim())setDescription(value.description);
   if(price===''&&value.price!==undefined)setPrice(String(value.price));
@@ -70,7 +92,10 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
  const branches=[...new Set(users.map(person=>person.branch_id).filter(id=>id&&id!==unassignedBranch))].sort((a,b)=>a.localeCompare(b,'ru'));
  const ownerAllowed=allowedOwners.some(person=>person.id===owner);
  const heading=task?'Редактировать задачу':copyOf?'Копия задачи':'Новая задача';
- return <div className="modal-backdrop"><form className="modal task-editor task-compose-editor" role="dialog" aria-modal="true" aria-label={heading} onSubmit={async e=>{
+ return <div className="modal-backdrop"><form className="modal task-editor task-compose-editor" role="dialog" aria-modal="true" aria-label={heading}
+  onChangeCapture={()=>setEdited(true)}
+  onInvalid={event=>{const section=(event.target as HTMLElement).closest('details');if(section)section.open=true;}}
+  onSubmit={async e=>{
   e.preventDefault();
   if(!ownerAllowed)return;
   const f=new FormData(e.currentTarget);
@@ -83,15 +108,16 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   const body={...common,deadline:task?task.deadline:date('deadline',copyOf?.deadline),plannedStart:showPlanning?date('plannedStart',plan.start):initial?.planned_start||null,
    plannedEnd:showPlanning?date('plannedEnd',plan.end):initial?.planned_end||null,important,customerRisk:risk,
    parentId:String(f.get('parentId')||'').trim()||null,...(task?{expectedVersion:task.version,reason:f.get('reason')}:copyOf?{requestId:copyRequestId}:{})};
-  if(mode==='conditional'&&onConditional){onConditional(common);return;}
+  if(mode==='conditional'&&onConditional){storeDraft(draftKey);onConditional(common);return;}
   const success=mode==='repeat'?await save('/work-design/schedules',{
    template:body,frequency:f.get('frequency'),every:Number(f.get('every')),startsAt:date('startsAt'),
    deadlineHours:f.get('deadlineHours')?Number(f.get('deadlineHours')):null
   },'POST','Расписание сохранено'):await save(task?`/tasks/${encodeURIComponent(task.id)}`:copyOf?`/tasks/${encodeURIComponent(copyOf.id)}/copy`:'/tasks',body,task?'PUT':'POST',copyOf?'Копия создана':undefined);
-  if(success)close();
+  if(success){storeDraft(draftKey);close();}
  }}>
   <div className="panel-heading"><div><h2>{heading}</h2>{copyOf&&<p>Исходная задача #{copyOf.id}. Проверьте поля перед созданием.</p>}</div><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
   <div className="task-compose-body">
+  {draft.title!==undefined&&<div className="task-draft-banner"><span>Черновик восстановлен</span><button type="button" className="text-button" onClick={()=>{storeDraft(draftKey);close();}}>Удалить черновик</button></div>}
   {(saveError||error)&&<p className="alert error" role="alert">{saveError||error}</p>}
   {!initial&&<fieldset className="task-mode"><legend>Когда создавать</legend><div>
    {([{id:'once',label:'Разовая',detail:'Поставить сейчас'},{id:'repeat',label:'Регулярная',detail:'По расписанию'},
@@ -104,10 +130,9 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   <label>Название<input autoFocus name="title" required minLength={3} maxLength={500} value={title} onChange={e=>setTitle(e.target.value)}/></label>
   <label>Описание<textarea name="description" maxLength={10000} value={description} onChange={e=>setDescription(e.target.value)}/></label>
   <div className="editor-grid">
-   <label>Исполнитель<select name="assigneeId" value={owner} onChange={e=>{setOwner(e.target.value);setBranch(e.target.value===initial?.assignee_id&&initial.branch_id!==unassignedBranch?initial.branch_id:'');}}>
-    {!ownerAllowed&&<option value={owner} disabled>{users.find(person=>person.id===owner)?.name||owner} · выберите доступного сотрудника</option>}
-    {allowedOwners.map(person=><option key={person.id} value={person.id}>{person.name}</option>)}
-   </select></label>
+   <EmployeeFilter caption="Исполнитель" label="Исполнитель задачи" value={owner} people={allowedOwners} onChange={value=>{
+    setEdited(true);setOwner(value);setBranch(value===initial?.assignee_id&&initial.branch_id!==unassignedBranch?initial.branch_id:'');
+   }}/>
    <label>Цена задачи · ₽<input name="price" type="number" required min="0" max="999999999999.99" step="0.01" value={price} onChange={e=>setPrice(e.target.value)}/></label>
   </div>
   {canSetBranch&&mode!=='conditional'&&<label>Филиал или подразделение задачи<select value={branch} onChange={e=>setBranch(e.target.value)}>
@@ -115,34 +140,36 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
    {branch&&!branches.includes(branch)&&<option value={branch}>{branch}</option>}
    {branches.map(id=><option key={id} value={id}>{id}</option>)}
   </select></label>}
-  {canLink&&<CompanyPicker value={companyId} onChange={setCompanyId}/>}
+  {canLink&&<CompanyPicker value={companyId} onChange={value=>{setEdited(true);setCompanyId(value);}}/>}
   {!task&&mode==='once'&&<><label>Крайний срок · МСК<input type="datetime-local" name="deadline" value={deadline} onChange={e=>setDeadline(e.target.value)}/></label>
-   <div className="task-quick-actions">{[[0,'Сегодня, 18:00'],[1,'Завтра, 18:00'],[7,'Через неделю']].map(([days,label])=><button className="button secondary" key={days} type="button" disabled={new Date(deadlineShortcut(Number(days))+':00+03:00')<=new Date()} onClick={()=>setDeadline(deadlineShortcut(Number(days)))}>{label}</button>)}</div>
+   <div className="task-quick-actions">{[[0,'Сегодня, 18:00'],[1,'Завтра, 18:00'],[7,'Через неделю']].map(([days,label])=><button className="button secondary" key={days} type="button" disabled={new Date(deadlineShortcut(Number(days))+':00+03:00')<=new Date()} onClick={()=>{setEdited(true);setDeadline(deadlineShortcut(Number(days)));}}>{label}</button>)}</div>
    {deadline&&new Date(deadline+':00+03:00')<new Date()&&<p className="muted">Этот срок уже прошёл. Проверьте дату перед сохранением.</p>}
   </>}
   {!initial&&<TaskHints title={title} description={description} companyId={companyId} tasks={availableTasks} users={users} owner={owner}/>}
   {mode==='repeat'&&<div className="editor-grid">
-   <label>Первый запуск · МСК<input type="datetime-local" name="startsAt" required/></label>
-   <label>Повторять<select name="frequency"><option value="daily">По дням</option><option value="weekly">По неделям</option><option value="monthly">По месяцам</option></select></label>
-   <label>Интервал<input name="every" type="number" required min="1" max="30" defaultValue="1"/></label>
-   <label>Срок после запуска · часов<input name="deadlineHours" type="number" min="1" max="8760" placeholder="Без срока"/></label>
+   <label>Первый запуск · МСК<input type="datetime-local" name="startsAt" required value={schedule.startsAt??''} onChange={e=>setSchedule({...schedule,startsAt:e.target.value})}/></label>
+   <label>Повторять<select name="frequency" value={schedule.frequency??'daily'} onChange={e=>setSchedule({...schedule,frequency:e.target.value})}><option value="daily">По дням</option><option value="weekly">По неделям</option><option value="monthly">По месяцам</option></select></label>
+   <label>Интервал<input name="every" type="number" required min="1" max="30" value={schedule.every??'1'} onChange={e=>setSchedule({...schedule,every:e.target.value})}/></label>
+   <label>Срок после запуска · часов<input name="deadlineHours" type="number" min="1" max="8760" placeholder="Без срока" value={schedule.deadlineHours??''} onChange={e=>setSchedule({...schedule,deadlineHours:e.target.value})}/></label>
   </div>}
   {task&&<p className="muted">Крайний срок меняется через запрос переноса. Изменение параметров отменит актуальность открытого согласования.</p>}
+  <details className="compose-extra"><summary>Дополнительные параметры{fields.length?' · '+fields.length+' полей':''}</summary>
   {mode!=='conditional'&&<>
-   <div className="editor-grid">{showPlanning&&mode==='once'&&<><label>Плановое начало · МСК<input name="plannedStart" type="datetime-local" defaultValue={localDate(plan.start)}/></label><label>Плановое окончание · МСК<input name="plannedEnd" type="datetime-local" defaultValue={localDate(plan.end)}/></label></>}
+   <div className="editor-grid">{showPlanning&&mode==='once'&&<><label>Плановое начало · МСК<input name="plannedStart" type="datetime-local" value={extra.plannedStart??localDate(plan.start)} onChange={e=>setExtra({...extra,plannedStart:e.target.value})}/></label><label>Плановое окончание · МСК<input name="plannedEnd" type="datetime-local" value={extra.plannedEnd??localDate(plan.end)} onChange={e=>setExtra({...extra,plannedEnd:e.target.value})}/></label></>}
     {[{name:'important',label:'Важная задача',value:important,set:setImportant},{name:'customerRisk',label:'Риск потери клиента',value:risk,set:setRisk}].map(v=><label key={v.name}>{v.label}<select name={v.name} value={v.value===true?'yes':v.value===false?'no':'unknown'} onChange={e=>v.set(e.target.value==='unknown'?null:e.target.value==='yes')}><option value="unknown">Не указано</option><option value="yes">Да</option><option value="no">Нет</option></select></label>)}
    </div>
-   <label>ID родительской задачи<input name="parentId" defaultValue={initial?.parent_id||''} placeholder="Необязательно"/></label>
+   <label>ID родительской задачи<input name="parentId" value={extra.parentId??initial?.parent_id??''} onChange={e=>setExtra({...extra,parentId:e.target.value})} placeholder="Необязательно"/></label>
   </>}
   <fieldset className="task-custom-fields"><legend>Дополнительные поля</legend>
    {fields.map((field,index)=><div className="field-row" key={index}>
     <input aria-label={'Название поля '+(index+1)} placeholder="Поле, например номер заказа" required maxLength={80} value={field.label} onChange={e=>setFields(fields.map((item,i)=>i===index?{...item,label:e.target.value}:item))}/>
     <input aria-label={'Значение поля '+(index+1)} placeholder="Значение" maxLength={500} value={field.value} onChange={e=>setFields(fields.map((item,i)=>i===index?{...item,value:e.target.value}:item))}/>
-    <button className="icon-button" aria-label={'Удалить поле '+(index+1)} type="button" onClick={()=>setFields(fields.filter((_,i)=>i!==index))}>✕</button>
+    <button className="icon-button" aria-label={'Удалить поле '+(index+1)} type="button" onClick={()=>{setEdited(true);setFields(fields.filter((_,i)=>i!==index));}}>✕</button>
    </div>)}
-   <button className="text-button" type="button" disabled={fields.length>=12} onClick={()=>setFields([...fields,{label:'',value:''}])}>+ Добавить поле</button>
+   <button className="text-button" type="button" disabled={fields.length>=12} onClick={()=>{setEdited(true);setFields([...fields,{label:'',value:''}]);}}>+ Добавить поле</button>
   </fieldset>
-  {task&&<label>Причина изменения<textarea name="reason" required minLength={5} maxLength={4000} placeholder="Что меняется и почему"/></label>}
+  </details>
+  {task&&<label>Причина изменения<textarea name="reason" required minLength={5} maxLength={4000} placeholder="Что меняется и почему" value={extra.reason??''} onChange={e=>setExtra({...extra,reason:e.target.value})}/></label>}
   </div>
   <div className="drawer-actions task-editor-actions"><button type="button" className="button secondary" onClick={close}>Отмена</button><button disabled={busy||!ownerAllowed} className="button primary">{mode==='conditional'?'Настроить условие':mode==='repeat'?'Сохранить расписание':copyOf?'Создать копию':task?'Сохранить изменения':'Создать задачу'}</button></div>
  </form></div>;

@@ -22,6 +22,19 @@ const ready=`a.state='pending' AND a.canceled_at IS NULL AND a.route->a.current_
   AND i.step=a.current_step AND i.revision=a.action_revision)`;
 
 type BatchCandidate={id:string;current_step:number;action_revision:number;task_id:string};
+export async function remindAboutApprovalBatch(day:string){
+ await transaction(async db=>{
+  const hierarchy=await approvalHierarchy(db);
+  if(!hierarchy)return;
+  const {count}=(await db.query<{count:number}>(`SELECT count(*)::int AS count
+   FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE ${ready}`,[hierarchy.sales_head_id])).rows[0];
+  if(!count)return;
+  const recipients=(await db.query<{id:string}>(`SELECT u.id FROM users u WHERE u.role='admin' AND
+   EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled)`)).rows;
+  for(const {id} of recipients)await managementNotice(db,id,`Пакет согласований к 15:00 МСК · ${count} запросов. Откройте согласования и отправьте пакет руководителю.`,
+   'approval-batch-ready:'+day+':'+id,{kind:'approval-batch-ready'});
+ });
+}
 export async function directorBatchStatus(actor:User){
  assert(actor.role==='admin',403,'Отправка пакетов доступна администратору.');
  const hierarchy=await approvalHierarchy(pool);

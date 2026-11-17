@@ -4,7 +4,7 @@ import {compactTaskTitle} from '../shared/task-title.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import {formatPrice,priceBand,priceLabels} from '../shared/pricing.js';
 import {canRequest} from './domain.js';
-import {canComplete,canReview} from '../shared/actions.js';
+import {activeTaskApproval,canComplete,canReview,taskNextAction} from '../shared/actions.js';
 import {detail,config} from './service.js';
 import {canDelegateTask} from './workflow.js';
 import {lastUndo} from './undo.js';
@@ -21,10 +21,11 @@ export function deadlineProposalButton(task:Task,list:Payload['list'],explanatio
 
 export async function renderBotTask(u:User,ch:string,p:Payload){
  const d=await detail(u,p.id!),t=d.task,now=new Date();
- const pending=d.approvals.find(a=>a.state==='pending'),last=d.submissions[0];
+ const pending=d.approvals.find(a=>activeTaskApproval(t,a)),last=d.submissions[0];
+ const next=taskNextAction(t,pending,d.approvalScope);
  const {canEdit,canRequest:canRequestEdit,canDecide,request}=d.editAccess;
  const approver=pending?.route[pending.current_step];
- const ids=[t.assignee_id,t.creator_id,...(pending?[pending.requester_id,approver?.userId]:[]),
+ const ids=[t.assignee_id,t.creator_id,next?.userId,...(pending?[pending.requester_id,approver?.userId]:[]),
   ...(p.op==='discussion'?d.comments.map(c=>c.author_id):[]),...(p.op==='history'?d.events.map(e=>e.actor_id):[])].filter(Boolean);
  const people=(await pool.query('SELECT id,name FROM users WHERE id=ANY($1)',[ids])).rows;
  const name=(id:string)=>people.find(x=>x.id===id)?.name||id;
@@ -115,9 +116,6 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const control=d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));
  const overdue=taskQueue(t,now)==='overdue'||elapsedToday(t,now);
  const explained=!control?d.controls.find(c=>c.state==='answered'&&c.assignee_id===t.assignee_id):undefined;
- if(control){context.push('Нужно объяснение по проверке');rows.push([form('Дать объяснение','answer',control.id)]);}
- if(canDecide||request?.state==='approved'&&request.requesterId===u.id)
-  rows.push([button(canDecide?'Решить запрос на редактирование':'Редактировать задачу',canDecide?'task_edit_permission':'edit',extra)]);
  if(pending){
   const participant=waiting?pending.requester_id:approver?.userId;
   const mine=participant===u.id;
@@ -132,7 +130,11 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    rows.push([deadlineProposalButton(t,p.list,explained)]);
   }
  }
+ if(t.status==='review'&&!pending&&next?.userId)context.push(next.userId===u.id?'Результат ждёт вашей приёмки':'Результат на приёмке у '+name(next.userId));
  if(last||t.status==='review')rows.push([button(t.status==='review'&&canReview(u,t,d.approvalScope)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);
+ if(control){context.push('Нужно объяснение по проверке');rows.push([form('Дать объяснение','answer',control.id)]);}
+ if(canDecide||request?.state==='approved'&&request.requesterId===u.id)
+  rows.push([button(canDecide?'Решить запрос на редактирование':'Редактировать задачу',canDecide?'task_edit_permission':'edit',extra)]);
  const status=botTaskStatus(t,now,!!pending),facts:string[]=[];
  if(t.status==='completed'&&t.completed_at)facts.push('Закрыта '+date(t.completed_at)+' МСК');
  if(t.status!=='completed')facts.push(t.deadline?'Крайний срок '+date(t.deadline)+' МСК':'Без крайнего срока');

@@ -44,7 +44,7 @@ before(async()=>{
  const account=(id:string,name:string):User=>({id,name,role:'employee',branch_id:'Тест',position:'Менеджер'});
  worker=account('fixture-worker','Сотрудник фикстуры');other=account('fixture-other','Другой сотрудник');
  for(const user of [worker,other])await db.pool.query('INSERT INTO users(id,name,role,branch_id,position) VALUES($1,$2,$3,$4,$5)',[user.id,user.name,user.role,user.branch_id,user.position]);
- await db.pool.query("UPDATE telegram_settings SET enabled=true,task_delivery=true,task_delivery_enabled_at='2035-01-01T00:00:00+03:00'");
+ await db.pool.query("UPDATE telegram_settings SET enabled=true,task_delivery=true,deadline_delivery=true,task_delivery_enabled_at='2035-01-01T00:00:00+03:00'");
  await db.pool.query("INSERT INTO telegram_binding(id,chat_id,user_id,paired_at) VALUES(1,$1,$2,'2035-01-01T00:00:00+03:00')",[chat,worker.id]);
  workflow=await import('../server/workflow.js');notices=await import('../server/task-notices.js');push=await import('../server/web-push.js');
  server=(await import('../server/app.js')).createApp().listen(0,'127.0.0.1');
@@ -114,6 +114,31 @@ test('new assignments wait ten minutes and a concurrent tick only claims one per
  await setStatus(first,'completed');await setStatus(second,'completed');await setStatus(next,'completed');
 });
 
+test('checkpoints combine deadlines and leave pending transfers with their current decision maker',async()=>{
+ const day='2035-01-04',tick=(time:string)=>notices.claimTelegramTaskNotice(worker,chat,at(day,time));
+ const due=await makeTask('Сдать готовый результат к 15:00',at(day,'18:00'));
+ const pending=await makeTask('Перенос у согласующего',at('2035-01-03','12:00'));
+ await assignmentTime(due,at(day,'12:00'));
+ await db.pool.query('UPDATE telegram_settings SET task_delivery=false WHERE id=1');
+ const approval=randomUUID();
+ await db.pool.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,proposed_deadline,task_version,state,route,route_version)
+  SELECT $1,id,$2,'deadline','Причина запроса','План работ',$3,version,'pending',$4,1 FROM tasks WHERE id=$5`,
+  [approval,worker.id,at(day,'18:00').toISOString(),JSON.stringify([{userId:director.id,label:'Руководитель'}]),pending]);
+ const prepare=await tick('13:00');
+ assert.equal(prepare?.prepare,'prepare');assert.deepEqual(prepare?.today.map(t=>t.id),[due]);
+ assert.deepEqual(prepare?.assignments,[]);
+ assert.equal(prepare?.overdue.length,0);assert.ok(prepare?.waiting);
+ assert.equal(await tick('13:01'),null);
+ const lastCall=await tick('14:30');assert.equal(lastCall?.prepare,'last_call');
+ assert.equal(await tick('14:31'),null);
+ await setStatus(due,'completed');
+ assert.equal(await tick('15:00'),null);
+ await db.pool.query('UPDATE approvals SET clarification_requested_at=$2 WHERE id=$1',[approval,at(day,'15:00').toISOString()]);
+ assert.deepEqual((await tick('15:01'))?.overdue.map(t=>t.id),[pending]);
+ await setStatus(pending,'completed');
+ await db.pool.query('UPDATE telegram_settings SET task_delivery=true WHERE id=1');
+});
+
 test('web push is opt-in per device, rejects internal URLs and sends one private summary',async()=>{
  const status=await api(worker,'/notifications/push');assert.deepEqual(status.body,{publicKey:keys.publicKey,active:false});
  const subscription={endpoint:'https://fcm.googleapis.com/fcm/send/fixture',keys:{p256dh:keys.publicKey,auth:randomBytes(16).toString('base64url')}};
@@ -168,6 +193,10 @@ test('director gets one batch for current requests and the admin cannot send it 
  await service.decide(branch,a.id,{decision:'approve',comment:''});
  assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE recipient_id=$1 AND dedupe_key LIKE $2",[director.id,'approval:'+a.id+':%'])).rows[0].n,0);
  assert.equal((await management.directorBatchStatus(adminUser))?.total,1);
+ await db.pool.query("INSERT INTO login_accounts(user_id,username,password_hash,enabled) VALUES($1,'fixture-admin','fixture',true)",[adminUser.id]);
+ await management.remindAboutApprovalBatch('2035-01-05');
+ await management.remindAboutApprovalBatch('2035-01-05');
+ assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE recipient_id=$1 AND management_notice->>'kind'='approval-batch-ready'",[adminUser.id])).rows[0].n,1);
  await assert.rejects(()=>management.sendDirectorBatch(worker),/администратору/);
  const concurrent=await Promise.allSettled([management.sendDirectorBatch(adminUser),management.sendDirectorBatch(adminUser)]);
  const sent=concurrent.flatMap(result=>result.status==='fulfilled'?[result.value]:[]);

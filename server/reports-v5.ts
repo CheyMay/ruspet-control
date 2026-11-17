@@ -3,12 +3,13 @@ import {reportTransaction,type Db} from './db.js';
 import {assert,canSee,globalAccess,metrics,moscowDay} from './domain.js';
 import {config} from './service.js';
 import {reportAnalysis} from '../shared/reporting.js';
-import {summarizeWork,frontTasks,matchesParameters,type FrontSnapshot,workKinds} from '../shared/report-summary.js';
+import {summarizeWork,frontTasks,matchesParameters,type FrontSnapshot,workKinds,reportOutcome} from '../shared/report-summary.js';
 import {defaultReportView,localDayStart,nextBusinessDay,reportViews,type ReportParameters,type ReportView} from '../shared/report-parameters.js';
 import {taskQueue,elapsedToday} from '../shared/queues.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {teamMemberIds} from './org.js';
-import type {User,Task,Event,Report} from '../shared/types.js';
+import type {User,Task,Event,Report,Approval} from '../shared/types.js';
+import {activeTaskApproval,approvalTurn} from '../shared/actions.js';
 import {branchCovers} from '../shared/branches.js';
 
 const scopeForView=(u:User,view:ReportView)=>view==='mine'?'user:'+u.id:view==='team'?'team:'+u.id:'company';
@@ -79,8 +80,8 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
    const t=(e.data.after||e.data.before) as Task|undefined;const snapshot=t?.id?t:atTime(e.task_id!,new Date(e.created_at));const before=e.data.before as Task|undefined;
    return (!p.actorId||e.actor_id===p.actorId)&&!!snapshot&&canSee(u,snapshot)&&inView(snapshot)&&matchesParameters(snapshot,{...p,queue:'all'},to)&&(queueMatches(snapshot)||!!before&&queueMatches(before));
   });
-  const closedIds=new Set(inRange.filter(e=>e.kind==='task_completed').map(e=>e.task_id));
-  const touched=new Set(inRange.filter(e=>workKinds.has(e.kind)).map(e=>e.task_id));
+  const closedIds=new Set(inRange.filter(e=>reportOutcome(e)==='task_completed').map(e=>e.task_id));
+  const touched=new Set(inRange.filter(e=>workKinds.has(reportOutcome(e))).map(e=>e.task_id));
   let tasks:Task[];
   if(p.queue)tasks=filtered;
   else if(['today','overdue','review'].includes(kind))tasks=scoped.filter(t=>taskQueue(t,to)===kind||kind==='overdue'&&elapsedToday(t,to));
@@ -94,9 +95,21 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   else if(new Date(summary.front.capturedLatest||summary.front.capturedAt).getTime()>localDayStart(day).getTime()+9*3600000+60000)summary.notes.push('Фронт впервые сохранён после 09:00; сравнение начинается с фактического времени снимка.');
   const previous=(await db.query('SELECT id,created_at,rows,summary,analysis FROM reports WHERE scope=$1 AND kind=$2 AND comparison_key=$3 AND (summary->>\'to\')::timestamptz<=$4 ORDER BY created_at DESC,id DESC LIMIT 1',[scope,kind,key,to.toISOString()])).rows[0]||null;
   if(previous?.summary){summary.previous={id:previous.id,at:previous.summary.to,closedChange:summary.activity.closed-previous.summary.activity.closed,processedChange:summary.activity.processed-previous.summary.activity.processed,openChange:tasks.filter(t=>t.status!=='completed').length-Number(previous.summary.openCount||0)};}
-  const a=(await db.query('SELECT * FROM approvals WHERE task_id=ANY($1)',[tasks.map(t=>t.id)])).rows,c=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1)',[tasks.map(t=>t.id)])).rows,cfg=await config(db);
+  const approvalQueue=Math.abs(+now-+to)<1000 ? {decisionIds:[] as string[],clarificationIds:[] as string[]}:undefined;
+  const approvalTasks=approvalQueue&&!p.queue&&!p.actorId&&['snapshot','daily'].includes(kind)?scoped:tasks;
+  const a=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=ANY($1)',[approvalTasks.map(t=>t.id)])).rows,c=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1)',[tasks.map(t=>t.id)])).rows,cfg=await config(db);
+  if(approvalQueue){
+   const byId=new Map(approvalTasks.map(t=>[t.id,t]));
+   for(const approval of a){
+    const task=byId.get(approval.task_id);
+    if(!task||!activeTaskApproval(task,approval)||!approvalTurn(approval).userId)continue;
+    if(approval.type==='deadline'&&approval.proposed_deadline&&Date.parse(approval.proposed_deadline)<=+to)continue;
+    const ids=approvalTurn(approval).clarification?approvalQueue.clarificationIds:approvalQueue.decisionIds;
+    if(!ids.includes(task.id))ids.push(task.id);
+   }
+  }
   const analysis=reportAnalysis(tasks,users,to,previous,source);
-  const stored={...summary,openCount:tasks.filter(t=>t.status!=='completed').length};
+  const stored={...summary,approvalQueue,openCount:tasks.filter(t=>t.status!=='completed').length};
   const report=(await db.query("INSERT INTO reports(id,day,scope,kind,slot,metrics,rows,rules_version,activity,formula_version,analysis,parameters,summary,comparison_key) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,'v5-workday',$10,$11,$12,$13) RETURNING *",[randomUUID(),day,scope,kind,slot,JSON.stringify(metrics(tasks,a,c,to)),JSON.stringify(tasks),cfg.version,JSON.stringify({completed:summary.activity.closed,transfers:summary.activity.transfers,returned:summary.activity.returned,answers:summary.activity.answers}),JSON.stringify(analysis),JSON.stringify(p),JSON.stringify(stored),key])).rows[0];
   return report;
  });

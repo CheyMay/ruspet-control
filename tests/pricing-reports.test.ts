@@ -27,6 +27,24 @@ test('historical state rolls back actual changes and never invents pre-import st
  assert.equal(taskPrice(stateAt(after,[event],new Date('2035-01-01T11:00:00+03:00'))!),4999);
  assert.equal(stateAt(after,[{...event,kind:'imported'}],new Date('2035-01-01T11:00:00+03:00')),null);
 });
+
+test('day outcomes distinguish explanations, transfer requests and actual Bitrix changes',()=>{
+ const original=task(),moved=task({deadline:'2035-01-02T12:00:00Z'}),closed=task({id:'T2',status:'completed'});
+ const stamp='2035-01-01T11:00:00+03:00';
+ const events:Event[]=[
+  {id:'A',task_id:'T1',actor_id:'worker',kind:'explanation',message:'Объяснение',data:{},created_at:stamp},
+  {id:'B',task_id:'T1',actor_id:'worker',kind:'approval_requested',message:'Запрос',data:{newDeadline:moved.deadline},created_at:stamp},
+  {id:'C',task_id:'T1',actor_id:null,kind:'bitrix_change',message:'Срок изменён',data:{before:original,after:moved},created_at:stamp},
+  {id:'D',task_id:'T2',actor_id:null,kind:'bitrix_change',message:'Задача завершена',data:{before:task({id:'T2'}),after:closed},created_at:stamp},
+ ];
+ const from=new Date('2035-01-01T00:00:00+03:00'),to=new Date('2035-01-01T12:00:00+03:00');
+ const excludeChanges=summarizeWork([original],[],events.slice(0,2),{},from,to,[],null,true);
+ assert.equal(excludeChanges.activity.transfers,0);
+ const includeChanges=summarizeWork([moved,closed],[],events,{},from,to,[],null,true);
+ assert.deepEqual(includeChanges.outcomes,{transferIds:['T1'],requestedTransferIds:['T1'],explanationIds:['T1']});
+ assert.deepEqual(includeChanges.activity.closedIds,['T2']);
+ assert.equal(includeChanges.activity.processed,2);
+});
 test('task/report hyperlinks have no credentials and escape malicious labels',()=>{
  const url=taskLink('https://cheymay.ru',{report:'r',subset:'overdue',owner:'person-id',price:'premium'}),q=new URL(url).searchParams;assert.equal(q.get('view'),'tasks');assert.equal(q.get('price'),'premium');assert.equal(q.get('owner'),'person-id');assert(!url.includes('token'));
  const html=linkedText('Закрыто: 10 <script>alert(1)</script>',[{text:'Закрыто: 10',url}]);assert(html.includes('<a href='));assert(!html.includes('<script>'));assert(html.includes('&lt;script&gt;'));

@@ -76,6 +76,10 @@
 .task-compose-editor .task-mode label { align-items:center; padding:13px; }
 .task-compose-editor .task-mode span { min-width:0; }
 .task-compose-editor .task-editor-actions { position:static; flex:none; margin:0; padding:14px 24px; }
+.task-draft-banner { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:10px 12px; margin-bottom:14px; border-radius:8px; background:var(--theme-surface-soft); }
+.compose-extra { margin:14px 0; border:1px solid var(--line); border-radius:8px; padding:10px 12px; }
+.compose-extra summary { cursor:pointer; font-size:13px; font-weight:600; }
+.compose-extra[open] summary { margin-bottom:14px; }
 .task-people { display:grid; gap:4px; margin:8px 0; font-size:12px; line-height:1.5; }
 .task-people>span { overflow-wrap:anywhere; }
 .task-people .muted { display:inline; margin-right:6px; font-size:11px; }

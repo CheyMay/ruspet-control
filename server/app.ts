@@ -199,7 +199,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/operations/retry',async(req,res)=>{await retryJob(req.actor,z.object({key:text}).parse(req.body).key);await tick();res.json({ok:true});});
  app.get('/api/telegram/status',async(req,res)=>{res.json(await pilotStatus(req.actor));});
  app.post('/api/telegram/pairing',async(req,res)=>res.json(await pairPilot(req.actor,z.object({userId:z.string().max(100).optional()}).parse(req.body||{}).userId)));
- app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean(),taskDelivery:z.boolean().optional()}).parse(req.body));res.json({ok:true})});
+ app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean(),taskDelivery:z.boolean().optional(),deadlineDelivery:z.boolean().optional()}).parse(req.body));res.json({ok:true})});
  app.post('/api/bot/screen',async(req,res)=>{
   const {screen}=z.object({screen:z.enum(['home','tasks','notices','inbox','search_prompt']).default('home')}).parse(req.body||{});
   const channel=webBotChannel(req);

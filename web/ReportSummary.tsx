@@ -2,20 +2,70 @@ import {workspaceUrl} from './api.js';
 import type {Report} from '../shared/types.js';
 import {priceLabels} from '../shared/pricing.js';
 import {taskLink,reportLink} from '../shared/report-links.js';
-const date=(s:string)=>new Date(s).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'});
-export function ReportSummaryView({report:r}:{report:Report}){
- const s=r.summary;if(!s)return <p className="source-banner">Архивный отчёт предыдущей версии. Сохранённые значения: всего {r.metrics.total}, просрочки {r.metrics.overdue}, сегодня {r.metrics.today}, приёмка {r.metrics.review}.</p>;
- if(!s.stateAvailable)return <div className="work-report"><p>Период: {date(s.from)} — {date(s.to)} МСК</p><p className="source-banner">Состояние задач на выбранное время недоступно. Числовые показатели не рассчитаны.</p>{s.notes.map(n=><p key={n}>{n}</p>)}</div>;
- const delta=(n:number)=>n>=0?'+'+n:String(n);
- const href=(subset:string,price?:string)=>taskLink(workspaceUrl(),{report:r.id,subset,price,owner:r.parameters?.assigneeId,...(subset==='tomorrow'?{day:s.tomorrow.day,sort:'work_priority'}:{})});
- const stats=[{label:'Просрочки прошлых дней',n:r.metrics.overdue,subset:'overdue'},{label:'Срок сегодня',n:r.metrics.today,subset:'today'},{label:'Ожидают приёмки',n:r.metrics.review,subset:'review'},{label:'Без крайнего срока',n:r.analysis?.counts.no_deadline||0,subset:'no_deadline'},{label:'Обработано за период',n:s.activity.processed,subset:'processed'},{label:'Закрыто за период',n:s.activity.closed,subset:'closed'},{label:'Всего истёкших сроков',n:s.lateIds.length,subset:'late'}];
- return <div className="work-report"><p className="report-period">Период: <strong>{date(s.from)} — {date(s.to)} МСК</strong></p><p className="report-filters">{Object.entries(s.filters||{}).filter(([,value])=>value).map(([label,value])=>label+': '+value).join(' · ')||'Вся доступная область'}</p><p className="report-previous">{s.previous?<><a className="text-button" href={reportLink(workspaceUrl(),s.previous.id)}>Предыдущий отчёт: {date(s.previous.at)} МСК</a> · изменение закрытий {delta(s.previous.closedChange)}, обработанных {delta(s.previous.processedChange)}</>:'Первый отчёт этого вида и параметров за выбранный день.'}</p>
- <div className="work-report-stats">{stats.map(v=><a key={v.subset} href={href(v.subset)}><strong>{v.n}</strong><span>{v.label} ↗</span></a>)}</div><p className="muted">Истекло время сегодня: {s.elapsedToday}. Подтверждение напоминания не считается обработкой. Сдача на приёмку и закрытие учитываются отдельно.</p>
- <h3>Задачи по цене</h3><div className="price-counters">{Object.entries(s.prices).map(([id,n])=><a key={id} href={href('all',id)}><strong>{n}</strong><span>{priceLabels[id as keyof typeof priceLabels]} ↗</span></a>)}</div><p className="report-explanation">Среди истёкших сроков: {Object.entries(s.overduePrices).map(([id,n])=>`${priceLabels[id as keyof typeof priceLabels]} — ${n}`).join('; ')}.</p>
- {s.front.capturedAt?<><h3>Что ожидалось и что сделано</h3><p className="muted">Фронт сохранён: {date(s.front.capturedAt)} МСК. Перенос срока не считается завершением.</p><div className="work-report-stats"><a href={href('expected')}><strong>{s.front.total}</strong><span>Во фронте</span></a><a href={href('front_closed')}><strong>{s.front.closed}</strong><span>Из фронта закрыто</span></a><a href={href('remaining')}><strong>{s.front.remaining}</strong><span>Осталось</span></a><div><strong>{s.front.submitted}</strong><span>На приёмке</span></div><div><strong>{s.front.deferred}</strong><span>Со сменой срока</span></div><div><strong>{s.front.addedLater}</strong><span>Добавилось после снимка</span></div></div>{s.front.unavailable>0&&<p className="source-banner">По {s.front.unavailable} задачам утреннего фронта текущее состояние недоступно вашей роли.</p>}</>:<p className="source-banner">Утренний снимок на эту дату отсутствует. Сравнение с ожидаемым фронтом не вычислялось.</p>}
- <h3>Тенденция закрытия задач</h3><div className="closure-trend" role="img" aria-label="Закрытия по времени, накопительный итог"><div className="trend-bars">{s.trend.map(b=><div key={b.label} title={`Закрыто ${b.closed}; сдано ${b.submitted}; накопительно ${b.cumulativeClosed}`}><strong>{b.closed}</strong><span className="trend-bar-space"><i style={{height:Math.max(2,b.closed/Math.max(1,...s.trend.map(v=>v.closed))*75)+'px'}}/></span><small>{b.label}</small><small>Σ {b.cumulativeClosed}</small></div>)}</div></div>
- <h3>Обработка задач по сотрудникам</h3><p className="muted">«Задачи исполнителя» — результат по его задачам. «Действовал лично» — кто совершал действия, включая руководителей. Число обработанных задач уникальное; клики и подтверждения не увеличивают его.</p><div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Фронт</th><th>Из фронта закрыто</th><th>Осталось</th><th>Обработано задач исполнителя</th><th>Закрыто задач исполнителя</th><th>Сдано</th><th>Переносы</th><th>Действовал лично</th><th>Просрочки</th></tr></thead><tbody>{s.team.map(t=><tr key={t.id}><td>{t.name}</td><td>{t.expected}</td><td>{t.frontClosed}</td><td>{t.frontRemaining}</td><td>{t.processed}</td><td>{t.closed}</td><td>{t.submitted}</td><td>{t.transfers}</td><td>{t.processedByActor}</td><td>{t.overdue}</td></tr>)}</tbody></table></div>
- {r.kind==='daily'&&<><h3>Как строить следующий рабочий день · {s.tomorrow.day}</h3><p>Сначала разберите {s.tomorrow.overdue} просроченных задач, внутри очереди — по ценовой категории и ближайшему сроку. Затем задачи со сроком на этот день: {s.tomorrow.today}. У задач без цены сначала заполните обязательные данные.</p><a className="button secondary" href={href('tomorrow')}>Открыть фронт на {s.tomorrow.day} · {s.tomorrow.total} задач ↗</a><p className="report-explanation">{Object.entries(s.tomorrow.prices).map(([id,n])=>`${priceLabels[id as keyof typeof priceLabels]} — ${n}`).join('; ')}</p></>}
- {s.notes.map(n=><p className="source-banner" key={n}>{n}</p>)}<p className="section-footnote">Снимок неизменяем. По ссылкам открывается текущее состояние доступных задач; права повторно проверяются при входе и действии.</p>
+
+const date=(value:string)=>new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'});
+type Metric={label:string;count:number;subset?:string;price?:string};
+
+export function ReportSummaryView({report}:{report:Report}){
+ const summary=report.summary;
+ if(!summary)return <div className="work-report">
+  <p>Всего {report.metrics.total} · просрочено {report.metrics.overdue} · срок сегодня {report.metrics.today} · на приёмке {report.metrics.review}</p>
+ </div>;
+ if(!summary.stateAvailable)return <div className="work-report">{summary.notes.map(note=><p className="source-banner" key={note}>{note}</p>)}</div>;
+
+ const link=(subset:string,price?:string)=>taskLink(workspaceUrl(),{
+  report:report.id,subset,price,owner:report.parameters?.assigneeId,
+  ...(subset==='tomorrow'?{day:summary.tomorrow.day,sort:'work_priority'}:{})
+ });
+ const cards=(metrics:Metric[])=><div className="work-report-stats">{metrics.map(metric=>{
+  const contents=<><strong>{metric.count}</strong><span>{metric.label}</span></>;
+  return metric.subset?<a key={metric.label} href={link(metric.subset,metric.price)}>{contents}</a>:<div key={metric.label}>{contents}</div>;
+ })}</div>;
+ const filters=Object.entries(summary.filters||{}).filter(([,value])=>value).map(([label,value])=>label+' · '+value);
+ const outcomes=summary.outcomes,queue=summary.approvalQueue;
+ return <div className="work-report">
+  <p className="report-period"><strong>{date(summary.from)} — {date(summary.to)} МСК</strong></p>
+  {!!filters.length&&<p className="report-filters">{filters.join(' / ')}</p>}
+  <h3>Что требует внимания</h3>
+  {cards([
+   {label:'Просрочены с прошлых дней',count:report.metrics.overdue,subset:'overdue'},
+   {label:'Срок истёк сегодня',count:summary.elapsedToday,subset:'elapsed_today'},
+   {label:'Ещё есть время сегодня',count:Math.max(0,report.metrics.today-summary.elapsedToday),subset:'due_later_today'},
+   {label:'На приёмке',count:report.metrics.review,subset:'review'},
+   ...(queue?.decisionIds.length?[{label:'Ждут решения по заявке',count:queue.decisionIds.length,subset:'approval_decision'}]:[]),
+   ...(queue?.clarificationIds.length?[{label:'Ждут ответа на уточнение',count:queue.clarificationIds.length,subset:'approval_clarification'}]:[]),
+  ])}
+  <h3>Результаты за период</h3>
+  {cards([
+   {label:'Завершены',count:summary.activity.closed,subset:'closed'},
+   {label:'Сданы на приёмку',count:summary.activity.submitted,subset:'submitted'},
+   {label:outcomes?'Срок изменён':'Переносы и объяснения',count:summary.activity.transfers,subset:outcomes?'transferred':undefined},
+   ...(outcomes?[{label:'Запрошен перенос',count:outcomes.requestedTransferIds.length,subset:'requested_transfer'}]:[]),
+   {label:'Дано объяснение',count:summary.activity.answers,subset:outcomes?'explained':undefined},
+  ])}
+  {!!summary.team.length&&<><h3>По задачам сотрудников</h3>
+   <div className="table-scroll"><table><thead><tr><th>Исполнитель</th><th>Просрочено ранее</th><th>Закрыто</th><th>Сдано</th><th>Срок изменён</th></tr></thead>
+    <tbody>{summary.team.map(person=><tr key={person.id}><th scope="row">{person.name}</th><td>{person.overdue}</td><td>{person.closed}</td><td>{person.submitted}</td><td>{person.transfers}</td></tr>)}</tbody>
+   </table></div>
+  </>}
+  {report.kind==='daily'&&<><h3>Следующий рабочий день · {summary.tomorrow.day}</h3>
+   <p>Просрочены к началу дня · {summary.tomorrow.overdue}. Срок в этот день · {summary.tomorrow.today}.</p>
+   <a className="button secondary" href={link('tomorrow')}>Открыть рабочий список · {summary.tomorrow.total}</a>
+  </>}
+  <details className="report-more"><summary>Утренний список, цены и динамика</summary>
+   {summary.front.capturedAt&&<><h3>Утренний список · {date(summary.front.capturedAt)} МСК</h3>
+    {cards([{label:'Было утром',count:summary.front.total,subset:'expected'},{label:'Завершено из списка',count:summary.front.closed,subset:'front_closed'},
+     {label:'Осталось открыто',count:summary.front.remaining,subset:'remaining'},{label:'Из них ждут приёмки',count:summary.front.submitted}])}
+   </>}
+   <h3>Задачи по цене</h3>
+   {cards(Object.entries(summary.prices).map(([price,count])=>({label:priceLabels[price as keyof typeof priceLabels],count,subset:'all',price})))}
+   {summary.previous&&<p><a className="text-button" href={reportLink(workspaceUrl(),summary.previous.id)}>Предыдущий отчёт от {date(summary.previous.at)} МСК</a></p>}
+   {summary.trend.some(point=>point.closed||point.submitted)&&<><h3>Динамика завершений</h3>
+    <div className="closure-trend"><div className="trend-bars">{summary.trend.map(point=><div key={point.label}>
+     <strong>{point.closed}</strong><span className="trend-bar-space"><i style={{height:Math.max(2,point.closed/Math.max(1,...summary.trend.map(p=>p.closed))*75)+'px'}}/></span><small>{point.label}</small>
+    </div>)}</div></div>
+   </>}
+  </details>
+  {summary.notes.map(note=><p className="source-banner" key={note}>{note}</p>)}
  </div>;
 }

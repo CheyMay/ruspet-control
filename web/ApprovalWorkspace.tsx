@@ -5,6 +5,7 @@ import type {Approval,Bootstrap} from '../shared/types.js';
 import {HelpHint} from './Management.js';
 import {api} from './api.js';
 import {EmployeeFilter} from './SearchFilter.js';
+import {approvalTurn} from '../shared/actions.js';
 
 type BatchStatus={head:{name:string;linked:boolean};total:number;last:{created_at:string;state:string|null}|null;
  rows:{id:string;name:string;processed:number;waiting:number;approved:number;ready:number}[]};
@@ -24,7 +25,7 @@ export function DirectorBatch({stamp}:{stamp:string}){
  const last=data.last?.state;
  return <section className="panel director-approval-panel">
   <div className="director-approval-heading"><div><h2>Пакет для {data.head.name}</h2>
-   <p>{data.total?'Готово к отправке: '+data.total+'.':'Новых запросов для отправки нет.'} {!data.head.linked?'Получатель увидит пакет на сайте. Telegram ещё не привязан.':''}</p>
+   <p>{data.total?`К отправке · ${data.total}. Рабочий ориентир — собрать пакет к 15:00 МСК.`:'Новых запросов для отправки нет.'} {!data.head.linked?'Получатель увидит пакет на сайте. Telegram ещё не привязан.':''}</p>
   </div><button className="button primary" disabled={!data.total||busy} onClick={()=>void send()}>Отправить пакет</button></div>
   {data.rows.length>0&&<div className="director-approval-table"><table><thead><tr><th>Сотрудник</th><th>Обработано сегодня</th><th>У руководителя</th><th>Руководитель согласовал сегодня</th><th>В пакете</th></tr></thead>
    <tbody>{data.rows.map(row=><tr key={row.id}><th scope="row">{row.name}</th><td>{row.processed}</td><td>{row.waiting}</td><td>{row.approved}</td><td>{row.ready}</td></tr>)}</tbody></table></div>}
@@ -36,7 +37,7 @@ export function DirectorBatch({stamp}:{stamp:string}){
 export function ApprovalWorkspace({data,render,readOnly=false}:{data:Bootstrap;render:(a:Approval)=>ReactNode;readOnly?:boolean}){
  const [tab,setTab]=useRememberedFilter(data.user.id,'ApprovalWorkspace.tab','pending'),[query,setQuery]=useState(''),[owner,setOwner]=useRememberedFilter(data.user.id,'ApprovalWorkspace.owner','all'),[actor,setActor]=useRememberedFilter(data.user.id,'ApprovalWorkspace.actor','all'),[type,setType]=useRememberedFilter(data.user.id,'ApprovalWorkspace.type','all'),[from,setFrom]=useRememberedFilter(data.user.id,'ApprovalWorkspace.from',''),[to,setTo]=useRememberedFilter(data.user.id,'ApprovalWorkspace.to','');
  const waiting=(a:Approval)=>!!a.clarification_requested_at&&!a.clarification_answered_at;
- const current=(a:Approval)=>waiting(a)?a.requester_id:a.route[a.current_step]?.userId;
+ const current=(a:Approval)=>approvalTurn(a).userId;
  const batch=new URLSearchParams(location.search).get('batch');
  const [batchItems,setBatchItems]=useState<{id:string}[]|null>(null),[batchError,setBatchError]=useState('');
  useEffect(()=>{
