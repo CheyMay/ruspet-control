@@ -6,9 +6,9 @@ import {event} from './service.js';
 import {taskCode} from '../shared/queues.js';
 import type {Task,User} from '../shared/types.js';
 
-type Hierarchy={branch_manager_id:string;sales_head_id:string};
-export async function approvalHierarchy(db:Db){
- return (await db.query<Hierarchy>('SELECT branch_manager_id,sales_head_id FROM approval_hierarchy WHERE id=1')).rows[0]??null;
+type Hierarchy={branch_manager_id:string;sales_head_id:string;sales_head_approves_all:boolean};
+export async function approvalHierarchy(db:Db,forNewRequest=false){
+ return (await db.query<Hierarchy>('SELECT branch_manager_id,sales_head_id,sales_head_approves_all FROM approval_hierarchy WHERE id=1'+(forNewRequest?' FOR SHARE':''))).rows[0]??null;
 }
 const codeRequiresReview=(task:Task)=>taskCode(task.title).code.replace(/[*#]$/u,'').includes('В');
 async function hasWatch(db:Db,taskId:string,directorId:string){
@@ -36,22 +36,34 @@ export async function setApprovalWatch(actor:User,id:string,enabled:boolean){
  });
 }
 
-export async function setApprovalHierarchy(actor:User,branchId:string,salesId:string){
+export async function setApprovalHierarchy(actor:User,branchId:string,salesId:string,approveAll?:boolean){
  assert(actor.role==='admin',403,'Маршрут настраивает администратор.');
  assert(branchId!==salesId,400,'Для двух этапов нужны разные сотрудники.');
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(431036)');
-  const people=(await db.query<User>('SELECT * FROM users WHERE id=ANY($1) ORDER BY id FOR UPDATE',[[branchId,salesId]])).rows;
+  const current=(await db.query<Hierarchy>('SELECT * FROM approval_hierarchy WHERE id=1 FOR UPDATE')).rows[0];
+  const people=(await db.query<User>('SELECT * FROM users WHERE id=ANY($1) ORDER BY id FOR NO KEY UPDATE',[[branchId,salesId]])).rows;
   const branch=people.find(person=>person.id===branchId),sales=people.find(person=>person.id===salesId);
   assert(branch&&canApproveBranch(branch),400,'Выберите руководителя подразделения для первого этапа.');
   assert(sales&&!sales.root_access&&(sales.role==='director'||sales.role==='sales_head'),400,'Второй этап — директор или руководитель продаж.');
-  const current=await approvalHierarchy(db);
+  const all=approveAll??current?.sales_head_approves_all??false;
   const revoked=await db.query('UPDATE users SET company_branch_access=false,version=version+1 WHERE company_branch_access');
-  if(current?.branch_manager_id===branchId&&current.sales_head_id===salesId&&!revoked.rowCount)return current;
-  await db.query(`INSERT INTO approval_hierarchy(id,branch_manager_id,sales_head_id) VALUES(1,$1,$2)
-   ON CONFLICT(id) DO UPDATE SET branch_manager_id=excluded.branch_manager_id,sales_head_id=excluded.sales_head_id`,[branchId,salesId]);
-  await event(db,null,actor.id,'approval_hierarchy_changed','Настроен маршрут согласования задач',{branchId,salesId});
-  return {branch_manager_id:branchId,sales_head_id:salesId};
+  if(current?.branch_manager_id===branchId&&current.sales_head_id===salesId&&current.sales_head_approves_all===all&&!revoked.rowCount)return current;
+  await db.query(`INSERT INTO approval_hierarchy(id,branch_manager_id,sales_head_id,sales_head_approves_all) VALUES(1,$1,$2,$3)
+   ON CONFLICT(id) DO UPDATE SET branch_manager_id=excluded.branch_manager_id,sales_head_id=excluded.sales_head_id,
+   sales_head_approves_all=excluded.sales_head_approves_all`,[branchId,salesId,all]);
+  if(all&&!current?.sales_head_approves_all){
+   const updated=await db.query<{id:string;task_id:string}>(`UPDATE approvals a SET route=a.route || $2::jsonb
+    FROM tasks t WHERE a.task_id=t.id AND a.task_version=t.version AND t.status<>'completed'
+    AND a.state='pending' AND a.canceled_at IS NULL AND a.requester_id<>$1
+    AND (a.type<>'completion' OR t.assignee_id<>$1)
+    AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(a.route) step WHERE step->>'userId'=$1)
+    RETURNING a.id,a.task_id`,[salesId,JSON.stringify([{userId:salesId,label:'Руководитель продаж'}])]);
+   for(const approval of updated.rows)await event(db,approval.task_id,actor.id,'approval_route_extended',
+    'В маршрут добавлено согласование руководителем продаж',{approvalId:approval.id,salesId});
+  }
+  await event(db,null,actor.id,'approval_hierarchy_changed','Настроен маршрут согласования задач',{branchId,salesId,approveAll:all});
+  return {branch_manager_id:branchId,sales_head_id:salesId,sales_head_approves_all:all};
  });
 }
 
@@ -67,7 +79,7 @@ export async function hierarchyRoute(db:Db,hierarchy:Hierarchy,task:Task,request
  const creator=people.find(person=>person.id===task.creator_id&&person.id!==head.id&&eligible(person)&&canSee(person,task));
  const primary=first&&eligible(first)?{userId:first.id,label:'Руководитель филиала'}:
   creator?{userId:creator.id,label:'Постановщик'}:null;
- const headStep=eligible(head)&&(!primary||codeRequiresReview(task)||await hasWatch(db,task.id,head.id));
+ const headStep=eligible(head)&&(hierarchy.sales_head_approves_all||!primary||codeRequiresReview(task)||await hasWatch(db,task.id,head.id));
  const route=[...(primary?[primary]:[]),...(headStep?[{userId:head.id,label:'Руководитель продаж'}]:[])];
  assert(route.length,422,'Для этого запроса нужен другой согласующий. Обратитесь к администратору.');
  return route;

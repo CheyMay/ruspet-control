@@ -266,8 +266,8 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/director-approval-batches',async(req,res)=>res.status(201).json(await sendDirectorBatch(req.actor)));
  app.get('/api/director-approval-batches/:id',async(req,res)=>res.json(await directorBatchTasks(req.actor,z.uuid().parse(req.params.id))));
  app.put('/api/approval-hierarchy',async(req,res)=>{
-  const input=z.object({branchId:z.string().min(1).max(100),salesId:z.string().min(1).max(100)}).parse(req.body);
-  res.json(await setApprovalHierarchy(req.actor,input.branchId,input.salesId));
+  const input=z.object({branchId:z.string().min(1).max(100),salesId:z.string().min(1).max(100),approveAll:z.boolean().optional()}).parse(req.body);
+  res.json(await setApprovalHierarchy(req.actor,input.branchId,input.salesId,input.approveAll));
  });
  app.post('/api/tasks/:id/edit-permissions',async(req,res)=>{
   const {expectedVersion,reason}=z.object({expectedVersion:z.number().int().positive(),reason:z.string().trim().min(5).max(4000)}).parse(req.body);

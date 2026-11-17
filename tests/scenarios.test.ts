@@ -414,7 +414,7 @@ test('creating a copy saves the edited draft once and starts an independent task
  assert.equal((await request('director',path)).data.task.status,'completed');
 });
 
-test('launch routing uses the task branch and adds the sales head only for watched or В-coded tasks',async()=>{
+test('launch routing uses the task branch and adds the sales head selectively or for all requests',async()=>{
  const branch='lead-kzn',sales='director',assignee='olga',otherBranch='lead-msk';
  assert.equal((await request(sales,'/approval-hierarchy',{branchId:branch,salesId:sales},'PUT')).status,403);
  assert.equal((await request('admin','/approval-hierarchy',{branchId:otherBranch,salesId:sales},'PUT')).status,200);
@@ -496,6 +496,21 @@ test('launch routing uses the task branch and adds the sales head only for watch
   }finally{
    assert.equal((await request('admin','/system/access/'+branch,{...profile,expectedVersion:manager.version+1,role:'branch_manager'},'PATCH')).status,200);
   }
+  const enableAll=async(approveAll:boolean)=>request('admin','/approval-hierarchy',{branchId:otherBranch,salesId:sales,approveAll},'PUT');
+  const routeUsers=async(id:string)=>(await request(assignee,task(id))).data.approvals[0].route.map((step:{userId:string})=>step.userId);
+  assert.equal((await enableAll(true)).data.sales_head_approves_all,true);
+  assert.deepEqual(await routeUsers(explicit),[otherBranch,sales]);
+  const ordinary=await make('РЗМ* Обычный перенос');
+  const ordinaryApproval=await propose(ordinary);
+  assert.equal(ordinaryApproval.status,201);
+  assert.deepEqual(await routeUsers(ordinary),[branch,sales]);
+  assert.equal((await decide(branch,ordinaryApproval.data.id,'approve','Подтверждаю перенос')).data.state,'pending');
+  assert.equal((await decide(sales,ordinaryApproval.data.id,'approve','Подтверждаю перенос')).data.state,'approved');
+  const ordinaryResult=await make('РЗМ* Обычная приёмка');
+  assert.equal((await request(assignee,task(ordinaryResult)+'/review',{action:'submit',comment:'Работа готова к приёмке',expectedVersion:1})).status,200);
+  assert.deepEqual(await routeUsers(ordinaryResult),[branch,sales]);
+  assert.equal((await enableAll(false)).data.sales_head_approves_all,false);
+  assert.deepEqual(await routeUsers(ordinaryResult),[branch,sales]);
  }finally{
   await db.pool.query('DELETE FROM approval_hierarchy WHERE id=1');
   await db.pool.query('UPDATE users SET company_branch_access=false WHERE id=$1',[branch]);

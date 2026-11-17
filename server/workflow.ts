@@ -165,7 +165,7 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
 });}
 async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return',comment:string,version:number){return transaction(async db=>{
  const before=(await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0] as Task;assert(before&&canSee(u,before),404,'Задача недоступна.');assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
- const hierarchy=before.delegated_from_id?null:await approvalHierarchy(db);
+ const hierarchy=action==='submit'&&!before.delegated_from_id?await approvalHierarchy(db,true):null;
  const reviewer=u.id===before.creator_id||globalAccess(u)||u.role==='branch_manager'&&(branchCovers(u.branch_id,before.branch_id)||!!u.company_branch_access);
  if(action==='submit'){assert(canRequest(u,before),403,'Нет права сдавать задачу.');assert(before.status==='active',409,'Задача уже передана или завершена.');}
  else {assert(reviewer,403,'Решение принимает постановщик или руководитель.');assert(before.status==='review',409,'Задача не ожидает приёмки.');assert(u.id!==before.assignee_id,403,'Нельзя принимать собственную работу.');}

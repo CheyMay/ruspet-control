@@ -197,7 +197,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   assert(!(await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rowCount,409,'У задачи уже есть активное согласование.');
   const cfg=await config(db); assert(input.reason.trim().length>=cfg.config.responseMinLength&&input.plan.trim().length>=cfg.config.responseMinLength,400,`Причина и план: минимум ${cfg.config.responseMinLength} символов.`);
   if(input.type==='deadline') { assert(input.proposedDeadline&&new Date(input.proposedDeadline)>new Date(),400,'Новый срок должен быть в будущем.'); assert(new Date(input.proposedDeadline).getTime()!==new Date(task.deadline||0).getTime(),400,'Новый срок совпадает с текущим.'); }
-  const hierarchy=await approvalHierarchy(db);
+  const hierarchy=await approvalHierarchy(db,true);
   const route=hierarchy?await hierarchyRoute(db,hierarchy,task,user.id,input.type):await routeFor(db,task,cfg.config.routes[input.type]);
   assert(route.length>0,422,'Маршрут не настроен.'); assert(!route.some(s=>s.userId===user.id),422,'Согласовать собственный запрос нельзя.');
   const approvalId=randomUUID();
