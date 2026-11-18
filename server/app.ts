@@ -203,10 +203,11 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/telegram/pairing',async(req,res)=>res.json(await pairPilot(req.actor,z.object({userId:z.string().max(100).optional()}).parse(req.body||{}).userId)));
  app.put('/api/telegram/settings',async(req,res)=>{await configurePilot(req.actor,z.object({enabled:z.boolean(),delivery:z.boolean(),taskDelivery:z.boolean().optional(),deadlineDelivery:z.boolean().optional(),workdayDelivery:z.boolean().optional()}).parse(req.body));res.json({ok:true})});
  app.post('/api/bot/screen',async(req,res)=>{
-  const {screen}=z.object({screen:z.enum(['home','tasks','notices','inbox','search_prompt']).default('home')}).parse(req.body||{});
+  const {screen,scope}=z.object({screen:z.enum(['home','tasks','notices','inbox','search_prompt']).default('home'),
+   scope:z.enum(['mine','created']).optional()}).parse(req.body||{});
   const channel=webBotChannel(req);
   await clearBotDraft(req.actor,channel);
-  res.json(await botView(req.actor,channel,{op:screen}));
+  res.json(await botView(req.actor,channel,{op:screen,...(screen==='tasks'&&scope?{filter:scope}:{})}));
  });
  app.post('/api/bot/click',async(req,res)=>res.json(await botClick(req.actor,webBotChannel(req),z.object({token:z.string().max(64)}).parse(req.body).token)));
  app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,webBotChannel(req),input.text,input.inputId));});

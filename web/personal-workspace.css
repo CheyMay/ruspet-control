@@ -33,6 +33,18 @@
 .sidebar .owner-planner-link:hover { text-decoration: underline; }
 .settings-tabs { margin-bottom: 15px; overflow-x: auto; }
 .settings-section[hidden] { display: none; }
+.task-scope-switches { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:14px; }
+.task-role-switch { display:inline-flex; gap:3px; padding:3px; border:1px solid var(--theme-border); border-radius:8px; background:var(--theme-surface); }
+.task-role-switch button {
+ min-height:38px; padding:6px 10px; border:0; border-radius:5px; background:transparent;
+ color:var(--theme-text-secondary); font-size:13px; font-weight:600; white-space:nowrap;
+}
+.task-role-switch button[aria-pressed="true"] { background:var(--theme-surface-raised); color:var(--theme-text); }
+.task-role-switch button:focus-visible { outline:2px solid var(--theme-accent); outline-offset:1px; }
+.task-role-switch button:disabled { opacity:.65; }
+.bot-preview > .task-role-switch { margin-bottom:10px; }
+.mobile-conversation .task-role-switch { display:flex; }
+.mobile-conversation .task-role-switch button { flex:1; min-height:44px; }
 .employee-editor { width: min(540px, 94vw); max-height: 92vh; overflow: auto; }
 .employee-editor label { display: grid; gap: 5px; margin-block: 10px; }
 .employee-editor input, .employee-editor select {

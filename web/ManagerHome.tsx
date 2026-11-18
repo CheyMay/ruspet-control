@@ -4,10 +4,10 @@ import {TaskPeople} from './TaskPeople.js';
 import {elapsedToday,taskQueue} from '../shared/queues.js';
 import type {Bootstrap,Task} from '../shared/types.js';
 
-type Props={data:Bootstrap;open:(id:string,tab?:string)=>void;tasks:(filter:string)=>void;actions:()=>void;team?:()=>void;reports?:()=>void;complete?:(task:Task)=>void;busy?:boolean};
+type Props={data:Bootstrap;open:(id:string,tab?:string)=>void;tasks:(filter:string)=>void;placed:()=>void;actions:()=>void;team?:()=>void;reports?:()=>void;complete?:(task:Task)=>void;busy?:boolean};
 const timestamp=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
 
-export function ManagerHome({data,open,tasks,actions,team,reports,complete,busy=false}:Props){
+export function ManagerHome({data,open,tasks,placed,actions,team,reports,complete,busy=false}:Props){
  const now=new Date(data.serverTime);
  const own=data.tasks.filter(task=>task.assignee_id===data.user.id&&task.status!=='completed');
  const urgent=own.filter(task=>taskQueue(task,now)==='overdue');
@@ -22,6 +22,7 @@ export function ManagerHome({data,open,tasks,actions,team,reports,complete,busy=
    <div><h2>Мой рабочий день</h2><p>Незавершённые задачи: {own.length}</p></div>
    <div className="task-scope-actions">
     <button className="button secondary" onClick={()=>tasks('all')}>Мои задачи <ArrowRight size={16}/></button>
+    <button className="button secondary" onClick={placed}>Я постановщик</button>
     {team&&<button className="button secondary" onClick={team}>Задачи команды</button>}
     {reports&&<button className="button secondary" onClick={reports}>Мой отчёт</button>}
    </div>

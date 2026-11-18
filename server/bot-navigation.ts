@@ -14,7 +14,7 @@ import {lastUndo} from './undo.js';
 import {pool,type Db} from './db.js';
 import {personalNotifications} from './notifications.js';
 import {groupNotifications} from '../shared/notifications.js';
-import type {Report,User,Task} from '../shared/types.js';
+import type {PersonalTaskScope,Report,User,Task} from '../shared/types.js';
 
 const tasksPerPage=4;
 type TaskListItem={task:Task;hint?:string;pending?:boolean};
@@ -32,11 +32,14 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
   ...(!pending&&canComplete(u,t,scope)?[button('Завершить #'+t.id,'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
  const range=slice.length===1?String(start+1):`${start+1}–${start+slice.length}`;
  const count=pages>1?`${range} из ${items.length}`:String(items.length);
- return htmlScreen(u,ch,`<b>${h(label)}</b> · ${count}\n\n${lines.join('\n\n')||'Здесь пока нет задач.'}`,[
+ const taskScope:PersonalTaskScope|undefined=p.op==='tasks'&&(!p.owner||p.owner===u.id)?(p.filter==='created'?'created':'mine'):undefined;
+ const result=await htmlScreen(u,ch,`<b>${h(label)}</b> · ${count}\n\n${lines.join('\n\n')||'Здесь пока нет задач.'}`,[
+  ...(taskScope&&ch.startsWith('telegram:')?[[button('Я исполнитель','tasks',{filter:'mine'}),button('Я постановщик','tasks',{filter:'created'})]]:[]),
   ...choices,
   [...(page?[button('← Назад',p.op,{...list,page:page-1})]:[]),...(page+1<pages?[button('Дальше →',p.op,{...list,page:page+1})]:[])],
   [...(p.op==='plan_tasks'?[button('К плану','reports',{id:p.target,filter:p.filter})]:p.op==='director_batch'?[]:[button('Фильтры','task_filters',{owner:p.owner})]),...(p.owner&&p.owner!==u.id?[button('К команде','team')]:[]),button('Меню','home')]
  ],db);
+ return {...result,taskScope};
 }
 
 export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool){

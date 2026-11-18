@@ -4,6 +4,8 @@ import type {BotScreen} from '../server/bot.js';
 import {api,ApiError} from './api.js';
 import {BotText} from './BotText.js';
 import {VoiceRecorder} from './VoiceRecorder.js';
+import {TaskRoleSwitch} from './TaskRoleSwitch.js';
+import type {PersonalTaskScope} from '../shared/types.js';
 
 type Entry='home'|'tasks'|'notices'|'search_prompt';
 type Props={mobile?:boolean;initial?:Entry;refresh:()=>Promise<unknown>};
@@ -48,7 +50,7 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
   }
   finally{active.current=false;setBusy(false);}
  }
- function open(screen:Entry){void run('/bot/screen',{screen},screen==='search_prompt');}
+ function open(screen:Entry,scope?:PersonalTaskScope){void run('/bot/screen',{screen,scope},screen==='search_prompt');}
  function sendText(){
   if(active.current||!text.trim())return;
   const previous=pendingText.current;
@@ -76,8 +78,9 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
  }
  return <section className={mobile?'mobile-conversation':'panel'} aria-label="Рабочий бот">
   {!mobile&&<div className="panel-heading"><div><h2>Рабочий бот</h2><p>Найдите задачу, ответьте или запишите голосовое.</p></div><button className="button secondary" disabled={busy} onClick={()=>open('home')}>Меню</button></div>}
-  <div className="bot-preview">
-   <div ref={message} aria-live="polite">
+  <div className="bot-preview" ref={message}>
+   {view?.taskScope&&<TaskRoleSwitch value={view.taskScope} change={scope=>open('tasks',scope)} disabled={busy}/>}
+   <div aria-live="polite">
     {view?<div className="bot-message"><BotText text={view.text} html={view.format==='HTML'}/></div>:!error&&<div className="bot-message">Загружаем рабочее меню…</div>}
    </div>
    {view?.document&&<a className="button primary" href={'/api/reports/'+view.document.reportId+'/pdf'} target="_blank" rel="noreferrer">Скачать PDF</a>}

@@ -363,3 +363,23 @@ test('only self-assigned changes bypass approvals and creator pricing controls b
  assert.equal((await approval(existing)).current_step,1);
  assert.equal((await allow(existing,director)).state,'approved');
 });
+
+test('mobile Tasks switches between assigned and created without changing who can see them',async()=>{
+ const withMe=await makeTask('Список только исполнителя',at('2000-01-03','12:00'));
+ const fromMe=await makeTask('Список только постановщика',at('2000-01-03','13:00'),other);
+ const foreign=await makeTask('Задача другого сотрудника',at('2000-01-03','14:00'),other);
+ await db.pool.query('UPDATE tasks SET creator_id=$2 WHERE id=$1',[fromMe,worker.id]);
+ await login(worker);
+ const open=(scope?:'mine'|'created')=>api(worker,'/bot/screen?channel=mobile','POST',{screen:'tasks',scope});
+ const assigned=await open();
+ assert.equal(assigned.status,200);
+ assert.equal(assigned.body.taskScope,'mine');
+ assert.match(assigned.body.text,new RegExp('#'+withMe));
+ assert(!assigned.body.text.includes('#'+fromMe)&&!assigned.body.text.includes('#'+foreign));
+ const created=await open('created');
+ assert.equal(created.status,200);
+ assert.equal(created.body.taskScope,'created');
+ assert.match(created.body.text,new RegExp('#'+fromMe));
+ assert(!created.body.text.includes('#'+withMe)&&!created.body.text.includes('#'+foreign));
+ assert.equal((await open('mine')).body.taskScope,'mine');
+});
