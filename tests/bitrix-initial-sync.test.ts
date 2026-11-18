@@ -1,7 +1,9 @@
-import {before,after,beforeEach,test} from 'node:test';
+import {before,after,beforeEach,mock,test} from 'node:test';
 import assert from 'node:assert/strict';
 import {randomBytes,randomUUID} from 'node:crypto';
 import {readFile,writeFile,mkdtemp,rm,stat} from 'node:fs/promises';
+import fsPromises from 'node:fs/promises';
+import {syncBuiltinESMExports} from 'node:module';
 import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import pg from 'pg';
@@ -220,6 +222,38 @@ test('linked task results are queued once, shown privately with their text, and 
   await db.pool.query('DELETE FROM bitrix_task_activity WHERE task_id=$1',[id]);
   await db.pool.query('DELETE FROM bitrix_task_links WHERE task_id=$1',[id]);
   await db.pool.query('DELETE FROM bitrix_task_snapshots WHERE external_id=$1',[externalId]);
+ }
+});
+
+test('inbound balancer permits result reads and still rejects result writes',async()=>{
+ const keys=['BITRIX_INBOUND_TASKS','BITRIX_TRANSPORT','BITRIX_WEBHOOK_FILE','BITRIX_BALANCER_CONFIG_FILE'] as const;
+ const saved=keys.map(key=>process.env[key]),fetch=globalThis.fetch;
+ const webhook=join(directory,'result-webhook'),gateway=join(directory,'result-balancer.json');
+ await writeFile(webhook,'https://'+portal+'/rest/1/fixture-key/',{mode:0o600});
+ await writeFile(gateway,JSON.stringify({url:'https://fixture-balancer.example/send',publicKey:'fixture-public',privateKey:'fixture-private'}),{mode:0o600});
+ const nativeStat=fsPromises.stat;
+ const stub=process.platform==='win32'?mock.method(fsPromises,'stat',async(path:string)=>{
+  const result=await nativeStat(path);
+  if(path===gateway)result.mode=0o100600;
+  return result;
+ }):null;
+ if(stub)syncBuiltinESMExports();
+ Object.assign(process.env,{BITRIX_INBOUND_TASKS:'true',BITRIX_TRANSPORT:'balancer',BITRIX_WEBHOOK_FILE:webhook,BITRIX_BALANCER_CONFIG_FILE:gateway});
+ let sent=0;
+ globalThis.fetch=async(_address,options)=>{
+  sent++;
+  assert.match(JSON.parse(String(options?.body)).url,/\/tasks\.task\.result\.list\.json$/);
+  return Response.json({body:{result:[{id:1,text:'Результат'}]}});
+ };
+ try{
+  const client=await (await import('../server/bitrix-rest.js')).bitrixClient();
+  assert.deepEqual(await client('tasks.task.result.list',{taskId:'5'}),[{id:1,text:'Результат'}]);
+  await assert.rejects(()=>client('tasks.task.update',{taskId:'5',fields:{TITLE:'Запись'}}),/разрешено только чтение/);
+  assert.equal(sent,1);
+ }finally{
+  globalThis.fetch=fetch;
+  if(stub){stub.mock.restore();syncBuiltinESMExports();}
+  keys.forEach((key,index)=>{if(saved[index]===undefined)delete process.env[key];else process.env[key]=saved[index];});
  }
 });
 
