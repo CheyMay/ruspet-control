@@ -7,6 +7,7 @@ import {event,refreshTaskFindings} from './service.js';
 import {fieldValue} from './bitrix-fields.js';
 import {bitrixId,remoteTask,stage,syncActivity} from './bitrix-sync.js';
 import {BitrixError,type BitrixRequest} from './bitrix-rest.js';
+import {refreshBitrixResults,resultsResource} from './bitrix-results.js';
 import {namesMatch} from './staff-import.js';
 import {parsePrice,taskPrice} from '../shared/pricing.js';
 import {unassignedBranch} from '../shared/branches.js';
@@ -296,14 +297,16 @@ export async function tickInboundTasks(request:BitrixRequest,id?:string){
   const item=(await pool.query<QueueRow>(`SELECT resource,external_id,generation,delete_hint FROM bitrix_refresh_queue
    WHERE portal=$1 AND resource=ANY($2) AND state IN ('pending','failed') AND generation>done_generation
    AND (retry_at IS NULL OR retry_at<=now()) AND ($3::text IS NULL OR external_id=$3)
-   ORDER BY (resource=$4),updated_at,external_id LIMIT 1`,[portal,[taskResource,newTaskResource,commentsResource],id??null,commentsResource])).rows[0];
+   ORDER BY (resource=ANY($4)),updated_at,external_id LIMIT 1`,[portal,[taskResource,newTaskResource,commentsResource,resultsResource],id??null,[commentsResource,resultsResource]])).rows[0];
   if(!item)return null;
   const args=[portal,item.resource,item.external_id,item.generation];
   try{
-   const result=item.resource===commentsResource?await refreshComments(request,item.external_id):await refreshTask(request,item);
+   const result=item.resource===resultsResource?await refreshBitrixResults(request,item.external_id):
+    item.resource===commentsResource?await refreshComments(request,item.external_id):await refreshTask(request,item);
    const ignored='ignored' in result?result.ignored:null;
    await pool.query(`UPDATE bitrix_refresh_queue SET done_generation=$4,state=CASE WHEN generation=$4 THEN $5 ELSE 'pending' END,
-    error=CASE WHEN generation=$4 THEN $6 ELSE NULL END,retry_at=NULL WHERE portal=$1 AND resource=$2 AND external_id=$3`,[...args,ignored?'ignored':'done',ignored]);
+    error=CASE WHEN generation=$4 THEN $6 ELSE NULL END,retry_at=NULL,
+    updated_at=CASE WHEN generation=$4 THEN now() ELSE updated_at END WHERE portal=$1 AND resource=$2 AND external_id=$3`,[...args,ignored?'ignored':'done',ignored]);
    if(ignored&&item.resource===newTaskResource)await pool.query(`UPDATE bitrix_refresh_queue
     SET done_generation=generation,state='ignored',error=$4,retry_at=NULL
     WHERE portal=$1 AND resource=$2 AND external_id=$3 AND state='blocked' AND error=$5`,

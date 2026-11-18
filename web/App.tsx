@@ -8,7 +8,7 @@ import {TaskDelegation} from './TaskDelegation.js';
 import {CompanyReference} from './TaskComposeTools.js';
 import type {ProcessDraft} from './WorkDesign.js';
 import {BitrixActivity} from './BitrixActivity.js';
-import {TaskDiscussion} from './TaskDiscussion.js';
+import {TaskDiscussion,TaskResults} from './TaskDiscussion.js';
 import {EmployeeFilter,SearchFilter} from './SearchFilter.js';
 import {AccessDirectory,SystemHealth,moscowTimestamp} from './SystemHealth.js';
 import {useRememberedFilter} from './remembered-filter.js';
@@ -393,7 +393,7 @@ export function App(){
      {id:'approvals',label:'Согласования',count:detail.approvals.length+(detail.editAccess.request?.state==='pending'?1:0)||undefined},
      {id:'links',label:'Связи и напоминания'},{id:'history',label:'История'}
     ]}/>
-    <div className="drawer-body" key={drawerTab} role="tabpanel">
+    <div className="drawer-body" key={drawerTab} data-tab={drawerTab} role="tabpanel">
     {error&&<div className="alert error" role="alert">{error}</div>}
     {drawerTab==='info'&&<div className="task-card-overview">
      <div>
@@ -456,7 +456,8 @@ export function App(){
       <strong>{s.restored_from?'Приёмка восстановлена после отмены':s.automatic?'Автоматическая сдача после приёмки поручений':'Сдача №'+s.round} · {({review:'Ожидает приёмки',returned:'Возвращена',accepted:'Принята'})[s.state]}</strong>
       <small>{userById(s.author_id)?.name} · {date(s.submitted_at,true)}</small><p>{s.result}</p>
       {s.remark&&<blockquote><strong>{userById(s.reviewer_id||'')?.name}: </strong>{s.remark}</blockquote>}
-     </article>)}</section>:<p className="muted">Результат пока не сдавали.</p>}
+     </article>)}</section>:null}
+     <TaskResults key={selected} id={selected} linked={detail.bitrixLinked} hasLocal={!!detail.submissions.length}/>
     </>}
   {drawerTab==='discussion'&&<><TaskDiscussion key={selected} id={selected} comments={detail.comments} users={data.users}/>{!viewingEmployee&&detail.controls.filter(c=>['waiting','escalated'].includes(c.state)&&(data.user.id===c.assignee_id||data.user.role==='admin')).map(c=><ExplanationForm key={c.id} min={data.rules.responseMinLength} busy={busy} submit={body=>act(`/controls/${c.id}/answer`,body)}/>)}{!viewingEmployee&&<form className="comment-form" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const f=new FormData(form),body=String(f.get('body')),approvalId=String(f.get('approvalId')||'')||undefined;if(await act(`/tasks/${selected}/comments`,{body,approvalId}))form.reset();}}><label>К чему относится сообщение<select name="approvalId"><option value="">К задаче в целом</option>{detail.approvals.filter(a=>!a.canceled_at).map(a=><option key={a.id} value={a.id}>{a.type==='deadline'?'Перенос':'Закрытие'} от {date(a.created_at,true)}</option>)}</select></label><label>Комментарий<textarea name="body" required maxLength={4000} placeholder="Добавьте уточнение или результат работы…"/></label><button className="button primary" disabled={busy}><Send size={15}/>Отправить</button></form>}</>}
   {drawerTab==='history'&&<>{!viewingEmployee&&<UndoAction taskId={selected} refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}<TaskHistory showPlanning={!!data.rules.showPlanning} events={detail.events} users={data.users}/>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="history"/>}{demo&&!viewingEmployee&&data.user.role==='admin'&&<div className="demo-action"><p>Проверка защиты от устаревшего решения</p><button className="text-button" disabled={busy} onClick={()=>void act('/tasks/'+selected+'/mock-change',{expectedVersion:detail.task.version})}>Изменить описание в mock-источнике <ArrowUpRight size={14}/></button></div>}</>}

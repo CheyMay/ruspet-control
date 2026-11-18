@@ -8,6 +8,7 @@ import pg from 'pg';
 import type {Server} from 'node:http';
 import type {User} from '../shared/types.js';
 import type {BitrixRequest,BitrixMethod} from '../server/bitrix-rest.js';
+import {discussionMessages} from '../shared/task-discussion.js';
 const database='ruspet_initial_'+randomBytes(5).toString('hex'),portal='fixture.bitrix24.ru';
 const previous={...process.env};let connection:pg.Client,directory:string,server:Server,base:string,admin:User,employee:User;
 let okb:typeof import('../server/okb.js');
@@ -66,10 +67,6 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
  const inboundRequest:BitrixRequest=Object.assign(async<T>(method:BitrixMethod,params:any):Promise<T>=>{
   methods.push(method);
   if(method==='user.get')return [{ID:'202',NAME:employee.name},{ID:'201',NAME:admin.name}] as T;
-  if(method==='tasks.task.list'){
-   return {tasks:params.filter.ID?[{id,changedDate:baseline.created_at}]:
-    [{id:'9002',responsibleId:'202',createdDate:baseline.created_at}]} as T;
-  }
   assert.equal(method,'tasks.task.get');
   return {task:{...task(params.taskId),responsibleId:params.taskId==='9004'?'999999':'202',
    title:'Актуальная задача',description:'Из Битрикс24',createdDate:baseline.created_at,changedDate:baseline.created_at}} as T;
@@ -172,6 +169,58 @@ beforeEach(async()=>{
 });
 after(async()=>{
  if(server)await new Promise<void>(r=>server.close(()=>r()));await okb?.closeOkb();await db?.pool.end();if(connection){await connection.query('DROP DATABASE IF EXISTS '+database);await connection.query('DROP DATABASE IF EXISTS '+database+'_okb');await connection.end();}if(directory)await rm(directory,{recursive:true,force:true});for(const key of ['BITRIX_PORTAL','DEMO_AUTH','BITRIX_EVENT_TOKEN_FILE','BITRIX_WEBHOOK_FILE','BITRIX_TRANSPORT','BITRIX_OAUTH_FILE','OKB_DATABASE_URL'])if(previous[key]===undefined)delete process.env[key];else process.env[key]=previous[key];
+});
+
+test('linked task results are queued once, shown privately with their text, and replace pinned copies',async()=>{
+ const inbound=await import('../server/bitrix-inbound.js'),bot=await import('../server/bot.js');
+ const {id}=(await db.pool.query('SELECT id FROM tasks WHERE assignee_id=$1 ORDER BY id LIMIT 1',[employee.id])).rows[0];
+ const externalId='8109',resultId='33';
+ const previousPortal=process.env.BITRIX_PORTAL,previousInbound=process.env.BITRIX_INBOUND_TASKS;
+ delete process.env.BITRIX_PORTAL;delete process.env.BITRIX_INBOUND_TASKS;
+ let calls=0,removed=false;
+ const rest:BitrixRequest=Object.assign(async<T>(method:BitrixMethod,params:any):Promise<T>=>{
+  calls++;
+  assert.equal(method,'tasks.task.result.list');
+  assert.equal(params.taskId,externalId);
+  assert.deepEqual(params.params,{WITH_USER_INFO:'Y',WITH_FILE_INFO:'Y'});
+  return (removed?[]:[{id:resultId,taskId:externalId,commentId:708,createdBy:202,createdAt:'2026-11-16T13:10:00+03:00',text:'[B]Клиент проверил сводку[/B]',files:[11],
+   userInfo:{'202':{formattedName:employee.name}},fileInfo:{'11':{name:'Сводка.xlsx',DOWNLOAD_URL:'https://fixture.bitrix24.ru/file?auth=fixture-secret'}}}]) as T;
+ },{portal,mode:'webhook' as const});
+ try{
+  await db.pool.query("UPDATE bitrix_event_capture SET enabled=true,portal=$1,mode='online' WHERE id=1",[portal]);
+  await db.pool.query("INSERT INTO bitrix_task_snapshots(external_id,snapshot) VALUES($1,'{}')",[externalId]);
+  await db.pool.query("INSERT INTO bitrix_task_links(task_id,external_id,baseline,linked_version,live_enabled) VALUES($1,$2,'{}',1,true)",[id,externalId]);
+  await db.pool.query(`INSERT INTO bitrix_task_activity(task_id,kind,external_id,occurred_at,author,body) VALUES
+   ($1,'comment','706','2026-11-16T10:00Z','Автор','Старое сообщение'),
+   ($1,'comment','708','2026-11-16T10:10Z','Автор','Копия закреплённого комментария'),
+   ($1,'comment','710','2026-11-16T10:20Z','Автор','Новое сообщение')`,[id]);
+  assert.equal((await api(employee,'/tasks/2403/results')).status,404);
+  const opened=await Promise.all([api(employee,'/tasks/'+id+'/results'),api(employee,'/tasks/'+id+'/discussion')]);
+  assert.equal(opened[0].body.state,'pending');
+  assert.equal(opened[1].body.results.state,'pending');
+  assert.deepEqual((await db.pool.query("SELECT generation::text FROM bitrix_refresh_queue WHERE resource='task_inbound_results'")).rows,[{generation:'1'}]);
+  assert.equal((await inbound.tickInboundTasks(rest,externalId))?.resource,'task_inbound_results');
+  const loaded=await api(employee,'/tasks/'+id+'/results');
+  assert.equal(loaded.body.state,'ready');
+  assert.deepEqual(loaded.body.items,[{external_id:resultId,comment_id:'708',occurred_at:'2026-11-16T10:10:00.000Z',
+   author:employee.name,body:'[B]Клиент проверил сводку[/B]',files:[{id:'11',name:'Сводка.xlsx'}]}]);
+  const feed=(await api(employee,'/tasks/'+id+'/discussion')).body;
+  assert.deepEqual(discussionMessages([],()=>employee.name,feed).map(row=>row.key),['bitrix:706','result:33','bitrix:710']);
+  assert.match((await bot.botView(employee,'result-fixture',{op:'task_result',id})).text,/Клиент проверил сводку/);
+  assert.equal(await inbound.tickInboundTasks(rest,externalId),null);
+  assert.equal(calls,1);
+  removed=true;
+  await db.pool.query("UPDATE bitrix_refresh_queue SET updated_at=now()-interval '6 minutes' WHERE resource='task_inbound_results'");
+  assert.equal((await api(employee,'/tasks/'+id+'/results')).body.state,'pending');
+  assert.equal((await inbound.tickInboundTasks(rest,externalId))?.resource,'task_inbound_results');
+  assert.deepEqual((await api(employee,'/tasks/'+id+'/results')).body.items,[]);
+ }finally{
+  if(previousPortal===undefined)delete process.env.BITRIX_PORTAL;else process.env.BITRIX_PORTAL=previousPortal;
+  if(previousInbound===undefined)delete process.env.BITRIX_INBOUND_TASKS;else process.env.BITRIX_INBOUND_TASKS=previousInbound;
+  await db.pool.query('DELETE FROM bitrix_task_activity WHERE task_id=$1',[id]);
+  await db.pool.query('DELETE FROM bitrix_task_links WHERE task_id=$1',[id]);
+  await db.pool.query('DELETE FROM bitrix_task_snapshots WHERE external_id=$1',[externalId]);
+ }
 });
 
 test('confirmed links exchange completed tasks and comments without overwriting pending local changes',async()=>{

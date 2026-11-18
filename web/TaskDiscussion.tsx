@@ -1,6 +1,7 @@
-import {useEffect,useState,type ReactNode} from 'react';
+import {useEffect,useLayoutEffect,useRef,useState,type ReactNode} from 'react';
 import {api} from './api.js';
-import type {BitrixDiscussion,Comment,User} from '../shared/types.js';
+import {discussionMessages} from '../shared/task-discussion.js';
+import type {BitrixDiscussion,BitrixResults,BitrixResult,Comment,User} from '../shared/types.js';
 
 const messageTime=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'long',hour:'2-digit',minute:'2-digit'});
 const dateOnly=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'medium'});
@@ -47,43 +48,92 @@ function bitrixText(body:string,origin:string|null,depth=0):ReactNode{
  return [...parts,body.slice(offset)];
 }
 
-export function TaskDiscussion({id,comments,users}:{id:string;comments:Comment[];users:User[]}){
- const [bitrix,setBitrix]=useState<BitrixDiscussion|null>(null),[error,setError]=useState(false),[retry,setRetry]=useState(0);
+function useBitrixContent<T extends {state:BitrixResults['state'];results?:BitrixResults}>(id:string,section:'discussion'|'results'){
+ const [content,setContent]=useState<T|null>(null),[error,setError]=useState(false),[retry,setRetry]=useState(0);
  useEffect(()=>{
   let active=true,timer:ReturnType<typeof setTimeout>;
   async function load(){
    let delay=30000;
    try{
-    const result=await api<BitrixDiscussion>('/tasks/'+encodeURIComponent(id)+'/discussion','GET',undefined,{timeout:10000});
+    const result=await api<T>('/tasks/'+encodeURIComponent(id)+'/'+section,'GET',undefined,{timeout:10000});
     if(!active)return;
-    setBitrix(result);setError(false);
-    if(result.state==='pending')delay=4000;
+    setContent(result);setError(false);
+    if(result.state==='pending'||result.results?.state==='pending')delay=4000;
    }catch{if(active)setError(true);}
    if(active)timer=setTimeout(load,delay);
   }
   void load();
   return()=>{active=false;clearTimeout(timer);};
- },[id,retry]);
+ },[id,section,retry]);
+ return {content,error,reload:()=>setRetry(n=>n+1)};
+}
 
+function ResultFiles({files}:{files:BitrixResult['files']}){
+ return files.length>0&&<ul className="result-files" aria-label="Вложения из Битрикс24">
+  {files.map(file=><li key={file.id}>{file.name??'Файл '+file.id}</li>)}
+ </ul>;
+}
+
+export function TaskResults({id,linked,hasLocal}:{id:string;linked:boolean;hasLocal:boolean}){
+ return linked?<ImportedResults id={id} hasLocal={hasLocal}/>:!hasLocal&&<p className="muted">Результат пока не сдавали.</p>;
+}
+
+function ImportedResults({id,hasLocal}:{id:string;hasLocal:boolean}){
+ const {content,error,reload}=useBitrixContent<BitrixResults>(id,'results');
+ const status=error||content?.state==='unavailable'?'Результаты из Битрикс24 временно недоступны.':
+  !content||content.state==='pending'?'Загружаем результат из Битрикс24…':'';
+ return <>
+  {status&&<p className="discussion-status muted" role="status">{status} {error&&<button type="button" className="text-button" onClick={reload}>Повторить</button>}</p>}
+  {!!content?.items.length&&<section className="submission-history" aria-label="Результаты из Битрикс24">
+   {content.items.map(result=><article key={result.external_id}>
+    <strong>Результат · Битрикс24</strong>
+    <small>{result.author}{result.occurred_at?' · '+dateAndTime.format(new Date(result.occurred_at))+' МСК':''}</small>
+    {result.body&&<p className="discussion-text">{bitrixText(result.body,content.origin)}</p>}
+    <ResultFiles files={result.files}/>
+   </article>)}
+  </section>}
+  {!hasLocal&&!status&&!content?.items.length&&<p className="muted">Результат пока не сдавали.</p>}
+ </>;
+}
+
+export function TaskDiscussion({id,comments,users}:{id:string;comments:Comment[];users:User[]}){
+ const {content:bitrix,error,reload}=useBitrixContent<BitrixDiscussion>(id,'discussion');
+ const thread=useRef<HTMLDivElement>(null),pin=useRef(true),[showLatest,setShowLatest]=useState(false);
+ function scrollToLatest(){
+  const node=thread.current;
+  if(node)node.scrollTop=node.scrollHeight;
+  pin.current=true;
+  setShowLatest(false);
+ }
+ useLayoutEffect(()=>{
+  if(pin.current)scrollToLatest();
+ },[comments,bitrix]);
  const people=new Map(users.map(user=>[user.id,user.name]));
- const messages=[...comments.map(comment=>({key:'local:'+comment.id,author:people.get(comment.author_id)||'Сотрудник РУСПЭТ',
-  at:comment.created_at,body:comment.body,source:comment.approval_id?'Согласование':'РУСПЭТ'})),
-  ...(bitrix?.messages??[]).map(message=>({key:'bitrix:'+message.external_id,author:message.author,at:message.occurred_at,body:message.body,source:'Битрикс24'}))]
-  .sort((a,b)=>a.at.localeCompare(b.at)||a.key.localeCompare(b.key,'ru',{numeric:true}));
+ const messages=discussionMessages(comments,id=>people.get(id)||'Сотрудник РУСПЭТ',bitrix);
  const status=error?'Не удалось загрузить обсуждение из Битрикс24.':!bitrix?'Загружаем обсуждение из Битрикс24…':
   bitrix.state==='pending'?'Синхронизируем сообщения из Битрикс24…':bitrix.state==='unavailable'?'Обсуждение из Битрикс24 временно недоступно.':'';
  return <section className="task-discussion" aria-label="Сообщения по задаче">
-  {status&&<p className="discussion-status muted" role="status">{status} {error&&<button type="button" className="text-button" onClick={()=>setRetry(n=>n+1)}>Повторить</button>}</p>}
-  {messages.length?<ol className="discussion-messages">{messages.map(message=>{
-   const external=message.source==='Битрикс24';
-   const initials=message.author.trim().split(/\s+/).slice(0,2).map(part=>part[0]).join('').toUpperCase();
-   return <li className="discussion-message" key={message.key}>
-    <span aria-hidden="true" className={'discussion-avatar'+(external?' bitrix':'')}>{initials}</span>
-    <div className="discussion-note"><div className="discussion-meta"><strong>{message.author}</strong><span className="discussion-source">{message.source}</span>
-     <time dateTime={message.at} title="Московское время">{messageTime.format(new Date(message.at))}</time></div>
-     <p className="discussion-text">{message.body.trim()?external?bitrixText(message.body,bitrix?.origin??null):message.body:<span className="muted">Сообщение без текста</span>}</p>
-    </div>
-   </li>;
-  })}</ol>:!status&&<p className="muted">Сообщений пока нет.</p>}
+  {status&&<p className="discussion-status muted" role="status">{status} {error&&<button type="button" className="text-button" onClick={reload}>Повторить</button>}</p>}
+  {messages.length?<div className="discussion-thread" ref={thread} tabIndex={0} role="region" aria-label="Лента обсуждения"
+   onScroll={event=>{
+    const node=event.currentTarget;
+    pin.current=node.scrollHeight-node.scrollTop-node.clientHeight<48;
+    setShowLatest(!pin.current);
+   }}>
+   <ol className="discussion-messages">{messages.map(message=>{
+    const external=message.source.includes('Битрикс24');
+    const initials=message.author.trim().split(/\s+/).slice(0,2).map(part=>part[0]).join('').toUpperCase();
+    return <li className="discussion-message" key={message.key}>
+     <span aria-hidden="true" className={'discussion-avatar'+(external?' bitrix':'')}>{initials}</span>
+     <div className="discussion-note"><div className="discussion-meta"><strong>{message.author}</strong><span className="discussion-source">{message.source}</span>
+      {message.at&&<time dateTime={message.at} title="Московское время">{messageTime.format(new Date(message.at))}</time>}</div>
+      {message.body.trim()?<p className="discussion-text">{external?bitrixText(message.body,bitrix?.origin??bitrix?.results?.origin??null):message.body}</p>:
+       !message.files?.length&&<p className="discussion-text muted">Сообщение без текста</p>}
+      {message.files&&<ResultFiles files={message.files}/>}
+     </div>
+    </li>;
+   })}</ol>
+  </div>:!status&&<p className="muted">Сообщений пока нет.</p>}
+  {showLatest&&<button type="button" className="text-button discussion-latest" onClick={scrollToLatest}>К последним сообщениям ↓</button>}
  </section>;
 }

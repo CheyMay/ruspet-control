@@ -5,7 +5,8 @@ import {escapeHtml as h} from '../shared/report-links.js';
 import {formatPrice,priceBand,priceLabels} from '../shared/pricing.js';
 import {canRequest} from './domain.js';
 import {activeTaskApproval,canComplete,canReview,taskNextAction} from '../shared/actions.js';
-import {detail,config} from './service.js';
+import {discussionMessages} from '../shared/task-discussion.js';
+import {detail,config,taskBitrixDiscussion,taskBitrixResults} from './service.js';
 import {canDelegateTask} from './workflow.js';
 import {lastUndo} from './undo.js';
 import {taskIntegration} from './bitrix-fields.js';
@@ -73,17 +74,32 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    ...(t.custom_fields?.length?['','Дополнительные поля',...t.custom_fields.map(f=>f.label+': '+(f.value||'—'))]:[])];
   return paged('Поля задачи',lines.join('\n'),[[button('Описание','task_details',extra)]]);
  }
- if(p.op==='task_result')return paged('Результат работы',last?
-  `Сдача №${last.round}${last.restored_from?' · восстановлена после отмены':''}\n${date(last.submitted_at)} МСК\n\n${last.result}${last.remark?'\n\nЗамечания:\n'+last.remark:''}`:'Результат ещё не сдавали.',reviewRows);
+ if(p.op==='task_result'){
+  const external=d.bitrixLinked?await taskBitrixResults(u,t.id):null;
+  const sections:string[]=[];
+  if(last)sections.push(`Сдача №${last.round}${last.restored_from?' · восстановлена после отмены':''}\n${date(last.submitted_at)} МСК\n\n${last.result}${last.remark?'\n\nЗамечания:\n'+last.remark:''}`);
+  for(const result of external?.items??[]){
+   const files=result.files.map(file=>file.name??'Файл '+file.id);
+   sections.push(['Битрикс24 · '+result.author+(result.occurred_at?' · '+date(result.occurred_at)+' МСК':''),result.body,...files].filter(Boolean).join('\n'));
+  }
+  if(external?.state==='pending')sections.push('Результат из Битрикс24 загружается.');
+  if(external?.state==='unavailable')sections.push('Результат из Битрикс24 временно недоступен.');
+  return paged('Результат работы',sections.join('\n\n')||'Результат ещё не сдавали.',
+   [...reviewRows,...(external?.state==='pending'?[[button('Обновить результат','task_result',extra)]]:[])]);
+ }
  if(p.op==='task_approval')return paged('Согласование',pending?
   `Запрос: ${pending.type==='deadline'?'перенос срока':'закрытие задачи'}\nЭтап ${pending.current_step+1} из ${pending.route.length}\nАвтор: ${name(pending.requester_id)}\n${waiting?'Ждём уточнения от: '+name(pending.requester_id):'Решение за: '+name(approver?.userId??'')}\nТекущий крайний срок: ${date(t.deadline)}${pending.proposed_deadline?'\nПредложенный крайний срок: '+date(pending.proposed_deadline):''}\n\nПричина:\n${pending.reason}\n\nПлан:\n${pending.plan}${pending.clarification_question?'\n\nВопрос:\n'+pending.clarification_question:''}${pending.clarification_answer?'\n\nОтвет:\n'+pending.clarification_answer:''}`:'Текущих согласований нет.',approvalRows);
  if(p.op==='discussion'){
-  const list=[...d.comments].reverse(),page=Math.max(0,Math.min(p.page||0,Math.max(0,list.length-1))),c=list[page];
-  const parts=botTextPages(c?.body||'Сообщений пока нет.'),part=Math.max(0,Math.min(p.step||0,parts.length-1));
-  return htmlScreen(u,ch,`<b>Обсуждение · #${h(t.id)}</b>\n${list.length?`Сообщение ${page+1} из ${list.length} · новые сначала`:''}\n\n${c?h(c.author_name||name(c.author_id))+' · '+date(c.created_at)+' МСК\n':''}${h(parts[part])}${parts.length>1?`\n\nЧасть ${part+1}/${parts.length}`:''}`,[
+  const external=d.bitrixLinked?await taskBitrixDiscussion(u,t.id):null;
+  const list=discussionMessages(d.comments,name,external).reverse(),page=Math.max(0,Math.min(p.page||0,Math.max(0,list.length-1))),c=list[page];
+  const loading=external?.state==='pending'||external?.results?.state==='pending';
+  const text=c?[c.body,...(c.files??[]).map(file=>file.name??'Файл '+file.id)].filter(Boolean).join('\n')||'Сообщение без текста':
+   loading?'Сообщения из Битрикс24 загружаются.':'Сообщений пока нет.';
+  const parts=botTextPages(text),part=Math.max(0,Math.min(p.step||0,parts.length-1));
+  return htmlScreen(u,ch,`<b>Обсуждение · #${h(t.id)}</b>\n${list.length?`Сообщение ${page+1} из ${list.length} · новые сначала`:''}\n\n${c?h(c.author)+' · '+h(c.source)+(c.at?' · '+date(c.at)+' МСК':'')+'\n':''}${h(parts[part])}${parts.length>1?`\n\nЧасть ${part+1}/${parts.length}`:''}`,[
    [...(part?[button('← Часть','discussion',{...extra,page,step:part-1})]:[]),...(part+1<parts.length?[button('Читать дальше →','discussion',{...extra,page,step:part+1})]:[])],
    [...(page?[button('← Новее','discussion',{...extra,page:page-1})]:[]),...(page+1<list.length?[button('Ранее →','discussion',{...extra,page:page+1})]:[])],
-   [form('Написать комментарий','comment',c?.approval_id||pending?.id)],back]);
+   [...(loading?[button('Обновить','discussion',extra)]:[]),form('Написать комментарий','comment',c?.approvalId||pending?.id)],back]);
  }
  if(p.op==='history'){
   const showPlanning=(await config(pool)).config.showPlanning;
@@ -131,7 +147,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   }
  }
  if(t.status==='review'&&!pending&&next?.userId)context.push(next.userId===u.id?'Результат ждёт вашей приёмки':'Результат на приёмке у '+name(next.userId));
- if(last||t.status==='review')rows.push([button(t.status==='review'&&canReview(u,t,d.approvalScope)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);
+ if(last||t.status==='review'||d.bitrixLinked)rows.push([button(t.status==='review'&&canReview(u,t,d.approvalScope)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);
  if(control){context.push('Нужно объяснение по проверке');rows.push([form('Дать объяснение','answer',control.id)]);}
  if(canDecide||request?.state==='approved'&&request.requesterId===u.id)
   rows.push([button(canDecide?'Решить запрос на редактирование':'Редактировать задачу',canDecide?'task_edit_permission':'edit',extra)]);

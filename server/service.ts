@@ -5,6 +5,7 @@ import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
 import {enqueueBitrixOperation} from './bitrix-live.js';
+import {loadBitrixResults} from './bitrix-results.js';
 import {teamMemberIds} from './org.js';
 import {generateReport,reportScopes} from './reports-v5.js';
 import type {ReportParameters,ReportView} from '../shared/report-parameters.js';
@@ -97,22 +98,29 @@ export async function detail(user:User,id:string,db:Db=pool) {
    deferredUntil:current.deferred_until,
   };
  }
+ const imported=(await db.query<{count:number;linked:boolean}>(`SELECT
+  (SELECT count(*)::int FROM bitrix_task_activity WHERE task_id=$1 AND kind='comment') AS count,
+  EXISTS(SELECT 1 FROM bitrix_task_links WHERE task_id=$1) AS linked`,[id])).rows[0];
  return {
   task,approvalScope:approvalScope(await approvalHierarchy(db)),approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
   comments:(await db.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,
-  bitrixCommentCount:(await db.query<{count:number}>("SELECT count(*)::int AS count FROM bitrix_task_activity WHERE task_id=$1 AND kind='comment'",[id])).rows[0].count,
+  bitrixCommentCount:imported.count,bitrixLinked:imported.linked,
   events:(await db.query('SELECT * FROM task_events WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,
   approvals,
   decisions:(await db.query('SELECT d.*,EXISTS(SELECT 1 FROM decision_retractions r WHERE r.decision_id=d.id) retracted FROM decisions d JOIN approvals a ON a.id=d.approval_id WHERE a.task_id=$1 ORDER BY d.created_at',[id])).rows,
   controls:(await db.query('SELECT * FROM control_requests WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows
  };
 }
+export async function taskBitrixResults(user:User,id:string,allowQueue=true){
+ await taskFor(pool,id,user);
+ return loadBitrixResults(id,allowQueue);
+}
 export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):Promise<BitrixDiscussion>{
  await taskFor(pool,id,user);
  const portal=process.env.BITRIX_PORTAL;
  const origin=portal&&/^[a-z0-9.-]+$/i.test(portal)?'https://'+portal:null;
- const [stored,links]=await Promise.all([
+ const [stored,links,results]=await Promise.all([
   pool.query<BitrixDiscussion['messages'][number]>(`SELECT external_id,occurred_at,author,body FROM bitrix_task_activity a
    WHERE task_id=$1 AND kind='comment' AND NOT EXISTS(
     SELECT 1 FROM bitrix_operations o WHERE o.task_id=a.task_id AND o.payload->>'kind'='comment'
@@ -120,7 +128,8 @@ export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):
    ORDER BY occurred_at DESC,external_id DESC LIMIT 100`,[id]),
   pool.query<{external_id:string;state:string|null}>(`SELECT l.external_id::text,q.state FROM bitrix_task_links l
    LEFT JOIN bitrix_refresh_queue q ON q.portal=$2 AND q.resource='task_inbound_comments' AND q.external_id=l.external_id::text
-   WHERE l.task_id=$1 AND NOT l.live_enabled`,[id,portal??null])
+   WHERE l.task_id=$1 AND NOT l.live_enabled`,[id,portal??null]),
+  loadBitrixResults(id,allowQueue)
  ]);
  const link=links.rows[0];
  let state:BitrixDiscussion['state']='ready';
@@ -131,7 +140,7 @@ export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):
    VALUES($1,'task_inbound_comments',$2) ON CONFLICT DO NOTHING`,[portal,link.external_id]);
   state='pending';
  }
- return {state,origin,messages:stored.rows};
+ return {state,origin,messages:stored.rows,results};
 }
 async function addCommentCore(user:User,id:string,body:string,approvalId?:string) {
  return transaction(async db=>{

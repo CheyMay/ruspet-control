@@ -10,6 +10,14 @@ export interface BitrixDiscussion {
  state:'ready'|'pending'|'unavailable';
  origin:string|null;
  messages:{external_id:string;occurred_at:string;author:string;body:string}[];
+ results:BitrixResults;
+}
+export interface BitrixResult {
+ external_id:string; comment_id:string|null; occurred_at:string|null; author:string; body:string;
+ files:{id:string;name:string|null}[];
+}
+export interface BitrixResults {
+ state:BitrixDiscussion['state']; origin:string|null; items:BitrixResult[];
 }
 export interface Step { userId: string; label: string }
 export interface Approval { action_revision:number; canceled_at?:string|null; id: string; task_id: string; requester_id: string; type: 'deadline' | 'completion'; reason: string; plan: string; proposed_deadline: string | null; task_version: number; state: 'pending' | 'approved' | 'rejected' | 'stale'; current_step: number; route: Step[]; route_version: number; created_at: string; deferred_until: string | null; clarification_question: string | null; clarification_answer: string | null; clarification_requested_at: string | null; clarification_answered_at: string | null }
@@ -29,4 +37,4 @@ export interface SourceInfo { file_name:string; sheet_name:string; row_count:num
 export interface Submission {automatic?:boolean;based_on_tasks?:string[];restored_from?:string|null;id:string;task_id:string;round:number;result:string;author_id:string;state:'review'|'returned'|'accepted';reviewer_id:string|null;remark:string|null;submitted_at:string;decided_at:string|null}
 export interface ApprovalScope {assigneeIds:string[];approverId:string}
 export interface Bootstrap { approvalScope?:ApprovalScope|null; teamIds?:string[]; managerPreview?:boolean; lastTaskChange?:string|null; approvalComments?:Comment[]; editRequests?:{id:string;task_id:string;creator_id:string;created_at:string}[]; selection?:{total:number;included:number;checklist:number;unfinishedAnalysis:number}; submissions:Submission[]; user: User; users: User[]; tasks: Task[]; findings: Finding[]; approvals: Approval[]; events: Event[]; controls: ControlRequest[]; notifications: Notification[]; reports: Report[]; rules: Rules; rulesVersion: number; serverTime: string; metrics: Metrics; source:SourceInfo|null }
-export interface TaskDetail { approvalScope?:ApprovalScope|null; approvalWatch:{manual:boolean;byCode:boolean;canChange:boolean}|null; approvalProgress:TaskApprovalProgress|null; editAccess:import('./task-edit.js').TaskEditAccess; submissions:Submission[]; task: Task; comments: Comment[]; bitrixCommentCount:number; events: Event[]; approvals: Approval[]; decisions: Decision[]; controls: ControlRequest[] }
+export interface TaskDetail { approvalScope?:ApprovalScope|null; approvalWatch:{manual:boolean;byCode:boolean;canChange:boolean}|null; approvalProgress:TaskApprovalProgress|null; editAccess:import('./task-edit.js').TaskEditAccess; submissions:Submission[]; task: Task; comments: Comment[]; bitrixCommentCount:number; bitrixLinked:boolean; events: Event[]; approvals: Approval[]; decisions: Decision[]; controls: ControlRequest[] }

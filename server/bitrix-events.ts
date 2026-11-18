@@ -3,6 +3,7 @@ import {readFile,stat} from 'node:fs/promises';
 import {pool,transaction,type Db} from './db.js';
 import {assert} from './domain.js';
 import {bitrixId} from './bitrix-sync.js';
+import {resultsResource} from './bitrix-results.js';
 import type {BitrixRequest} from './bitrix-rest.js';
 const digest=(value:unknown)=>createHash('sha256').update(JSON.stringify(value)).digest('hex');
 export const requiredEvents=['ONTASKADD','ONTASKUPDATE','ONTASKDELETE','ONTASKCOMMENTADD',
@@ -71,6 +72,8 @@ export async function receiveBitrixEvent(input:any){
   if(inserted.rowCount){
    await queueRefresh(db,cfg.portal,known.rowCount?'task_inbound':'task_inbound_new',id,input.event==='ONTASKDELETE');
    if(commentEvents.includes(input.event))await queueRefresh(db,cfg.portal,'task_inbound_comments',id);
+   await db.query(`UPDATE bitrix_refresh_queue SET updated_at=least(updated_at,now()-interval '5 minutes')
+    WHERE portal=$1 AND resource=$2 AND external_id=$3 AND state='done'`,[cfg.portal,resultsResource,id]);
    const removed=input.event==='ONTASKCOMMENTDELETE'?bitrixId(input.data?.FIELDS_BEFORE?.ID):null;
    if(removed)await db.query(`DELETE FROM bitrix_task_activity a USING bitrix_task_links l,bitrix_task_snapshots s
     WHERE l.external_id=$1 AND NOT l.live_enabled AND s.external_id=l.external_id AND s.snapshot->>'chatId' IS NULL

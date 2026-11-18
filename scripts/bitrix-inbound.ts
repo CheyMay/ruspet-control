@@ -20,9 +20,9 @@ try{
  if(command==='status'){
   const capture=(await pool.query('SELECT enabled,portal,verified_at FROM bitrix_event_capture WHERE id=1')).rows[0];
   const queue=(await pool.query(`SELECT resource,state,count(*)::int AS tasks FROM bitrix_refresh_queue
-   WHERE portal=$1 AND resource IN ('task_inbound','task_inbound_new','task_inbound_comments') GROUP BY resource,state ORDER BY resource,state`,[portal])).rows;
+   WHERE portal=$1 AND resource IN ('task_inbound','task_inbound_new','task_inbound_comments','task_inbound_results') GROUP BY resource,state ORDER BY resource,state`,[portal])).rows;
   const issues=(await pool.query(`SELECT external_id AS id,resource,error FROM bitrix_refresh_queue
-   WHERE portal=$1 AND resource IN ('task_inbound','task_inbound_new','task_inbound_comments') AND state IN ('failed','blocked') ORDER BY updated_at LIMIT 20`,[portal])).rows;
+   WHERE portal=$1 AND resource IN ('task_inbound','task_inbound_new','task_inbound_comments','task_inbound_results') AND state IN ('failed','blocked') ORDER BY updated_at LIMIT 20`,[portal])).rows;
   const conflicts=(await pool.query("SELECT count(*)::int AS n FROM bitrix_task_links WHERE NOT live_enabled AND conflict IS NOT NULL")).rows[0].n;
   console.log(JSON.stringify({capture,queue,issues,conflicts},null,2));
  }else{

@@ -11,6 +11,7 @@
 .task-card > .tabs { flex:none; min-width:0; overflow-x:auto; }
 .task-card > .tabs button { flex-shrink:0; white-space:nowrap; }
 .task-card .drawer-body { flex:1; min-height:0; overflow:auto; overscroll-behavior:contain; }
+.task-card .drawer-body[data-tab="discussion"] { container-type:size; }
 .task-approval-progress {
  display:flex; align-items:flex-start; gap:10px; flex:none; min-width:0;
  margin:0 28px 12px; padding:10px 12px; border:1px solid var(--line); border-radius:8px;
@@ -23,6 +24,9 @@
 .task-approval-progress .text-button { flex:none; align-self:center; }
 .task-discussion { margin-bottom:18px; }
 .discussion-status { display:flex; align-items:center; gap:8px; margin:0 0 12px; }
+.discussion-thread { max-height:min(53dvh,34rem,max(5rem,calc(100cqh - 60px))); overflow:auto; overscroll-behavior-y:contain; }
+.discussion-thread:focus-visible { outline-offset:3px; }
+.discussion-latest { margin-top:8px; }
 .discussion-messages { list-style:none; padding:0; margin:0; display:grid; gap:12px; }
 .discussion-message { display:flex; align-items:flex-start; gap:10px; min-width:0; }
 .discussion-avatar {
@@ -38,6 +42,7 @@
 .discussion-text { margin:7px 0 0; white-space:pre-wrap; overflow-wrap:anywhere; color:var(--theme-text); font-size:13px; line-height:1.6; }
 .discussion-text a { color:var(--green); text-decoration:underline; text-underline-offset:2px; }
 .discussion-mention { font-weight:600; }
+.result-files { margin:8px 0 0; padding-inline-start:21px; overflow-wrap:anywhere; font-size:12px; }
 .task-card-overview { display:grid; grid-template-columns:minmax(0,1.6fr) minmax(240px,1fr); gap:20px; align-items:start; }
 .task-card-section {
  min-width:0;
