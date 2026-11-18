@@ -1,6 +1,6 @@
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
-import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,hierarchyRoute,inControlScope} from './approval-hierarchy.js';
+import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,hierarchyRoute,inControlScope,requiresTaskApproval} from './approval-hierarchy.js';
 import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
@@ -213,7 +213,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   const cfg=await config(db); assert(input.reason.trim().length>=cfg.config.responseMinLength&&input.plan.trim().length>=cfg.config.responseMinLength,400,`Причина и план: минимум ${cfg.config.responseMinLength} символов.`);
   if(input.type==='deadline') { assert(input.proposedDeadline&&new Date(input.proposedDeadline)>new Date(),400,'Новый срок должен быть в будущем.'); assert(new Date(input.proposedDeadline).getTime()!==new Date(task.deadline||0).getTime(),400,'Новый срок совпадает с текущим.'); }
   const hierarchy=await approvalHierarchy(db,true);
-  if(!inControlScope(hierarchy,task.assignee_id)){
+  if(!requiresTaskApproval(hierarchy,task,input.type,user.id)){
    assert(input.type==='deadline',422,'Передайте результат на приёмку в карточке задачи.');
    const next=(await db.query<Task>('UPDATE tasks SET deadline=$2,transfer_count=transfer_count+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.proposedDeadline])).rows[0];
    await adapters.tasks.applyApprovedChange(db,next,task.version);
@@ -231,7 +231,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   return {id:approvalId};
  });
 }
-async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'|'later'|'clarify';comment:string;expectedStep?:number;expectedRevision?:number;remindMinutes?:number}) {
+export async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'|'later'|'clarify';comment:string;expectedStep?:number;expectedRevision?:number;remindMinutes?:number}) {
  return transaction(async db=>{
   const first=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[id])).rows[0]; assert(first,404,'Согласование не найдено.');
   const task=await taskFor(db,first.task_id,user,true);
@@ -240,7 +240,7 @@ async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'
   assert(input.expectedStep===undefined||input.expectedStep===a.current_step,409,'Этот этап уже завершён. Откройте актуальное решение.');
   assert(a.state==='pending',409,a.state==='stale'?'Запрос устарел из-за изменения задачи. В актуальной карточке можно посмотреть текущий статус и срок.':'Этот запрос уже обработан. Откройте актуальную задачу, чтобы посмотреть решение.');
   const hierarchy=await approvalHierarchy(db);
-  if(hierarchy?.direct_assignee_ids)assert(inControlScope(hierarchy,task.assignee_id)&&user.id===hierarchy.sales_head_id,403,'Запрос недоступен в текущем маршруте согласования.');
+  assert(a.requester_id!==user.id&&(a.type!=='completion'||task.assignee_id!==user.id),403,'Нельзя согласовать собственный запрос или принять свою работу.');
   assert(a.route[a.current_step].userId===user.id,403,'Сейчас решение принимает другой согласующий.');
   assert(!a.clarification_requested_at||a.clarification_answered_at,409,'Сначала дождитесь ответа на уточнение.');
   if(a.task_version!==task.version) {

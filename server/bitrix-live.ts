@@ -134,7 +134,7 @@ export async function deactivateLiveTask(id:string){return transaction(async db=
 });}
 export async function enqueueBitrixOperation(db:Db,eventId:string,taskId:string,kind:string,message:string,data:Record<string,unknown>,actorId:string|null){
  const supported=['task_edited','review_submitted','review_returned','task_completed','deadline_changed','action_undone','comment','explanation','approval_requested','approval_rejected','approval_later','approval_clarification_requested','approval_clarification_answered','step_approved'];
- if(!supported.includes(kind))return;
+ if(!supported.includes(kind)||kind==='review_submitted'&&data.waitingForApproval===true)return;
  const linked=(await db.query<Config>(`SELECT c.* FROM bitrix_task_links l CROSS JOIN bitrix_live_config c
   WHERE l.task_id=$1 AND c.id=1 AND (l.live_enabled OR c.sync_linked_tasks)`,[taskId])).rows[0];if(!linked)return;
  const after=data.after as Task|undefined;

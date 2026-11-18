@@ -48,16 +48,18 @@ export async function directorBatchStatus(actor:User){
    GROUP BY e.actor_id
   ), approvals_by_employee AS (
    SELECT t.assignee_id,
-    count(*) FILTER(WHERE a.state='pending' AND a.route->a.current_step->>'label'='Руководитель филиала')::int AS waiting,
+    count(*) FILTER(WHERE a.state='pending' AND a.route->a.current_step->>'label' IN ('Руководитель филиала','Постановщик')
+     AND EXISTS(SELECT 1 FROM jsonb_array_elements(a.route) step WHERE step->>'userId'=$1))::int AS waiting,
     count(*) FILTER(WHERE ${ready})::int AS ready,
-    count(*) FILTER(WHERE EXISTS(SELECT 1 FROM decisions d WHERE d.approval_id=a.id AND a.route->d.step_index->>'label'='Руководитель филиала'
+    count(*) FILTER(WHERE EXISTS(SELECT 1 FROM decisions d WHERE d.approval_id=a.id AND a.route->d.step_index->>'label' IN ('Руководитель филиала','Постановщик')
      AND d.decision='approve' AND d.created_at >= $3
      AND NOT EXISTS(SELECT 1 FROM decision_retractions r WHERE r.decision_id=d.id)))::int AS approved
    FROM approvals a JOIN tasks t ON t.id=a.task_id GROUP BY t.assignee_id
   ) SELECT u.id,u.name,coalesce(w.n,0)::int AS processed,coalesce(a.waiting,0)::int AS waiting,
    coalesce(a.approved,0)::int AS approved,coalesce(a.ready,0)::int AS ready
   FROM users u LEFT JOIN work w ON w.actor_id=u.id LEFT JOIN approvals_by_employee a ON a.assignee_id=u.id
-  WHERE ($4::text[] IS NULL OR u.id=ANY($4)) AND ((u.role='employee' AND w.n>0) OR (a.waiting+a.ready+a.approved)>0) ORDER BY u.name`,
+  WHERE ($4::text[] IS NULL OR u.id=ANY($4) OR a.waiting+a.ready+a.approved>0)
+   AND ((u.role='employee' AND w.n>0) OR (a.waiting+a.ready+a.approved)>0) ORDER BY u.name`,
   [hierarchy.sales_head_id,[...workKinds],day,hierarchy.direct_assignee_ids])).rows;
  const last=(await pool.query(`SELECT b.created_at,d.state FROM director_approval_batches b
   LEFT JOIN outbox o ON o.dedupe_key='director-batch:'||b.id::text

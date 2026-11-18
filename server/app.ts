@@ -269,8 +269,10 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/director-approval-batches/:id',async(req,res)=>res.json(await directorBatchTasks(req.actor,z.uuid().parse(req.params.id))));
  app.put('/api/approval-hierarchy',async(req,res)=>{
   const input=z.object({branchId:z.string().min(1).max(100),salesId:z.string().min(1).max(100),approveAll:z.boolean().optional(),
-   directAssigneeIds:z.array(z.string().min(1).max(100)).min(1).max(500).nullable().optional()}).parse(req.body);
-  res.json(await setApprovalHierarchy(req.actor,input.branchId,input.salesId,input.approveAll,input.directAssigneeIds));
+   directAssigneeIds:z.array(z.string().min(1).max(100)).min(1).max(500).nullable().optional(),
+   creatorApproverId:z.string().min(1).max(100).nullable().optional(),extraDeadlineAssigneeIds:z.array(z.string().min(1).max(100)).max(500).optional(),
+   onlySelfDirect:z.boolean().optional()}).parse(req.body);
+  res.json(await setApprovalHierarchy(req.actor,input.branchId,input.salesId,input.approveAll,input.directAssigneeIds,input));
  });
  app.post('/api/tasks/:id/edit-permissions',async(req,res)=>{
   const {expectedVersion,reason}=z.object({expectedVersion:z.number().int().positive(),reason:z.string().trim().min(5).max(4000)}).parse(req.body);

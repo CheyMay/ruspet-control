@@ -289,3 +289,77 @@ test('Friday evening sends one private digest with the Monday plan and creator r
   if(previous===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previous;
  }
 });
+
+test('only self-assigned changes bypass approvals and creator pricing controls both review routes',async()=>{
+ const hierarchy=await import('../server/approval-hierarchy.js'),service=await import('../server/service.js');
+ const adminUser=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
+ const liza=(await db.pool.query<User>("SELECT * FROM users WHERE id='anna'")).rows[0];
+ const old=at('2035-01-22','12:00').toISOString(),next=at('2035-01-23','12:00').toISOString();
+ const create=async(creator:User,assignee:User,price:number)=>{
+  const input={title:'Задача проверки маршрута',description:'Фикстура маршрута согласования',assigneeId:assignee.id,price,deadline:old,
+   plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null};
+  const task=await workflow.createTask(creator.id===assignee.id?creator:director,input);
+  if(creator.id!==assignee.id)await db.pool.query('UPDATE tasks SET creator_id=$2 WHERE id=$1',[task.id,creator.id]);
+  return task.id;
+ };
+ const request=(id:string,actor:User)=>service.requestApproval(actor,id,{type:'deadline',reason:'Причина переноса проверена',
+  plan:'Согласованный план выполнения',proposedDeadline:next,expectedVersion:1});
+ const deadline=async(id:string)=>(await db.pool.query('SELECT deadline FROM tasks WHERE id=$1',[id])).rows[0].deadline;
+ const approval=async(taskId:string)=>(await db.pool.query("SELECT * FROM approvals WHERE task_id=$1 AND state='pending'",[taskId])).rows[0];
+ const route=async(id:string)=>(await approval(id))?.route.map((step:{userId:string})=>step.userId);
+ const allow=async(taskId:string,actor:User)=>{
+  const current=await approval(taskId);
+  return service.decide(actor,current.id,{decision:'approve',comment:'Согласовано',expectedStep:current.current_step,expectedRevision:current.action_revision});
+ };
+ await hierarchy.setApprovalHierarchy(adminUser,'branch-fixture',director.id,false,[worker.id]);
+ const previous=await create(liza,worker,85);
+ await request(previous,worker);
+ assert.deepEqual(await route(previous),[director.id]);
+ await hierarchy.setApprovalHierarchy(adminUser,'branch-fixture',director.id,false,[worker.id],{
+  creatorApproverId:liza.id,extraDeadlineAssigneeIds:[worker.id],onlySelfDirect:true,
+ });
+ assert.deepEqual(await route(previous),[liza.id,director.id]);
+ assert.equal((await approval(previous)).action_revision,2);
+ assert.equal(await deadline(previous),old);
+
+ const self=await create(worker,worker,200);
+ assert.equal((await request(self,worker)).applied,true);
+ assert.equal(await deadline(self),next);
+ assert.equal(await approval(self),undefined);
+ assert.equal((await workflow.reviewTask(worker,self,'complete','',2)).state,'completed');
+
+ const ordinary=await create(adminUser,other,85);
+ await request(ordinary,other);
+ assert.deepEqual(await route(ordinary),[director.id]);
+ assert.equal(await deadline(ordinary),old);
+
+ const low=await create(liza,other,4999.99),boundary=await create(liza,other,5000),maksim=await create(liza,worker,85);
+ await db.pool.query("INSERT INTO bitrix_task_snapshots(external_id,snapshot) VALUES(890009,'{}')");
+ await db.pool.query("INSERT INTO bitrix_task_links(task_id,external_id,baseline,linked_version) VALUES($1,890009,'{}',1)",[maksim]);
+ await db.pool.query('UPDATE bitrix_live_config SET sync_linked_tasks=true WHERE id=1');
+ const writeCount=async()=>Number((await db.pool.query("SELECT count(*) FROM bitrix_operations WHERE task_id=$1 AND payload->>'kind'='deadline_changed'",[maksim])).rows[0].count);
+ for(const [id,actor,expected] of [[low,other,[liza.id]],[boundary,other,[liza.id,director.id]],[maksim,worker,[liza.id,director.id]]] as const){
+  await request(id,actor);
+  assert.deepEqual(await route(id),expected);
+  assert.equal(await deadline(id),old);
+ }
+ assert.equal(await writeCount(),0);
+ await assert.rejects(()=>allow(maksim,director),/другой согласующий/);
+ assert.equal((await allow(maksim,liza)).state,'pending');
+ assert.equal(await deadline(maksim),old);assert.equal(await writeCount(),0);
+ assert.equal((await allow(maksim,director)).state,'approved');
+ assert.equal(await deadline(maksim),next);assert.equal(await writeCount(),1);
+ assert.equal((await allow(low,liza)).state,'approved');
+
+ const work=await create(liza,other,5000);
+ await assert.rejects(()=>workflow.reviewTask(liza,work,'complete','',1),/согласующего/);
+ assert.equal((await workflow.reviewTask(other,work,'submit','Результат подготовлен',1)).state,'review');
+ assert.deepEqual(await route(work),[liza.id,director.id]);
+ assert.equal((await allow(work,liza)).state,'pending');
+ assert.equal((await allow(work,director)).state,'approved');
+ const existing=await create(liza,other,5000);
+ await setStatus(existing,'review');
+ assert.equal((await workflow.reviewTask(liza,existing,'accept','',1)).state,'review');
+ assert.equal((await approval(existing)).current_step,1);
+ assert.equal((await allow(existing,director)).state,'approved');
+});

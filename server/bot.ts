@@ -381,7 +381,11 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   else if(p.kind==='deadline'){const outcome=await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,plan:v.plan,proposedDeadline:v.deadline,expectedVersion:p.version!});result=outcome.applied?'Крайний срок изменён.':'Новый срок предложен. Текущий крайний срок изменится после согласования.'}
   else if(p.kind==='clarification'){await answerClarification(u,p.target!,v.answer);result='Ответ отправлен согласующему. Этап ожидает его решения.'}
   else if(['approve','reject','later','clarify'].includes(p.kind!)){const r=await decide(u,p.target!,{decision:p.kind as 'approve'|'reject'|'later'|'clarify',comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':'Согласование завершено.'}
-  else{await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return'|'complete',v.comment||'',p.version!);result=p.kind==='submit'?'Результат передан на приёмку. Ожидается решение руководителя.':p.kind==='return'?'Задача возвращена. Замечания сохранены для исполнителя.':'Задача завершена.'}
+  else{
+   const review=await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return'|'complete',v.comment||'',p.version!);
+   result=review.state==='review'?(p.kind==='submit'?'Результат передан на приёмку.':'Задача на приёмке.')+' Текущий согласующий указан в карточке.':
+    review.state==='active'?'Задача возвращена. Замечания сохранены для исполнителя.':'Задача завершена.';
+  }
   const undo=await lastUndo(u,undefined,db);
   if(p.id&&(await db.query("SELECT 1 FROM bitrix_operations WHERE task_id=$1 AND payload->>'actorId'=$2 AND created_at>=transaction_timestamp() AND state='pending' LIMIT 1",[p.id,u.id])).rowCount)result+='\n\nДействие сохранено в РУСПЭТ. Обмен с Битрикс24 выполняется по очереди; состояние видно в карточке задачи.';
   if(resultTask&&p.kind==='delegate')result+='\nПоручение создано локально: автоматическое создание задач в Битрикс24 пока не включено.';

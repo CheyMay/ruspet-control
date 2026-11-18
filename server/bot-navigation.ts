@@ -115,13 +115,14 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  }
  const owner=p.owner||u.id;
  const scoped=data.tasks.filter(task=>task.assignee_id===owner);
+ const placed=data.tasks.filter(task=>task.creator_id===u.id);
  if(p.owner&&owner!==u.id)assert(canManage(u)&&scoped.length&&(teamIds.has(owner)||hasCompanyOverview(u)),404,'Сотрудник вне доступной команды.');
  const activeApprovals=new Map(data.approvals.filter(a=>a.state==='pending'&&!a.canceled_at).map(a=>[a.task_id,a]));
  const matches=(t:Task,filter:string)=>filter==='my_due'?['today','overdue'].includes(taskQueue(t,now))&&taskNextAction(t,activeApprovals.get(t.id),data.approvalScope)?.userId===owner:
   filter==='open'||filter==='mine'?t.status!=='completed':filter==='active'?t.status==='active':taskQueue(t,now)===filter;
  const myActions=actionItems(data).filter(a=>a.mine),actionTasks=new Set(myActions.map(a=>a.taskId));
  if(p.op==='task_filters'){
-  const count=(filter:string)=>filter==='created'?data.tasks.filter(t=>t.status!=='completed'&&t.creator_id===u.id).length:scoped.filter(t=>matches(t,filter)).length;
+  const count=(filter:string)=>filter==='created'?placed.length:scoped.filter(t=>matches(t,filter)).length;
   const choice=(text:string,filter:string)=>button(`${text} · ${count(filter)}`,'tasks',{filter,owner});
   return htmlScreen(u,ch,'<b>'+h(owner===u.id?'Мои задачи':name(owner))+' · фильтры</b>\n\nВремя — московское.',[
    ...(owner===u.id?[[choice('Мои сроки','my_due')]]:[]),
@@ -139,7 +140,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    return taskList(u,ch,p,[...grouped].flatMap(([id,labels])=>tasks.has(id)?[{task:tasks.get(id)!,hint:labels[0]+(labels.length>1?' +'+(labels.length-1):'')}]:[]),'Нужно ваше действие',now,name);
   }
   const filter=p.op==='day'?'today':p.filter||'mine',labels:Record<string,string>={open:'Незавершённые',active:'В работе',today:'Срок сегодня',overdue:'Просрочены',review:'На приёмке',completed:'Завершены',no_deadline:'Без срока',mine:'Мои задачи',my_due:'Мои сроки',created:'Я постановщик'};
-  const tasks=sortBotTasks(filter==='created'?data.tasks.filter(t=>t.status!=='completed'&&t.creator_id===u.id):scoped.filter(t=>matches(t,filter)),now);
+  const tasks=sortBotTasks(filter==='created'?placed:scoped.filter(t=>matches(t,filter)),now);
   const label=owner===u.id?labels[filter]||'Мои задачи':name(owner)+' · '+(labels[filter]||'Задачи');
   return taskList(u,ch,{...p,owner},tasks.map(task=>{
    const approval=activeApprovals.get(task.id);
@@ -167,7 +168,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nСроки, по которым ход за вами · ${dueCount}\nРешения и ответы для вас · ${actionTasks.size}${overview}`,[
   [button(`📥 Нужно действие · ${actionTasks.size}`,'inbox'),button(`Мои сроки · ${dueCount}`,'tasks',{filter:'my_due'})],
   [button(`Сегодня · ${s.today}`,'day'),button(`Просрочены · ${s.overdue}`,'tasks',{filter:'overdue'})],
-  [button('Мои задачи','tasks',{owner:u.id}),...(canManage(u)?[button('Задачи команды','team')]:[button('Поиск','search_prompt')])],
+  [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)?[button('Задачи команды','team')]:[button('Поиск','search_prompt')])],
   ...(company?[[button('Сводка компании','brief',{filter:'company'}),button('Отчёты','reports')]]:
    canManage(u)?[[button('Мои отчёты','reports',{filter:'mine'}),button('Поиск','search_prompt')]]:[]),
   [button('Новая задача','form',{kind:'create_task'}),button('Уведомления','notices')],

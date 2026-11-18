@@ -27,7 +27,7 @@ export function DirectorBatch({stamp}:{stamp:string}){
   <div className="director-approval-heading"><div><h2>Пакет для {data.head.name}</h2>
    <p>{data.total?`К отправке · ${data.total}. Рабочий ориентир — собрать пакет к 15:00 МСК.`:'Новых запросов для отправки нет.'} {!data.head.linked?'Получатель увидит пакет на сайте. Telegram ещё не привязан.':''}</p>
   </div><button className="button primary" disabled={!data.total||busy} onClick={()=>void send()}>Отправить пакет</button></div>
-  {data.rows.length>0&&<div className="director-approval-table"><table><thead><tr><th>Сотрудник</th><th>Обработано сегодня</th><th>У руководителя</th><th>Руководитель согласовал сегодня</th><th>В пакете</th></tr></thead>
+   {data.rows.length>0&&<div className="director-approval-table"><table><thead><tr><th>Сотрудник</th><th>Обработано сегодня</th><th>На первом этапе</th><th>Первый этап пройден сегодня</th><th>В пакете</th></tr></thead>
    <tbody>{data.rows.map(row=><tr key={row.id}><th scope="row">{row.name}</th><td>{row.processed}</td><td>{row.waiting}</td><td>{row.approved}</td><td>{row.ready}</td></tr>)}</tbody></table></div>}
   {data.last&&<small>Последний пакет · {last==='sent'?'доставлен в Telegram':last==='failed'?'Telegram отклонил сообщение':last==='uncertain'?'доставка в Telegram не подтверждена':'сохранён в уведомлениях'}</small>}
   {message&&<p role="status">{message}</p>}
