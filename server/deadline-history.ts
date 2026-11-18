@@ -2,6 +2,7 @@ import {pool,transaction,type Db} from './db.js';
 import {assert} from './domain.js';
 import {BitrixError,type BitrixRequest} from './bitrix-rest.js';
 import {bitrixId,syncActivity} from './bitrix-sync.js';
+import {resultsResource} from './bitrix-results.js';
 import {matchTransferComments} from '../shared/transfer-comments.js';
 import type {DeadlineTransfer,DeadlineTransferComment} from '../shared/types.js';
 
@@ -57,12 +58,16 @@ export async function loadDeadlineHistories(db:Db,taskIds:string[]){
  }
  const withHistory=Object.keys(result);
  if(!withHistory.length)return result;
- const {rows:comments}=await db.query<DeadlineTransferComment&{task_id:string}>(`SELECT task_id,'bitrix:'||external_id AS id,
-  occurred_at AS "occurredAt",author,body AS text FROM bitrix_task_activity
-  WHERE task_id=ANY($1) AND kind='comment' AND (author<>'Битрикс24' OR body ILIKE '%причина переноса:%')
-  UNION ALL SELECT c.task_id,'ruspet:'||c.id::text,c.created_at,u.name,c.body
+ const {rows:comments}=await db.query<DeadlineTransferComment&{task_id:string}>(`SELECT a.task_id,'bitrix:'||a.external_id AS id,
+  a.occurred_at AS "occurredAt",a.author,a.body AS text,'comment' AS source FROM bitrix_task_activity a
+  WHERE a.task_id=ANY($1) AND a.kind='comment' AND (a.author<>'Битрикс24' OR a.body ILIKE '%причина переноса:%')
+  AND NOT EXISTS(SELECT 1 FROM bitrix_task_results r WHERE r.task_id=a.task_id AND r.comment_id=a.external_id)
+  UNION ALL SELECT c.task_id,'ruspet:'||c.id::text,c.created_at,u.name,c.body,'comment'
   FROM comments c JOIN users u ON u.id=c.author_id
-  WHERE c.task_id=ANY($1) AND c.withdrawn_at IS NULL AND c.approval_id IS NULL AND c.kind IN ('comment','explanation')`,[withHistory]);
+  WHERE c.task_id=ANY($1) AND c.withdrawn_at IS NULL AND c.approval_id IS NULL AND c.kind IN ('comment','explanation')
+  UNION ALL SELECT r.task_id,'bitrix-result:'||r.external_id,r.occurred_at,r.author,r.body,'result'
+  FROM bitrix_task_results r WHERE r.task_id=ANY($1) AND r.occurred_at IS NOT NULL AND btrim(r.body)<>''
+  `,[withHistory]);
  const byTask=new Map<string,DeadlineTransferComment[]>();
  for(const {task_id,...comment} of comments){
   const taskComments=byTask.get(task_id)??[];
@@ -84,7 +89,7 @@ export async function queueDeadlineHistories(db:Db,ids:string[]){
   ON CONFLICT(portal,resource,external_id) DO UPDATE SET generation=bitrix_refresh_queue.generation+1,
    state='pending',retry_at=NULL,error=NULL,updated_at=now()
   WHERE bitrix_refresh_queue.state='done' AND bitrix_refresh_queue.updated_at<now()-interval '30 minutes'`,[ids,deadlineHistoryResource]);
- await queuePastComments(db,ids);
+ await queueTransferDiscussion(db,ids);
 }
 
 export async function refreshDeadlineHistory(request:BitrixRequest,externalId:string){
@@ -102,17 +107,26 @@ export async function refreshDeadlineHistory(request:BitrixRequest,externalId:st
    FROM jsonb_to_recordset($2::jsonb) AS x(external_id bigint,occurred_at timestamptz,from_deadline timestamptz,to_deadline timestamptz,author text)
    ON CONFLICT DO NOTHING`,[link.task_id,JSON.stringify(rows)]);
  });
- if(rows.length)await queuePastComments(pool,[link.task_id]);
+ if(rows.length)await queueTransferDiscussion(pool,[link.task_id]);
  return {deadlineChanges:rows.length};
 }
 
-async function queuePastComments(db:Db,ids:string[]){
+async function queueTransferDiscussion(db:Db,ids:string[]){
  await db.query(`INSERT INTO bitrix_refresh_queue(portal,resource,external_id)
   SELECT c.portal,$2,l.external_id::text FROM bitrix_task_links l JOIN bitrix_event_capture c
    ON c.id=1 AND c.enabled AND c.mode='online' AND c.verified_at IS NOT NULL AND c.portal IS NOT NULL
   WHERE l.task_id=ANY($1) AND NOT l.live_enabled
   AND EXISTS(SELECT 1 FROM bitrix_deadline_history h WHERE h.task_id=l.task_id)
   ON CONFLICT DO NOTHING`,[ids,deadlineCommentsResource]);
+ await db.query(`INSERT INTO bitrix_refresh_queue(portal,resource,external_id)
+  SELECT c.portal,$2,l.external_id::text FROM bitrix_task_links l JOIN bitrix_event_capture c
+   ON c.id=1 AND c.enabled AND c.mode='online' AND c.verified_at IS NOT NULL AND c.portal IS NOT NULL
+  WHERE l.task_id=ANY($1) AND NOT l.live_enabled
+  AND EXISTS(SELECT 1 FROM bitrix_deadline_history h WHERE h.task_id=l.task_id)
+  ON CONFLICT(portal,resource,external_id) DO UPDATE SET generation=bitrix_refresh_queue.generation+1,
+   state='pending',retry_at=NULL,error=NULL,updated_at=now()
+  WHERE bitrix_refresh_queue.state='done' AND bitrix_refresh_queue.updated_at<now()-interval '30 minutes'`,
+  [ids,resultsResource]);
 }
 
 export async function refreshPastDeadlineComments(request:BitrixRequest,externalId:string){

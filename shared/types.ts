@@ -26,7 +26,7 @@ export interface ApprovalTaskChange {
  fields:{field:string;before:string|number|boolean|null;after:string|number|boolean|null}[];
  routeChanged:boolean; routeIssue?:boolean;
 }
-export interface DeadlineTransferComment {id:string; occurredAt:string; author:string; text:string}
+export interface DeadlineTransferComment {id:string; occurredAt:string; author:string; text:string; source:'comment'|'result'}
 export interface DeadlineTransfer {
  id:string; occurredAt:string; from:string|null; to:string|null; author:string; source:'ruspet'|'bitrix'; reason:string|null; comments?:DeadlineTransferComment[];
 }
