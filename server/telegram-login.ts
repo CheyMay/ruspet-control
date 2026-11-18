@@ -9,7 +9,8 @@ import type {BotScreen} from './bot.js';
 
 const digest=(value:string)=>createHash('sha256').update(value).digest('hex');
 const browserCookie='ruspet_qr_browser';
-export const sessionCookieOptions=()=>({httpOnly:true,sameSite:'strict' as const,secure:!!process.env.PUBLIC_ORIGIN?.startsWith('https://'),maxAge:12*60*60*1000,path:'/'});
+export const sessionIdleInterval='7 days';
+export const sessionCookieOptions=()=>({httpOnly:true,sameSite:'strict' as const,secure:!!process.env.PUBLIC_ORIGIN?.startsWith('https://'),maxAge:7*24*60*60*1000,path:'/'});
 const browserOptions=()=>({...sessionCookieOptions(),path:'/api/auth',maxAge:10*60*1000});
 export const readCookie=(req:express.Request,name:string)=>req.headers.cookie?.split(/;\s*/).find(v=>v.startsWith(name+'='))?.slice(name.length+1);
 export async function sessionUser(token:string){
@@ -22,6 +23,13 @@ export async function sessionUser(token:string){
    AND EXISTS(SELECT 1 FROM telegram_binding b WHERE b.id=s.telegram_binding_id AND b.user_id=u.id)
    AND EXISTS(SELECT 1 FROM telegram_settings WHERE id=1 AND enabled)))`,[digest(token)])).rows[0];
 }
+export async function touchSession(token:string,res:express.Response){
+ const result=await pool.query('UPDATE sessions SET expires_at=now()+$2::interval WHERE token_hash=$1 AND expires_at>now()',
+  [digest(token),sessionIdleInterval]);
+ assert(result.rowCount,401,'Сессия завершена. Войдите снова.');
+ res.cookie('ruspet_session',token,sessionCookieOptions());
+}
+
 export async function clearBrowserLogin(req:express.Request,res:express.Response){
  const token=readCookie(req,browserCookie);
  if(token)await pool.query("UPDATE telegram_login_requests SET state='cancelled' WHERE browser_hash=$1 AND state IN ('pending','approved')",[digest(token)]);
@@ -80,7 +88,7 @@ export function telegramLoginRouter(){
     AND EXISTS(SELECT 1 FROM telegram_settings WHERE id=1 AND enabled)`,[row.binding_id,row.user_id])).rows[0];
    assert(u,403,'Доступ отключён или Telegram отвязан. Обратитесь к администратору.');
    const old=readCookie(req,'ruspet_session');if(old)await db.query('DELETE FROM sessions WHERE token_hash=$1',[digest(old)]);
-   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at,auth_method,telegram_binding_id) VALUES($1,$2,now()+interval '12 hours','telegram',$3)",[digest(session),u.id,row.binding_id]);
+   await db.query("INSERT INTO sessions(token_hash,user_id,expires_at,auth_method,telegram_binding_id) VALUES($1,$2,now()+$4::interval,'telegram',$3)",[digest(session),u.id,row.binding_id,sessionIdleInterval]);
    await db.query("UPDATE telegram_login_requests SET state='consumed',consumed_at=now() WHERE id=$1",[row.id]);
    await db.query("INSERT INTO task_events(id,task_id,actor_id,kind,message,data) VALUES($1,NULL,$2,'telegram_qr_login','Вход через Telegram',$3)",[randomUUID(),u.id,JSON.stringify({requestId:row.id})]);return u;
   });

@@ -27,6 +27,9 @@ export function approvalTurn(approval:Approval){
  const clarification=!!approval.clarification_requested_at&&!approval.clarification_answered_at;
  return {clarification,userId:clarification?approval.requester_id:approval.route[approval.current_step]?.userId};
 }
+export function canSetApprovedDeadline(userId:string,headId:string|null|undefined,a:Approval){
+ return !!headId&&userId===headId&&a.type==='deadline'&&a.current_step===a.route.length-1&&a.route[a.current_step]?.userId===userId;
+}
 export function taskNextAction(task:Task,approval?:Approval,scope?:ApprovalScope|null){
  if(approval&&activeTaskApproval(task,approval)){
   const {clarification,userId}=approvalTurn(approval);

@@ -1,7 +1,7 @@
 import {test,before,after} from 'node:test';
 import assert from 'node:assert/strict';
 import {readFile} from 'node:fs/promises';
-import {randomBytes,randomUUID} from 'node:crypto';
+import {createHash,randomBytes,randomUUID} from 'node:crypto';
 import {hashPassword} from '../server/passwords.js';
 import pg from 'pg';
 import type {Server} from 'node:http';
@@ -44,6 +44,23 @@ test('session required and cross-site writes rejected',async()=>{
  assert.equal((await fetch(base+'/api/bootstrap')).status,401);
  const r=await fetch(base+'/api/checks/run',{method:'POST',headers:{Cookie:cookies.get('director')!,Origin:'https://untrusted.example'}});assert.equal(r.status,403);
 });
+test('web session slides by a week on activity and an expired session cannot be revived',async()=>{
+ const login=await fetch(base+'/api/demo/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({userId:'anna'})});
+ assert.match(login.headers.get('set-cookie')??'',/Max-Age=604800/i);
+ const cookie=login.headers.get('set-cookie')!.split(';')[0],headers={Cookie:cookie};
+ const token=createHash('sha256').update(cookie.slice('ruspet_session='.length)).digest('hex');
+ const expiry=async()=>(await db.pool.query('SELECT expires_at FROM sessions WHERE token_hash=$1',[token])).rows[0].expires_at;
+ await db.pool.query("UPDATE sessions SET expires_at=now()+interval '2 minutes' WHERE token_hash=$1",[token]);
+ const before=await expiry();
+ assert.equal((await fetch(base+'/api/bootstrap?view=workspace',{headers})).status,200);
+ assert.equal(await expiry(),before);
+ const active=await fetch(base+'/api/auth/activity',{method:'POST',headers});
+ assert.equal(active.status,200);assert.match(active.headers.get('set-cookie')??'',/Max-Age=604800/i);
+ assert.ok(Date.parse(await expiry())-Date.now()>6.99*86400000);
+ await db.pool.query("UPDATE sessions SET expires_at=now()-interval '1 second' WHERE token_hash=$1",[token]);
+ assert.equal((await fetch(base+'/api/auth/activity',{method:'POST',headers})).status,401);
+});
+
 test('employee cannot view another branch task or run checks',async()=>{
  assert.equal((await request('anna','/tasks/2403')).status,404);
  assert.equal((await request('anna','/checks/run',{})).status,403);

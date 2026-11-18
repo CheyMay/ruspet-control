@@ -43,7 +43,8 @@ export function taskActionFields(kind:string|undefined,min:number,withAssignee=t
   case 'delegate':return [assigneeField,field('instruction','Поручение сотруднику или «пропустить»',1)];
   case 'delegate_client':return [field('client','Введите название клиента или ИНН',2,150)];
   case 'answer':return [field('reason','Что помешало выполнить задачу?',min),field('progress','Что уже сделано?',min),field('plan','Что будете делать дальше?',min)];
-  case 'deadline':return [deadlineField,field('reason','Почему нужен новый срок?',min),field('plan','Что будет сделано к новому сроку?',min)];
+  case 'deadline':return [deadlineField,field('reason','Почему нужен новый срок?',min)];
+  case 'approve_with_deadline':return [deadlineField];
   case 'clarification':return [field('answer','Ответьте на вопрос согласующего')];
   case 'comment':return [field('comment','Комментарий к задаче')];
   case 'submit':return [field('comment','Опишите готовый результат')];
@@ -164,5 +165,5 @@ export async function prepareVoiceAction(actor:User,intent:VoiceIntent,db:Db){
  if(kind==='undo'){
   const action=await lastUndo(actor,task.id,db);assert(action,409,'Нет действия, которое можно отменить за последние пять минут.');payload.target=action.id;
  }
- return {payload,title:task.title};
+ return {payload,title:task.title,approvalType:pending?.type,taskStatus:task.status};
 }

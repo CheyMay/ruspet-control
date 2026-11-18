@@ -18,7 +18,6 @@ const ready=`a.state='pending' AND a.canceled_at IS NULL AND a.route->a.current_
  AND (a.task_change->>'routeIssue') IS DISTINCT FROM 'true'
  AND (a.clarification_requested_at IS NULL OR a.clarification_answered_at IS NOT NULL)
  AND (a.deferred_until IS NULL OR a.deferred_until<=now()) AND a.task_version=t.version
- AND (a.type<>'deadline' OR a.proposed_deadline>now())
  AND NOT EXISTS(SELECT 1 FROM director_approval_batch_items i WHERE i.approval_id=a.id
   AND i.step=a.current_step AND i.revision=a.action_revision)`;
 

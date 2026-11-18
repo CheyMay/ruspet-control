@@ -181,11 +181,11 @@ async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string){
 }
 async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Date):Promise<BotScreen>{
  let response:BotScreen;
- const {payload,title}=await prepareVoiceAction(u,intent,db);
+ const {payload,title,approvalType,taskStatus}=await prepareVoiceAction(u,intent,db);
  const kind=payload.kind as typeof intent.kind|'complete';
  if(intent.values.dueDay)payload.values={dueDay:intent.values.dueDay};
  const fields:Field[]=kind==='complete'&&intent.values.comment?[{key:'comment',label:'Результат',min:1,max:4000}]:
-  kind==='accept'&&!intent.values.comment?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
+  !intent.values.comment&&(kind==='accept'||kind==='approve'&&(approvalType==='deadline'||taskStatus==='review'))?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
  const values:Record<string,string>={};
  if(kind==='create_task'){
   if(!intent.values.deadline)values.deadline='none';
@@ -295,7 +295,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   return botView(u,ch,{op:'notices'});
  }
  if(p.op==='approval_watch'){await setApprovalWatch(u,p.id!,p.values?.enabled==='true');return botView(u,ch,{op:'task_more',id:p.id,list:p.list});}
- if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','assignee_prepare','undo_prepare','voice_select','voice_page'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
+ if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','approval_deadline_prepare','assignee_prepare','undo_prepare','voice_select','voice_page'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
   const record=(await db.query('SELECT * FROM bot_buttons WHERE token=$1 FOR UPDATE',[token])).rows[0];if(record.receipt)return record.receipt as BotScreen;assert(!record.revoked,409,'Этот ввод отменён или заменён новым. Откройте актуальную задачу.');
@@ -323,6 +323,10 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   }
   if(p.op==='assignee_prepare'){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');const person=(await db.query('SELECT name FROM users WHERE id=$1',[p.target])).rows[0];assert(person,400,'Исполнитель не найден.');return screen(u,ch,'Назначить исполнителем: '+person.name+'?',[[button('Указать причину','form',{kind:'edit_assignee',id:p.id,version:p.version,target:p.target})],[button('Отмена','cancel')]],db);}
   if(p.op==='accept_prepare')return screen(u,ch,`Принять результат по задаче #${p.id} без комментария?`,[[button('Да, принять результат','confirm',{kind:'accept',id:p.id,list:p.list,version:p.version,values:{comment:''}})],[button('Отмена','cancel')]],db);
+  if(p.op==='approval_deadline_prepare')return screen(u,ch,`Согласовать перенос задачи #${p.id} на ${date(p.values?.deadline??null)} МСК?`,[
+   [button('Да, согласовать','confirm',{...p,op:'confirm',values:{comment:''}})],
+   [button('К согласованию','task_approval',{id:p.id,list:p.list})]
+  ],db);
   if(p.op==='approval_accept_prepare')return screen(u,ch,`Принять результат по задаче #${p.id} без комментария?`,[
    [button('Да, принять результат','confirm',{...p,op:'confirm',values:{comment:''}})],
    [button('К согласованию','task_approval',{id:p.id,list:p.list})]
@@ -333,6 +337,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit||p.kind==='edit_price'&&canEditTaskPrice(u,d.task),403,'Нет права редактировать задачу.');}
    const fields=taskActionFields(p.kind,min,!p.target);
    const values={...p.values};
+   if(p.kind==='deadline')delete values.plan;
    const d:Dialog={payload:p,fields,index:0,values};nextMissing(d);
    if(d.index===fields.length)return confirmation(u,ch,d,db,p.kind==='permission_approve'?'Разрешить одно редактирование задачи #'+p.id+'?':undefined);
    await saveDialog(db,u,ch,d);return prompt(u,ch,d,db);
@@ -377,14 +382,17 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
     result+='\n'+status+(task.deadline&&task.status!=='completed'?' · крайний срок '+date(task.deadline)+' МСК':'');
     if(task.pending)nextActions.push([button('Посмотреть согласование','task_approval',{id:task.id,list:p.list})]);
     else if(task.status==='active'&&canRequest(u,task)){
-     nextActions.push([deadlineProposalButton(task,p.list,{reason:v.reason,plan:v.plan})],
+     nextActions.push([deadlineProposalButton(task,p.list,{reason:v.reason})],
       [button('Сдать результат','form',{id:task.id,kind:'submit',list:p.list,version:task.version})]);
     }
    }
   }
-  else if(p.kind==='deadline'){const outcome=await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,plan:v.plan,proposedDeadline:v.deadline,expectedVersion:p.version!});result=outcome.applied?'Крайний срок изменён.':'Новый срок предложен. Текущий крайний срок изменится после согласования.'}
+  else if(p.kind==='deadline'){const outcome=await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,proposedDeadline:v.deadline,expectedVersion:p.version!});result=outcome.applied?'Крайний срок изменён.':'Новый срок предложен. Текущий крайний срок изменится после согласования.'}
   else if(p.kind==='clarification'){await answerClarification(u,p.target!,v.answer);result='Ответ отправлен согласующему. Этап ожидает его решения.'}
-  else if(['approve','reject','later','clarify'].includes(p.kind!)){const r=await decide(u,p.target!,{decision:p.kind as 'approve'|'reject'|'later'|'clarify',comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':'Согласование завершено.'}
+  else if(['approve','approve_with_deadline','reject','later','clarify'].includes(p.kind!)){
+   const adjusted=p.kind==='approve_with_deadline';
+   const r=await decide(u,p.target!,{decision:adjusted?'approve':p.kind as 'approve'|'reject'|'later'|'clarify',
+    comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes,approvedDeadline:adjusted?v.deadline:undefined});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':adjusted?'Срок согласован на '+date(v.deadline)+' МСК.':'Согласование завершено.'}
   else{
    const review=await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return'|'complete',v.comment||'',p.version!);
    result=review.state==='review'?(p.kind==='submit'?'Результат передан на приёмку.':'Задача на приёмке.')+' Текущий согласующий указан в карточке.':

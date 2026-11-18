@@ -1,6 +1,6 @@
 import {importStaff,staffSummary} from './staff-import.js';
 import {listRegistrations,reviewRegistration} from './telegram-onboarding.js';
-import {telegramLoginRouter,sessionUser,clearBrowserLogin,setTelegramBinding} from './telegram-login.js';
+import {telegramLoginRouter,sessionUser,clearBrowserLogin,setTelegramBinding,readCookie,sessionCookieOptions,sessionIdleInterval,touchSession} from './telegram-login.js';
 import {receiveBitrixEvent} from './bitrix-events.js';
 import {archiveStatus} from './bitrix-archive.js';
 import {selectedPilotManagers} from './pilot-selection.js';
@@ -96,8 +96,8 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const {userId}=z.object({userId:text}).parse(req.body);const user=(await pool.query('SELECT * FROM users WHERE id=$1',[userId])).rows[0];assert(user,400,'Пользователь не найден.');
   assert(!user.root_access,403,'Для доступа владельца нужен отдельный вход.');
   const old=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(old)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(old)]);
-  const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '8 hours')",[hash(token),userId]);
-  res.cookie('ruspet_session',token,{httpOnly:true,sameSite:'strict',maxAge:8*60*60*1000,path:'/'});res.json({user});
+  const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+$3::interval)",[hash(token),userId,sessionIdleInterval]);
+  res.cookie('ruspet_session',token,sessionCookieOptions());res.json({user});
  });
  app.post('/api/auth/login',async(req,res)=>{
   const key=req.ip||'unknown',now=Date.now(),attempt=loginAttempts.get(key);
@@ -106,14 +106,18 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const account=(await pool.query('SELECT a.password_hash,u.* FROM login_accounts a JOIN users u ON u.id=a.user_id WHERE a.username=$1 AND a.enabled AND a.password_login',[username])).rows[0];
   if(!account||!await verifyPassword(password,account.password_hash)){loginAttempts.set(key,{count:now-(attempt?.since||0)<60_000?(attempt?.count||0)+1:1,since:now-(attempt?.since||0)<60_000?attempt!.since:now});throw new AppError(401,'Неверный логин или пароль.');}
   loginAttempts.delete(key);
-  const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+interval '12 hours')",[hash(token),account.id]);
-  res.cookie('ruspet_session',token,{httpOnly:true,sameSite:'strict',secure:!!process.env.PUBLIC_ORIGIN?.startsWith('https://'),maxAge:12*60*60*1000,path:'/'});
+  const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+$3::interval)",[hash(token),account.id,sessionIdleInterval]);
+  res.cookie('ruspet_session',token,sessionCookieOptions());
   await clearBrowserLogin(req,res);
   delete account.password_hash;res.json({user:account});
  });
  app.get('/api/auth/me',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(!token)return res.status(401).json({error:'Войдите в систему.'});const user=await sessionUser(token);if(!user)return res.status(401).json({error:'Сессия завершена.'});res.json(user);});
  app.post('/api/auth/logout',async(req,res)=>{const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);if(token)await pool.query('DELETE FROM sessions WHERE token_hash=$1',[hash(token)]);await clearBrowserLogin(req,res);res.clearCookie('ruspet_session',{path:'/'});res.json({ok:true});});
  app.use('/api',async(req,_res,next)=>{if(req.actor)return next();const token=req.headers.cookie?.split('; ').find(v=>v.startsWith('ruspet_session='))?.slice(15);assert(token,401,'Выберите пользователя для входа.');const user=await sessionUser(token);assert(user,401,'Сессия завершена. Войдите снова.');req.actor=user;next();});
+ app.post('/api/auth/activity',async(req,res)=>{
+  await touchSession(readCookie(req,'ruspet_session')!,res);
+  res.json({ok:true});
+ });
  app.get('/api/bootstrap',compress,async(req,res)=>{
   const {serverTime,...workspace}=await service.bootstrap(req.actor,false,req.query.view==='workspace');
   const snapshot={...workspace,managerPreview:managerPreview||undefined};
@@ -300,13 +304,14 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const input=z.object({action:z.enum(['submit','accept','return','complete']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);
   await taskWrite(req,res,200,()=>reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));
  });
- app.get('/api/tasks/:id',compress,async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id))));
+ app.get('/api/tasks/:id',compress,async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id),pool,true)));
  app.post('/api/tasks/:id/comments',async(req,res)=>{
   const input=z.object({body:text,approvalId:z.uuid().optional()}).parse(req.body);
   await taskWrite(req,res,200,async()=>{await service.addComment(req.actor,String(req.params.id),input.body,input.approvalId);return {ok:true};});
  });
- app.post('/api/tasks/:id/approvals',async(req,res)=>taskWrite(req,res,201,()=>service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:text,proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
- app.post('/api/approvals/:id/decision',async(req,res)=>taskWrite(req,res,200,()=>service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
+ app.post('/api/tasks/:id/approvals',async(req,res)=>taskWrite(req,res,201,()=>service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:z.string().trim().max(4000).optional(),proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
+ app.post('/api/approvals/history-refresh',async(req,res)=>res.json(await service.queueApprovalHistories(req.actor)));
+ app.post('/api/approvals/:id/decision',async(req,res)=>taskWrite(req,res,200,()=>service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),approvedDeadline:date.optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
  app.post('/api/approvals/:id/clarification',async(req,res)=>taskWrite(req,res,200,()=>service.answerClarification(req.actor,z.uuid().parse(req.params.id),z.object({answer:z.string().trim().min(5).max(4000)}).parse(req.body).answer)));
  app.post('/api/controls/:id/answer',async(req,res)=>{await service.answerControl(req.actor,z.uuid().parse(req.params.id),z.object({reason:text,progress:text,plan:text}).parse(req.body));res.json({ok:true});});
  app.post('/api/checks/run',async(req,res)=>res.json(await service.runChecks(req.actor)));
@@ -326,6 +331,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const token=req.headers.cookie?.split('; ').find(value=>value.startsWith('ruspet_session='))?.slice(15);
   const user=token?await sessionUser(token):null;
   if(!user?.root_access)return res.status(user?403:401).sendFile(resolve('server/time/locked.html'));
+  await touchSession(token!,res);
   res.sendFile(resolve('server/time/plan.html'));
  });
  app.use('/assets',compress,express.static(resolve('dist/assets'),{maxAge:'1y',immutable:true}));

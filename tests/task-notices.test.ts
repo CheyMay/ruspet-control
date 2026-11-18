@@ -305,7 +305,7 @@ test('only self-assigned changes bypass approvals and creator pricing controls b
   return task.id;
  };
  const request=(id:string,actor:User)=>service.requestApproval(actor,id,{type:'deadline',reason:'Причина переноса проверена',
-  plan:'Согласованный план выполнения',proposedDeadline:next,expectedVersion:1});
+  proposedDeadline:next,expectedVersion:1});
  const deadline=async(id:string)=>(await db.pool.query('SELECT deadline FROM tasks WHERE id=$1',[id])).rows[0].deadline;
  const approval=async(taskId:string)=>(await db.pool.query("SELECT * FROM approvals WHERE task_id=$1 AND state='pending'",[taskId])).rows[0];
  const route=async(id:string)=>(await approval(id))?.route.map((step:{userId:string})=>step.userId);
@@ -347,10 +347,25 @@ test('only self-assigned changes bypass approvals and creator pricing controls b
  }
  assert.equal(await writeCount(),0);
  await assert.rejects(()=>allow(maksim,director),/другой согласующий/);
- assert.equal((await allow(maksim,liza)).state,'pending');
+ const original=await approval(maksim),earlier=at('2035-01-22','17:00').toISOString();
+ await login(liza);await login(director);
+ const decidePath='/approvals/'+original.id+'/decision';
+ const first={expectedStep:0,expectedRevision:original.action_revision};
+ assert.equal(original.plan,'');
+ assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve',approvedDeadline:earlier})).status,403);
+ assert.equal((await api(liza,decidePath,'POST',{...first,decision:'reject'})).status,400);
+ assert.equal((await api(liza,decidePath,'POST',{...first,decision:'clarify'})).status,400);
+ assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve'})).body.state,'pending');
  assert.equal(await deadline(maksim),old);assert.equal(await writeCount(),0);
- assert.equal((await allow(maksim,director)).state,'approved');
- assert.equal(await deadline(maksim),next);assert.equal(await writeCount(),1);
+ const final={expectedStep:1,expectedRevision:original.action_revision};
+ assert.equal((await api(director,decidePath,'POST',{...final,decision:'approve',approvedDeadline:'2000-01-01T12:00:00+03:00'})).status,400);
+ assert.equal((await api(director,decidePath,'POST',{...final,decision:'approve',approvedDeadline:earlier})).body.state,'approved');
+ assert.equal(await deadline(maksim),earlier);assert.equal(await writeCount(),1);
+ const history=(await api(director,'/tasks/'+maksim)).body;
+ assert.equal(history.approvals[0].proposed_deadline,next);assert.equal(history.approvals[0].approved_deadline,earlier);
+ assert.equal(history.deadlineHistory[0].from,old);assert.equal(history.deadlineHistory[0].to,earlier);
+ const notice=(await db.pool.query('SELECT body FROM outbox WHERE dedupe_key=$1',['approved:'+original.id])).rows[0]?.body;
+ assert.match(notice,/22\.01\.2035, 17:00 МСК.*23\.01\.2035, 12:00 МСК/);
  assert.equal((await allow(low,liza)).state,'approved');
 
  const work=await create(liza,other,5000);

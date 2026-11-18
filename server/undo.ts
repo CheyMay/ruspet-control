@@ -42,7 +42,7 @@ export async function undoLastAction(u:User,id:string){return transaction(async 
  // Resolve newly opened records before restoring the original active route/control.
  const beforeApprovals=new Set(before.approvals.map(a=>a.id));
  for(const a of after.approvals)if(!beforeApprovals.has(a.id))await db.query("UPDATE approvals SET state='stale',canceled_at=now(),deferred_until=NULL WHERE id=$1",[a.id]);
- const mutableApproval=['state','current_step','deferred_until','clarification_question','clarification_answer','clarification_requested_at','clarification_answered_at','canceled_at','route','task_change'];
+ const mutableApproval=['state','current_step','deferred_until','clarification_question','clarification_answer','clarification_requested_at','clarification_answered_at','canceled_at','route','task_change','approved_deadline'];
  for(const a of before.approvals){
   const active=a.state==='pending'&&a.task_version===before.task.version;
   const values=mutableApproval.map(k=>a[k]==null?null:['route','task_change'].includes(k)?JSON.stringify(a[k]):a[k]);

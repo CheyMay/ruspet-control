@@ -18,7 +18,7 @@ const transport:BitrixRequest=async<T>(method:BitrixMethod,body:any,_observe?:Pa
  if(method==='tasks.task.getFields')return {fields:{TITLE:{title:'Название',type:'string'},UF_PRICE:{title:'Цена задачи',type:'double'},UF_NOTES:{title:'Дополнительные сведения',type:'string'}}} as T;
  if(method==='user.get')return [{ID:body.FILTER?.ID,ACTIVE:true,NAME:'Фикстура',LAST_NAME:body.FILTER?.ID}] as T;
  if(method==='im.dialog.messages.get'){const id=String(body.DIALOG_ID).slice(4);return {messages:messages.get(id)||[],users:[{id:201,name:'Фикстура'}]} as T;}
- if(method==='tasks.task.history.list')return {list:[]} as T;
+ if(method==='tasks.task.history.list')return {list:remote.get(String(body.taskId))?.deadlineHistory??[]} as T;
  if(method==='tasks.task.add'){
   const id=String(10000+remote.size),f=body.fields;
   remote.set(id,{id,chatId:id,title:f.TITLE,description:f.DESCRIPTION,deadline:f.DEADLINE??null,createdDate:new Date().toISOString(),
@@ -127,6 +127,14 @@ test('new RUSPET task creates one Bitrix task even if the result is lost and the
   assert.equal(calls.slice(before).filter(call=>call.method==='tasks.task.add').length,1);
   assert(messages.get(remoteTask.id)?.some(msg=>msg.text.includes('Комментарий в ожидании создания')));
   assert.equal((await db.pool.query('SELECT description FROM tasks WHERE id=$1',[task.id])).rows[0].description,description);
+  const {refreshDeadlineHistory,loadDeadlineHistories}=await import('../server/deadline-history.js');
+  remoteTask.deadlineHistory=[{id:4,field:'DEADLINE',createdDate:'2026-11-03T12:15:00+03:00',
+   value:{from:'02.11.2026 17:00:00',to:'2026-11-03T17:00:00+03:00'},user:{name:'Мария',lastName:'Орлова'}}];
+  await refreshDeadlineHistory(request,remoteTask.id);
+  const history=(await loadDeadlineHistories(db.pool,[task.id]))[task.id];
+  assert.deepEqual(history.map(({from,to,author})=>({from,to,author})),[
+   {from:'2026-11-02T14:00:00.000Z',to:'2026-11-03T14:00:00.000Z',author:'Мария Орлова'}]);
+  assert.deepEqual(calls.at(-1)?.body.filter,{FIELD:'DEADLINE'});
   await db.pool.query('DELETE FROM bitrix_refresh_queue WHERE portal=$1 AND external_id=$2',[portal,remoteTask.id]);
  }finally{
   lostCreation=false;

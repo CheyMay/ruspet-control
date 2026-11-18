@@ -1,3 +1,4 @@
+import {queueDeadlineHistories} from './deadline-history.js';
 import {editedApprovalFields,keepTaskApprovals} from './approval-updates.js';
 import {canEditTaskPrice} from '../shared/task-edit.js';
 import {taskPrice} from '../shared/pricing.js';
@@ -201,6 +202,7 @@ async function queueResultApproval(db:Db,hierarchy:NonNullable<Awaited<ReturnTyp
  await db.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version)
   VALUES($1,$2,$3,'completion',$4,$5,$6,'pending',$7,$8)`,[approvalId,task.id,requesterId,'Результат передан на приёмку',result,task.version,JSON.stringify(route),cfg.version]);
  await event(db,task.id,actorId,'approval_requested','Результат направлен по маршруту согласования',{approvalId,route,plan:result});
+ await queueDeadlineHistories(db,[task.id]);
  if(route[0].userId!==hierarchy.sales_head_id&&route[0].userId!==actorId)await notify(db,task.id,route[0].userId,'Проверьте результат по задаче #'+task.id,`approval:${approvalId}:0`);
  return {approvalId,route};
 }

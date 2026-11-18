@@ -7,6 +7,7 @@ import {api} from './api.js';
 import {EmployeeFilter} from './SearchFilter.js';
 import {approvalTurn} from '../shared/actions.js';
 
+const approvalKinds=[{id:'deadline',label:'Переносы сроков'},{id:'completion',label:'Закрытие задач'}] as const;
 type BatchStatus={head:{name:string;linked:boolean};total:number;last:{created_at:string;state:string|null}|null;
  rows:{id:string;name:string;processed:number;waiting:number;approved:number;ready:number}[]};
 export function DirectorBatch({stamp}:{stamp:string}){
@@ -35,9 +36,11 @@ export function DirectorBatch({stamp}:{stamp:string}){
 }
 
 export function ApprovalWorkspace({data,render,readOnly=false}:{data:Bootstrap;render:(a:Approval)=>ReactNode;readOnly?:boolean}){
- const [tab,setTab]=useRememberedFilter(data.user.id,'ApprovalWorkspace.tab','pending'),[query,setQuery]=useState(''),[owner,setOwner]=useRememberedFilter(data.user.id,'ApprovalWorkspace.owner','all'),[actor,setActor]=useRememberedFilter(data.user.id,'ApprovalWorkspace.actor','all'),[type,setType]=useRememberedFilter(data.user.id,'ApprovalWorkspace.type','all'),[from,setFrom]=useRememberedFilter(data.user.id,'ApprovalWorkspace.from',''),[to,setTo]=useRememberedFilter(data.user.id,'ApprovalWorkspace.to','');
+ const [tab,setTab]=useRememberedFilter(data.user.id,'ApprovalWorkspace.tab','pending'),[query,setQuery]=useState(''),[owner,setOwner]=useRememberedFilter(data.user.id,'ApprovalWorkspace.owner','all'),[actor,setActor]=useRememberedFilter(data.user.id,'ApprovalWorkspace.actor','all'),[type,setType]=useRememberedFilter(data.user.id,'ApprovalWorkspace.queueKind','deadline'),[from,setFrom]=useRememberedFilter(data.user.id,'ApprovalWorkspace.from',''),[to,setTo]=useRememberedFilter(data.user.id,'ApprovalWorkspace.to','');
  const waiting=(a:Approval)=>!!a.clarification_requested_at&&!a.clarification_answered_at;
  const current=(a:Approval)=>approvalTurn(a).userId;
+ useEffect(()=>{if(!readOnly)void api('/approvals/history-refresh','POST',{}, {timeout:8000}).catch(()=>{});},
+  [data.user.id,readOnly]);
  const batch=new URLSearchParams(location.search).get('batch');
  const [batchItems,setBatchItems]=useState<{id:string}[]|null>(null),[batchError,setBatchError]=useState('');
  useEffect(()=>{
@@ -53,8 +56,16 @@ export function ApprovalWorkspace({data,render,readOnly=false}:{data:Bootstrap;r
   return <><section className="panel director-approval-panel"><h2>Пакет согласований</h2>
    <p>{batchError||(batchItems?selected.length?'Осталось запросов: '+selected.length+'.':'Все запросы пакета обработаны.':'Загружаем запросы…')}</p>
    <a className="text-button" href="/?view=approvals">Все согласования</a>
-  </section><div className="approval-list">{selected.map(a=><div key={a.id}>{render(a)}</div>)}</div></>;
+  </section>{approvalKinds.map(kind=>{
+   const group=selected.filter(a=>a.type===kind.id);
+   return group.length>0&&<section className="approval-group" key={kind.id}><h2>{kind.label}</h2>
+    <div className="approval-list">{group.map(a=><div key={a.id}>{render(a)}</div>)}</div></section>;
+  })}</>;
  }
- const items=data.approvals.filter(a=>{const t=data.tasks.find(t=>t.id===a.task_id);return (tab==='all'||tab==='mine'&&a.state==='pending'&&current(a)===data.user.id||tab==='clarification'&&a.state==='pending'&&waiting(a)||tab==='canceled'&&!!a.canceled_at||a.state===tab&&!a.canceled_at)&&(owner==='all'||t?.assignee_id===owner)&&(actor==='all'||current(a)===actor)&&(type==='all'||a.type===type)&&(!from||businessDay(a.created_at)>=from)&&(!to||businessDay(a.created_at)<=to)&&`${a.task_id} ${t?.title||''} ${a.reason}`.toLowerCase().includes(query.toLowerCase())});
- return <><div className="tabs">{Object.entries({pending:'Ожидают решения',mine:'Моё действие',clarification:'Ждём уточнения',approved:'Согласовано',rejected:'Отказано',stale:'Устарели',canceled:'Отменено',all:'Вся история'}).map(([id,label])=><button key={id} className={tab===id?'selected':''} onClick={()=>setTab(id)}>{label}</button>)}</div><section className="panel"><div className="filters"><input aria-label="Поиск согласования" placeholder="Номер, название или причина" value={query} onChange={e=>setQuery(e.target.value)}/><EmployeeFilter label="Исполнитель задачи" value={owner} onChange={setOwner} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>u.id===owner||data.tasks.some(t=>t.assignee_id===u.id))}/><EmployeeFilter label="У кого сейчас запрос" value={actor} onChange={setActor} empty={{value:'all',label:'У любого участника'}} people={data.users.filter(u=>u.id===actor||data.approvals.some(a=>current(a)===u.id))}/><select aria-label="Тип запроса" value={type} onChange={e=>setType(e.target.value)}><option value="all">Все типы</option><option value="deadline">Перенос крайнего срока</option><option value="completion">Закрытие задачи</option></select><label className="date-filter">Запрос с<input type="date" value={from} onChange={e=>setFrom(e.target.value)}/></label><label className="date-filter">по<input type="date" min={from} value={to} onChange={e=>setTo(e.target.value)}/></label><HelpHint text="Дата относится к созданию запроса. Фильтр «У кого» показывает участника, от которого сейчас требуется действие: согласующего или автора, если он должен ответить на уточнение."/><span>Найдено {items.length}</span></div></section><div className="approval-list">{items.map(a=><div key={a.id}>{render(a)}</div>)}{!items.length&&<section className="panel empty"><h3>Согласований с такими условиями нет</h3><p>Измените вкладку, участника или период.</p></section>}</div></>;
+ const items=data.approvals.filter(a=>{const t=data.tasks.find(t=>t.id===a.task_id);return (tab==='all'||tab==='mine'&&a.state==='pending'&&current(a)===data.user.id||tab==='clarification'&&a.state==='pending'&&waiting(a)||tab==='canceled'&&!!a.canceled_at||a.state===tab&&!a.canceled_at)&&(owner==='all'||t?.assignee_id===owner)&&(actor==='all'||current(a)===actor)&&(!from||businessDay(a.created_at)>=from)&&(!to||businessDay(a.created_at)<=to)&&`${a.task_id} ${t?.title||''} ${a.reason}`.toLowerCase().includes(query.toLowerCase())});
+ const queue=items.filter(a=>a.type===type);
+ return <><div className="tabs approval-kind-tabs" aria-label="Тип согласования">{approvalKinds.map(kind=>
+  <button key={kind.id} className={type===kind.id?'selected':''} aria-pressed={type===kind.id} onClick={()=>setType(kind.id)}>
+   {kind.label} <small>{items.filter(a=>a.type===kind.id).length}</small>
+  </button>)}</div><div className="tabs">{Object.entries({pending:'Ожидают решения',mine:'Моё действие',clarification:'Ждём уточнения',approved:'Согласовано',rejected:'Отказано',stale:'Устарели',canceled:'Отменено',all:'Вся история'}).map(([id,label])=><button key={id} className={tab===id?'selected':''} onClick={()=>setTab(id)}>{label}</button>)}</div><section className="panel"><div className="filters"><input aria-label="Поиск согласования" placeholder="Номер, название или причина" value={query} onChange={e=>setQuery(e.target.value)}/><EmployeeFilter label="Исполнитель задачи" value={owner} onChange={setOwner} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>u.id===owner||data.tasks.some(t=>t.assignee_id===u.id))}/><EmployeeFilter label="У кого сейчас запрос" value={actor} onChange={setActor} empty={{value:'all',label:'У любого участника'}} people={data.users.filter(u=>u.id===actor||data.approvals.some(a=>current(a)===u.id))}/><label className="date-filter">Запрос с<input type="date" value={from} onChange={e=>setFrom(e.target.value)}/></label><label className="date-filter">по<input type="date" min={from} value={to} onChange={e=>setTo(e.target.value)}/></label><HelpHint text="Дата относится к созданию запроса. Фильтр «У кого» показывает участника, от которого сейчас требуется действие: согласующего или автора, если он должен ответить на уточнение."/><span>Найдено {queue.length}</span></div></section><div className="approval-list">{queue.map(a=><div key={a.id}>{render(a)}</div>)}{!queue.length&&<section className="panel empty"><h3>Согласований с такими условиями нет</h3><p>Измените вкладку, участника или период.</p></section>}</div></>;
 }

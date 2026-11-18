@@ -6,7 +6,7 @@ import {compactTaskTitle} from '../shared/task-title.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import {formatPrice,priceBand,priceLabels} from '../shared/pricing.js';
 import {canRequest} from './domain.js';
-import {activeTaskApproval,canComplete,canReview,taskNextAction} from '../shared/actions.js';
+import {activeTaskApproval,canComplete,canSetApprovedDeadline,canReview,taskNextAction} from '../shared/actions.js';
 import {discussionMessages} from '../shared/task-discussion.js';
 import {detail,config,taskBitrixDiscussion,taskBitrixResults} from './service.js';
 import {canDelegateTask} from './workflow.js';
@@ -17,13 +17,13 @@ import {elapsedToday,taskQueue} from '../shared/queues.js';
 import {pool} from './db.js';
 import type {ControlRequest,Task,User} from '../shared/types.js';
 
-export function deadlineProposalButton(task:Task,list:Payload['list'],explanation?:Pick<ControlRequest,'reason'|'plan'>){
- const values=explanation?.reason&&explanation.plan?{reason:explanation.reason,plan:explanation.plan}:undefined;
+export function deadlineProposalButton(task:Task,list:Payload['list'],explanation?:Pick<ControlRequest,'reason'>){
+ const values=explanation?.reason?{reason:explanation.reason}:undefined;
  return button('Предложить новый срок','form',{id:task.id,kind:'deadline',version:task.version,list,values});
 }
 
 export async function renderBotTask(u:User,ch:string,p:Payload){
- const d=await detail(u,p.id!),t=d.task,now=new Date();
+ const d=await detail(u,p.id!,pool,p.op==='task_approval'),t=d.task,now=new Date();
  const pending=d.approvals.find(a=>activeTaskApproval(t,a)),last=d.submissions[0];
  const next=taskNextAction(t,pending,d.approvalScope);
  const {canEdit,canRequest:canRequestEdit,canDecide,request}=d.editAccess;
@@ -41,7 +41,14 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   if(waiting&&pending.requester_id===u.id)approvalRows.push([form('Ответить на уточнение','clarification',pending.id,pending.current_step)]);
   if(!waiting&&!change?.routeIssue&&pending.route[pending.current_step]?.userId===u.id){
    const resultReview=t.status==='review'&&pending.type==='completion';
-   approvalRows.push([...(resultReview?[button('Принять без комментария','approval_accept_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision})]:
+   const deadline=pending.type==='deadline';
+   if(deadline)approvalRows.push([
+    button('Согласовать','approval_deadline_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,
+     revision:pending.action_revision,values:pending.proposed_deadline?{deadline:pending.proposed_deadline}:{}}),
+    ...(canSetApprovedDeadline(u.id,d.deadlineApproverId,pending)?[form('Выбрать другой срок','approve_with_deadline',pending.id,pending.current_step)]:[])
+   ]);
+   if(deadline)approvalRows.push([form('Согласовать с комментарием','approve',pending.id,pending.current_step)]);
+   approvalRows.push([...(deadline?[]:resultReview?[button('Принять без комментария','approval_accept_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision})]:
     [form('Согласовать','approve',pending.id,pending.current_step)]),form(resultReview?'Вернуть с замечаниями':'Отклонить','reject',pending.id,pending.current_step)],
     [form('Уточнить','clarify',pending.id,pending.current_step),button('Напомнить через час','confirm',{...extra,kind:'later',target:pending.id,step:pending.current_step,revision:pending.action_revision,minutes:60,values:{}})]);
   }
@@ -97,7 +104,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   ...(change.routeIssue?['Нужен другой согласующий.']:[])
  ].join('\n')+'\n\n':'';
  if(p.op==='task_approval')return paged('Согласование',pending?
-  `Запрос: ${pending.type==='deadline'?'перенос срока':'закрытие задачи'}\nЭтап ${pending.current_step+1} из ${pending.route.length}\nАвтор: ${name(pending.requester_id)}\n${waiting?'Ждём уточнения от: '+name(pending.requester_id):'Решение за: '+name(approver?.userId??'')}\nТекущий крайний срок: ${date(t.deadline)}${pending.proposed_deadline?'\nПредложенный крайний срок: '+date(pending.proposed_deadline):''}\n\n${changeText}Причина:\n${pending.reason}\n\nПлан:\n${pending.plan}${pending.clarification_question?'\n\nВопрос:\n'+pending.clarification_question:''}${pending.clarification_answer?'\n\nОтвет:\n'+pending.clarification_answer:''}`:'Текущих согласований нет.',approvalRows);
+  `Запрос: ${pending.type==='deadline'?'перенос срока':'закрытие задачи'}\nЦена задачи: ${formatPrice(t)}\nЭтап ${pending.current_step+1} из ${pending.route.length}\nАвтор: ${name(pending.requester_id)}\n${waiting?'Ждём уточнения от: '+name(pending.requester_id):'Решение за: '+name(approver?.userId??'')}\nТекущий крайний срок: ${date(t.deadline)}${pending.proposed_deadline?'\nПредложенный крайний срок: '+date(pending.proposed_deadline):''}\n\n${changeText}Причина:\n${pending.reason}${pending.type==='completion'?'\n\nРезультат работы:\n'+pending.plan:''}${pending.clarification_question?'\n\nВопрос:\n'+pending.clarification_question:''}${pending.clarification_answer?'\n\nОтвет:\n'+pending.clarification_answer:''}${d.deadlineHistory.length?'\n\nПрошлые переносы:\n'+d.deadlineHistory.map(item=>date(item.from)+' → '+date(item.to)+' МСК · '+item.author).join('\n'):''}`:'Текущих согласований нет.',approvalRows);
  if(p.op==='discussion'){
   const external=d.bitrixLinked?await taskBitrixDiscussion(u,t.id):null;
   const list=discussionMessages(d.comments,name,external).reverse(),page=Math.max(0,Math.min(p.page||0,Math.max(0,list.length-1))),c=list[page];
