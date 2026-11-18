@@ -1,3 +1,5 @@
+import {tickBitrixCreations,verifyBitrixCreation} from './bitrix-create-task.js';
+import {withRuspetTaskReference} from './bitrix-task-reference.js';
 import {keepTaskApprovals} from './approval-updates.js';
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
@@ -134,15 +136,20 @@ export async function deactivateLiveTask(id:string){return transaction(async db=
  const result=await db.query('UPDATE bitrix_task_links SET live_enabled=false WHERE task_id=$1 AND live_enabled',[id]);assert(result.rowCount,404,'Активная связь не найдена.');return {deactivated:true};
 });}
 export async function enqueueBitrixOperation(db:Db,eventId:string,taskId:string,kind:string,message:string,data:Record<string,unknown>,actorId:string|null){
- const supported=['task_edited','review_submitted','review_returned','task_completed','deadline_changed','action_undone','comment','explanation','approval_requested','approval_rejected','approval_later','approval_clarification_requested','approval_clarification_answered','step_approved'];
+ const supported=['created','task_edited','review_submitted','review_returned','task_completed','deadline_changed','action_undone','comment','explanation','approval_requested','approval_rejected','approval_later','approval_clarification_requested','approval_clarification_answered','step_approved'];
  if(!supported.includes(kind)||kind==='review_submitted'&&data.waitingForApproval===true)return;
- const linked=(await db.query<Config>(`SELECT c.* FROM bitrix_task_links l CROSS JOIN bitrix_live_config c
-  WHERE l.task_id=$1 AND c.id=1 AND (l.live_enabled OR c.sync_linked_tasks)`,[taskId])).rows[0];if(!linked)return;
+ const linked=(await db.query<Config>(`SELECT c.* FROM bitrix_live_config c
+  LEFT JOIN bitrix_task_links l ON l.task_id=$1 WHERE c.id=1 AND
+  (l.live_enabled OR c.sync_linked_tasks AND (l.task_id IS NOT NULL OR
+   $2='created' AND $1 ~ '^L-[0-9a-f]{8}$' OR EXISTS(SELECT 1 FROM bitrix_operations o
+    WHERE o.task_id=$1 AND o.payload->>'kind'='created' AND o.state<>'canceled')))
+  AND ($2<>'created' OR c.sync_linked_tasks AND l.task_id IS NULL AND $1 ~ '^L-[0-9a-f]{8}$')`,[taskId,kind])).rows[0];
+ if(!linked)return;
  const after=data.after as Task|undefined;
  const before=data.before as Task|undefined;
- if(linked.sync_linked_tasks&&kind!=='comment'&&(!before||!after||!writeFields(before,after,linked).length))return;
+ if(linked.sync_linked_tasks&&!['created','comment'].includes(kind)&&(!before||!after||!writeFields(before,after,linked).length))return;
  if(after&&!linked.sync_linked_tasks){const people=(await db.query('SELECT user_id FROM bitrix_pilot_members WHERE user_id=ANY($1)',[[after.assignee_id,after.creator_id]])).rows;assert(new Set(people.map(p=>p.user_id)).size===new Set([after.assignee_id,after.creator_id]).size,409,'Для связанной задачи выбирайте исполнителя и постановщика из участников пилота.');}
- await db.query('INSERT INTO bitrix_operations(event_id,task_id,payload) VALUES($1,$2,$3) ON CONFLICT(event_id) DO NOTHING',[eventId,taskId,JSON.stringify({kind,message,data,actorId})]);
+ await db.query('INSERT INTO bitrix_operations(event_id,task_id,payload) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[eventId,taskId,JSON.stringify({kind,message,data,actorId})]);
 }
 function writeFields(before:Task,after:Task,cfg:Config){
  const old=localValues(before),next=localValues(after);
@@ -164,6 +171,8 @@ async function outboundFields(before:Task,after:Task,raw:Record<string,unknown>,
   }else if(key==='price'){
    assert(cfg.price_field&&next.price!==null,409,'Цена обязательна.');const type=(await pool.query('SELECT description FROM bitrix_field_catalog WHERE code=$1',[cfg.price_field])).rows[0]?.description.type;
    fields[cfg.price_field]=type==='money'?`${next.price}|RUB`:next.price;
+  }else if(key==='description'&&/^L-[0-9a-f]{8}$/.test(after.id)&&cfg.sync_linked_tasks){
+   fields.DESCRIPTION=withRuspetTaskReference(next.description,after.id);
   }else fields[key.toUpperCase()]=next[key];
  }
  return {fields,remote,next,changed};
@@ -193,8 +202,11 @@ export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:strin
   acquired=(await lock.query('SELECT pg_try_advisory_lock(431025) ok')).rows[0].ok;if(!acquired)return {sent:0,paused:true};
   const cfg=await config();if(!cfg.enabled||process.env.BITRIX_WRITE_ENABLED!=='true')return {sent:0,paused:true};
   // A previous process may have died after the portal accepted a request.
-  await pool.query("UPDATE bitrix_operations SET state='uncertain',error='Обработчик прерван. Требуется сверка с Битрикс24.' WHERE state='processing'");
-  let sent=0;
+  await pool.query(`UPDATE bitrix_operations SET
+   state=CASE WHEN payload->>'kind'='created' AND (created_external_id IS NOT NULL OR phase='reading') THEN 'failed' ELSE 'uncertain' END,
+   retry_at=CASE WHEN payload->>'kind'='created' THEN now() ELSE NULL END,
+   error='Обработчик прерван. Требуется сверка с Битрикс24.' WHERE state='processing'`);
+  let sent=cfg.sync_linked_tasks?await tickBitrixCreations(request,cfg,options.taskIds):0;
   const capture=(await pool.query('SELECT enabled,verified_at FROM bitrix_event_capture WHERE id=1')).rows[0];
   const poll=!cfg.sync_linked_tasks&&(options.poll??!(capture?.enabled&&capture.verified_at));
   const links=(await pool.query(`SELECT l.* FROM bitrix_task_links l LEFT JOIN LATERAL
@@ -279,13 +291,15 @@ export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:strin
 
 /** Retrying an uncertain comment is forbidden without positive portal evidence. */
 export async function recoverOperation(request:BitrixRequest,id:string,mode:'retry'|'verify'){
- const op=(await pool.query('SELECT o.*,l.external_id FROM bitrix_operations o JOIN bitrix_task_links l USING(task_id) WHERE event_id=$1',[id])).rows[0];assert(op,404,'Операция не найдена.');
+ const op=(await pool.query('SELECT o.*,l.external_id FROM bitrix_operations o LEFT JOIN bitrix_task_links l USING(task_id) WHERE event_id=$1',[id])).rows[0];assert(op,404,'Операция не найдена.');
  if(mode==='retry'){
   assert(['failed','blocked'].includes(op.state),409,'Повтор неизвестного результата запрещён: используйте verify после сверки.');
   const result=await pool.query("UPDATE bitrix_operations SET state='pending',retry_at=NULL,error=NULL WHERE event_id=$1 AND state IN ('failed','blocked')",[id]);assert(result.rowCount,409,'Операция уже изменилась.');return {state:'pending'};
  }
  assert(op.state==='uncertain',409,'Сверка требуется операции с неизвестным результатом.');
- const cfg=await config(),raw=await readLiveTask(request,String(op.external_id)),remote=await remoteValues(raw,cfg),before=op.payload.data.before as Task|undefined,after=op.payload.data.after as Task|undefined;
+ const cfg=await config();
+ if(op.payload.kind==='created')return verifyBitrixCreation(request,op,cfg);
+ const raw=await readLiveTask(request,String(op.external_id)),remote=await remoteValues(raw,cfg),before=op.payload.data.before as Task|undefined,after=op.payload.data.after as Task|undefined;
  if(op.phase!=='reading'&&after){const changed=writeFields(before!,after,cfg);assert(changed.every(k=>same(remote[k],localValues(after)[k])),409,'Битрикс24 пока не подтверждает все поля операции. Сверьте её вручную.');}
  const commentPhase=['tasks.task.chat.message.send','task.commentitem.add'].includes(op.phase);
  if(commentPhase){

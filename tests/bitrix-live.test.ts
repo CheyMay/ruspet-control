@@ -12,13 +12,21 @@ let server:Server,base:string;const savedDemo=process.env.DEMO_AUTH;
 let db:typeof import('../server/db.js'),service:typeof import('../server/service.js'),workflow:typeof import('../server/workflow.js'),live:typeof import('../server/bitrix-live.js'),fields:typeof import('../server/bitrix-fields.js'),adminConnection:pg.Client,director:User,anna:User,ivan:User;
 const database='ruspet_live_test_'+randomBytes(6).toString('hex'),savedWrite=process.env.BITRIX_WRITE_ENABLED;
 const remote=new Map<string,Record<string,any>>(),calls:{method:BitrixMethod;body:any}[]=[];let lostComment=false;
-const messages=new Map<string,{id:number;date:string;author_id:number;text:string}[]>();let lostBeforeDelivery=false;
+const messages=new Map<string,{id:number;date:string;author_id:number;text:string}[]>();let lostBeforeDelivery=false,lostCreation=false;
 const transport:BitrixRequest=async<T>(method:BitrixMethod,body:any,_observe?:Parameters<BitrixRequest>[2],options?:Parameters<BitrixRequest>[3]):Promise<T>=>{
  calls.push({method,body});
  if(method==='tasks.task.getFields')return {fields:{TITLE:{title:'Название',type:'string'},UF_PRICE:{title:'Цена задачи',type:'double'},UF_NOTES:{title:'Дополнительные сведения',type:'string'}}} as T;
  if(method==='user.get')return [{ID:body.FILTER?.ID,ACTIVE:true,NAME:'Фикстура',LAST_NAME:body.FILTER?.ID}] as T;
  if(method==='im.dialog.messages.get'){const id=String(body.DIALOG_ID).slice(4);return {messages:messages.get(id)||[],users:[{id:201,name:'Фикстура'}]} as T;}
  if(method==='tasks.task.history.list')return {list:[]} as T;
+ if(method==='tasks.task.add'){
+  const id=String(10000+remote.size),f=body.fields;
+  remote.set(id,{id,chatId:id,title:f.TITLE,description:f.DESCRIPTION,deadline:f.DEADLINE??null,createdDate:new Date().toISOString(),
+   status:'2',responsibleId:f.RESPONSIBLE_ID,createdBy:f.CREATED_BY,taskControl:f.TASK_CONTROL,ufPrice:f.UF_PRICE});
+  if(lostCreation)throw new(await import('../server/bitrix-rest.js')).BitrixError('Нет подтверждения создания','uncertain');
+  return {task:{id}} as T;
+ }
+ if(method==='tasks.task.list')return {tasks:[...remote.values()].filter(row=>row.title===body.filter.TITLE)} as T;
  const task=remote.get(String(body.taskId||body.TASKID||body.fields?.taskId));assert(task,'fixture task exists');
  if(method==='tasks.task.get')return {task:{...task}} as T;
  if(method==='tasks.task.update'){
@@ -84,6 +92,46 @@ test('a Bitrix price change keeps a pending request with its new version and pri
  assert.equal((await service.decide(approver,id,{decision:'approve',comment:'Подтвердил перенос',expectedRevision:current.action_revision})).state,old.route.length===1?'approved':'pending');
  await db.pool.query("UPDATE bitrix_operations SET state='canceled' WHERE task_id=$1 AND state='pending'",[task.id]);
  await db.pool.query('UPDATE bitrix_task_links SET live_enabled=false WHERE task_id=$1',[task.id]);
+});
+
+test('new RUSPET task creates one Bitrix task even if the result is lost and the webhook arrives first',async()=>{
+ const portal='fixture.bitrix24.ru';
+ const request=Object.assign(transport,{portal,mode:'webhook' as const});
+ const {queueRefresh}=await import('../server/bitrix-events.js');
+ const {tickInboundTasks}=await import('../server/bitrix-inbound.js');
+ const {taskIntegration}=await import('../server/bitrix-fields.js');
+ const {ruspetTaskReference}=await import('../server/bitrix-task-reference.js');
+ await db.pool.query("UPDATE bitrix_live_config SET sync_linked_tasks=true WHERE id=1");
+ try {
+  const title='Новая связанная задача через РУСПЭТ',description='Проверить данные заявки';
+  const task=await workflow.createTask(director,{title,description,assigneeId:anna.id,price:7488,deadline:'2035-03-01T12:00:00.000Z',
+   plannedStart:null,plannedEnd:null,important:true,customerRisk:false,parentId:null});
+  await service.addComment(anna,task.id,'Комментарий в ожидании создания');
+  assert.equal((await taskIntegration(director,task.id)).state,'pending');
+  const before=calls.length;
+  lostCreation=true;
+  await live.tickLiveSync(request,{taskIds:[task.id]});
+  lostCreation=false;
+  const op=(await db.pool.query("SELECT * FROM bitrix_operations WHERE task_id=$1 AND payload->>'kind'='created'",[task.id])).rows[0];
+  assert.equal(op.state,'uncertain');
+  const remoteTask=[...remote.values()].find(row=>row.title===title)!;
+  assert.equal(ruspetTaskReference(remoteTask.description),task.id);
+  assert.equal(remoteTask.createdBy,'201');assert.equal(remoteTask.responsibleId,'202');assert.equal(remoteTask.ufPrice,7488);
+  await queueRefresh(db.pool,portal,'task_inbound_new',remoteTask.id);
+  const webhook=await tickInboundTasks(request,remoteTask.id);
+  assert(webhook?.result&&'ignored' in webhook.result);
+  assert.equal((await db.pool.query('SELECT id FROM tasks WHERE id=$1',[remoteTask.id])).rowCount,0);
+  assert.deepEqual(await live.recoverOperation(request,op.event_id,'verify'),{state:'sent'});
+  await live.tickLiveSync(request,{taskIds:[task.id]});
+  assert.equal((await taskIntegration(director,task.id)).externalId,remoteTask.id);
+  assert.equal(calls.slice(before).filter(call=>call.method==='tasks.task.add').length,1);
+  assert(messages.get(remoteTask.id)?.some(msg=>msg.text.includes('Комментарий в ожидании создания')));
+  assert.equal((await db.pool.query('SELECT description FROM tasks WHERE id=$1',[task.id])).rows[0].description,description);
+  await db.pool.query('DELETE FROM bitrix_refresh_queue WHERE portal=$1 AND external_id=$2',[portal,remoteTask.id]);
+ }finally{
+  lostCreation=false;
+  await db.pool.query("UPDATE bitrix_live_config SET sync_linked_tasks=false WHERE id=1");
+ }
 });
 
 test('delegated acceptance arriving from Bitrix closes its source through the existing transport',async()=>{

@@ -1,3 +1,4 @@
+import {stripRuspetTaskReference} from './bitrix-task-reference.js';
 import {keepTaskApprovals} from './approval-updates.js';
 import {randomUUID} from 'node:crypto';
 import type {Task} from '../shared/types.js';
@@ -20,7 +21,7 @@ export function remoteTask(value:Record<string,unknown>):Remote{
  if(!id||typeof value.title!=='string'||!value.title.trim()||typeof value.description!=='string'||!Object.hasOwn(value,'deadline')||(value.deadline&&!deadline)){
   throw new BitrixError('Ответ Битрикс24 не содержит обязательных полей задачи.');
  }
- return {id,title:value.title,description:value.description,deadline,status:value.status==null?null:String(value.status),
+ return {id,title:value.title,description:stripRuspetTaskReference(value.description),deadline,status:value.status==null?null:String(value.status),
   responsibleId:bitrixId(value.responsibleId),createdBy:bitrixId(value.createdBy),chatId:bitrixId(value.chatId)};
 }
 export function planFields(base:Values,local:Values,remote:Values){

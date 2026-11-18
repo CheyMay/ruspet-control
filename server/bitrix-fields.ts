@@ -35,10 +35,11 @@ export async function mapBitrixUser(request:BitrixRequest,userId:string,external
 export async function taskIntegration(actor:User,id:string,includeFields=true){
  const task=(await pool.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];assert(task&&canSee(actor,task),404,'Задача недоступна.');
  const link=(await pool.query('SELECT external_id,live_enabled,conflict,checked_at FROM bitrix_task_links WHERE task_id=$1',[id])).rows[0];
- if(!link)return {linked:false,enabled:false,state:'local',fields:[],error:null};
  const op=(await pool.query("SELECT event_id,state,error FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 1",[id])).rows[0];
- const source=(await pool.query('SELECT raw,fetched_at FROM bitrix_task_snapshots WHERE external_id=$1',[link.external_id])).rows[0];
+ if(!link&&!op)return {linked:false,enabled:false,state:'local',fields:[],error:null};
  const cfg=(await pool.query('SELECT enabled,sync_linked_tasks FROM bitrix_live_config WHERE id=1')).rows[0];
+ if(!link)return {linked:false,enabled:cfg.sync_linked_tasks,state:op.state,operationId:op.event_id,paused:!cfg.enabled,fields:[],error:op.error};
+ const source=(await pool.query('SELECT raw,fetched_at FROM bitrix_task_snapshots WHERE external_id=$1',[link.external_id])).rows[0];
  const enabled=link.live_enabled||cfg.sync_linked_tasks;
  const showFields=includeFields&&(actor.role==='admin'||link.live_enabled&&!link.conflict);
  const catalog=showFields?(await pool.query('SELECT code,description FROM bitrix_field_catalog')).rows:[];
