@@ -1,3 +1,6 @@
+import {editedApprovalFields,keepTaskApprovals} from './approval-updates.js';
+import {canEditTaskPrice} from '../shared/task-edit.js';
+import {taskPrice} from '../shared/pricing.js';
 import {lockDelegationChain} from './delegation-lock.js';
 import {taskEditAccess,useTaskEditPermission} from './task-edit-permissions.js';
 import {approvalHierarchy,approvalScope,hierarchyRoute,requiresTaskApproval} from './approval-hierarchy.js';
@@ -168,7 +171,8 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
  }
  const branch=await resolveTaskBranch(db,u,owner,input.branchId,before);
  const after=(await db.query('UPDATE tasks SET title=$2,description=$3,assignee_id=$4,branch_id=$5,planned_start=$6,planned_end=$7,important=$8,customer_risk=$9,parent_id=$10,code=$11,price=COALESCE($12,price),custom_fields=COALESCE($13,custom_fields),company_id=$14,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.title,input.description,owner.id,branch,input.plannedStart,input.plannedEnd,input.important,input.customerRisk,input.parentId,input.title.split(/\s/)[0],input.price??null,input.customFields===undefined?null:JSON.stringify(input.customFields),companyId])).rows[0];
- await provider.applyApprovedChange(db,after,before.version);await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[id]);
+ await provider.applyApprovedChange(db,after,before.version);
+ await keepTaskApprovals(db,before,after,editedApprovalFields(before,after),'ruspet',u.id);
  if(before.assignee_id!==after.assignee_id){
   await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);
   await notifyTaskAssignment(db,after,u.id,'Вам назначили задачу');
@@ -176,6 +180,22 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
  await refreshTaskFindings(db,after,u);
  await event(db,id,u.id,'task_edited','Изменены параметры задачи, проверки обновлены.',{before,after,reason,editPermissionId});return {id};
 });}
+export async function editTaskPrice(u:User,id:string,price:number,version:number,reason=''){
+ return recordTaskAction(u,id,'Изменение цены задачи',()=>transaction(async db=>{
+  const before=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
+  assert(before&&canSee(u,before),404,'Задача недоступна.');
+  assert(canEditTaskPrice(u,before),403,'Цену открытой задачи может менять постановщик или администратор.');
+  assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
+  if(taskPrice(before)===price)return {id};
+  const after=(await db.query<Task>('UPDATE tasks SET price=$2,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,price])).rows[0];
+  await provider.applyApprovedChange(db,after,before.version);
+  await keepTaskApprovals(db,before,after,['price'],'ruspet',u.id);
+  await refreshTaskFindings(db,after,u);
+  await event(db,id,u.id,'task_edited','Изменена цена задачи',{before,after,reason});
+  return {id};
+ }));
+}
+
 async function queueResultApproval(db:Db,hierarchy:NonNullable<Awaited<ReturnType<typeof approvalHierarchy>>>,task:Task,requesterId:string,result:string,actorId:string){
  const route=await hierarchyRoute(db,hierarchy,task,requesterId,'completion'),approvalId=randomUUID(),cfg=await config(db);
  await db.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version)

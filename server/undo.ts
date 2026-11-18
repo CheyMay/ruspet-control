@@ -1,3 +1,4 @@
+import {carryApprovalBatch} from './approval-updates.js';
 import {lockDelegationChain} from './delegation-lock.js';
 import {undoDelegatedSource} from './delegation-review.js';
 import {isDeepStrictEqual} from 'node:util';
@@ -41,8 +42,15 @@ export async function undoLastAction(u:User,id:string){return transaction(async 
  // Resolve newly opened records before restoring the original active route/control.
  const beforeApprovals=new Set(before.approvals.map(a=>a.id));
  for(const a of after.approvals)if(!beforeApprovals.has(a.id))await db.query("UPDATE approvals SET state='stale',canceled_at=now(),deferred_until=NULL WHERE id=$1",[a.id]);
- const mutableApproval=['state','current_step','deferred_until','clarification_question','clarification_answer','clarification_requested_at','clarification_answered_at','canceled_at'];
- for(const a of before.approvals){await db.query(`UPDATE approvals SET ${mutableApproval.map((k,i)=>`${k}=$${i+2}`).join(',')},action_revision=action_revision+1,task_version=$${mutableApproval.length+2} WHERE id=$1`,[a.id,...mutableApproval.map(k=>a[k]??null),a.state==='pending'&&a.task_version===before.task.version?current.version+1:a.task_version]);}
+ const mutableApproval=['state','current_step','deferred_until','clarification_question','clarification_answer','clarification_requested_at','clarification_answered_at','canceled_at','route','task_change'];
+ for(const a of before.approvals){
+  const active=a.state==='pending'&&a.task_version===before.task.version;
+  const values=mutableApproval.map(k=>a[k]==null?null:['route','task_change'].includes(k)?JSON.stringify(a[k]):a[k]);
+  const {rows:[next]}=await db.query(`UPDATE approvals SET ${mutableApproval.map((k,i)=>`${k}=$${i+2}`).join(',')},
+   action_revision=action_revision+1,task_version=$${mutableApproval.length+2} WHERE id=$1 RETURNING action_revision`,
+   [a.id,...values,active?current.version+1:a.task_version]);
+  if(active)await carryApprovalBatch(db,a.id,a.current_step,a.action_revision,next.action_revision);
+ }
  const oldDecisions=new Set(before.decisions.map(d=>d.id));for(const d of after.decisions)if(!oldDecisions.has(d.id))await db.query('INSERT INTO decision_retractions(decision_id,undo_id) VALUES($1,$2)',[d.id,id]);
  // Keep the original submission and its outcome. A restored review is a new,
  // explicitly linked projection, not a rewritten acceptance/return record.

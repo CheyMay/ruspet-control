@@ -1,3 +1,4 @@
+import {keepTaskApprovals} from './approval-updates.js';
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
 import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,hierarchyRoute,inControlScope,requiresTaskApproval} from './approval-hierarchy.js';
@@ -239,6 +240,7 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
   assert(input.expectedRevision===undefined?a.action_revision===1:input.expectedRevision===a.action_revision,409,'Версия согласования изменилась. Откройте актуальную задачу, чтобы проверить этап и решение.');
   assert(input.expectedStep===undefined||input.expectedStep===a.current_step,409,'Этот этап уже завершён. Откройте актуальное решение.');
   assert(a.state==='pending',409,a.state==='stale'?'Запрос устарел из-за изменения задачи. В актуальной карточке можно посмотреть текущий статус и срок.':'Этот запрос уже обработан. Откройте актуальную задачу, чтобы посмотреть решение.');
+  assert(!a.task_change?.routeIssue,409,'Нужен другой согласующий. Проверьте участников и маршрут задачи.');
   const hierarchy=await approvalHierarchy(db);
   assert(a.requester_id!==user.id&&(a.type!=='completion'||task.assignee_id!==user.id),403,'Нельзя согласовать собственный запрос или принять свою работу.');
   assert(a.route[a.current_step].userId===user.id,403,'Сейчас решение принимает другой согласующий.');
@@ -280,14 +282,15 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
    const next=a.route[a.current_step+1];
    if(next.userId!==hierarchy?.sales_head_id)await notify(db,task.id,next.userId,`Требуется ваше решение по задаче #${task.id}`,`approval:${id}:${a.current_step+1}`);
   } else {
-   if(a.type==='deadline') assert(a.proposed_deadline&&new Date(a.proposed_deadline)>new Date(),409,'Предложенный срок уже прошёл. Откажите и создайте новый запрос.');
-   const next=a.type==='deadline'?
+   const deadlineAlreadySet=a.type==='deadline'&&!!a.proposed_deadline&&a.proposed_deadline===task.deadline;
+   if(a.type==='deadline'&&!deadlineAlreadySet)assert(a.proposed_deadline&&new Date(a.proposed_deadline)>new Date(),409,'Предложенный срок уже прошёл. Откажите и создайте новый запрос.');
+   const next=deadlineAlreadySet?task:a.type==='deadline'?
     (await db.query('UPDATE tasks SET deadline=$2,transfer_count=transfer_count+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[task.id,a.proposed_deadline])).rows[0]:
     (await db.query("UPDATE tasks SET status='completed',completed_at=now(),version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[task.id])).rows[0];
-   await adapters.tasks.applyApprovedChange(db,next,task.version);
+   if(!deadlineAlreadySet)await adapters.tasks.applyApprovedChange(db,next,task.version);
    if(a.type==='completion')await db.query("UPDATE task_submissions SET state='accepted',reviewer_id=$2,remark=$3,decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[task.id,user.id,input.comment||'Результат принят по маршруту согласования.']);
    await db.query("UPDATE approvals SET state='approved',deferred_until=NULL WHERE id=$1",[id]);
-   await event(db,task.id,user.id,a.type==='deadline'?'deadline_changed':'task_completed',a.type==='deadline'?'Перенос согласован, крайний срок изменён':'Закрытие согласовано, задача завершена',{approvalId:id,before:task,after:next,comment:input.comment,reason:a.reason,plan:a.plan});
+   await event(db,task.id,user.id,deadlineAlreadySet?'deadline_confirmed':a.type==='deadline'?'deadline_changed':'task_completed',deadlineAlreadySet?'Перенос согласован. Предложенный крайний срок уже установлен.':a.type==='deadline'?'Перенос согласован, крайний срок изменён':'Закрытие согласовано, задача завершена',{approvalId:id,before:task,after:next,comment:input.comment,reason:a.reason,plan:a.plan});
    if(a.type==='completion'&&task.assignee_id!==a.requester_id)await notify(db,task.id,task.assignee_id,'Результат по задаче #'+task.id+' принят.','review-accepted:'+id);
    // Re-evaluate the affected task in the same transaction; no stale violations in the UI.
    const cfg=await config(db), remaining=evaluate(next,cfg.config,new Date(),await visibleTasks(user,db));
@@ -351,7 +354,7 @@ export async function saveRules(user:User,rules:Rules,expectedVersion:number) {
 }
 export async function simulateExternalChange(user:User,id:string,expectedVersion:number) {
  assert(user.role==='admin',403,'Только администратор может изменять тестовый источник.');
- return transaction(async db=>{const before=await taskFor(db,id,user,true);assert(before.version===expectedVersion,409,'Задача изменилась.');const after=(await db.query("UPDATE tasks SET description=description || E'\nУточнение из тестового источника.',version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[id])).rows[0];await adapters.tasks.applyApprovedChange(db,after,before.version);await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[id]);await event(db,id,user.id,'external_change','Изменение из mock-источника; активный запрос требует повторного согласования',{before,after});});
+ return transaction(async db=>{const before=await taskFor(db,id,user,true);assert(before.version===expectedVersion,409,'Задача изменилась.');const after=(await db.query("UPDATE tasks SET description=description || E'\nУточнение из тестового источника.',version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[id])).rows[0];await adapters.tasks.applyApprovedChange(db,after,before.version);await keepTaskApprovals(db,before,after,['description'],'ruspet',user.id);await event(db,id,user.id,'external_change','Изменение из mock-источника',{before,after});});
 }
 
 export async function addComment(...args:Parameters<typeof addCommentCore>){const taskId=args[1];return recordTaskAction(args[0],taskId,'Комментарий',()=>addCommentCore(...args));}

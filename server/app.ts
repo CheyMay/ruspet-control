@@ -9,7 +9,7 @@ import {myDelegations,orgDirectory,setManager,saveSubstitution,revokeSubstitutio
 import {companyWork,listTaskTemplates,saveTaskTemplate,removeTaskTemplate} from './task-workspace.js';
 import {listCompanies,saveCompany,getCompany,companyContacts,recordCompanyContact} from './okb.js';
 import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,previewProcess,toggleProcess} from './work-design.js';
-import {taskInput} from './task-input.js';
+import {taskInput,taskPriceInput} from './task-input.js';
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
 import {changeUserAccount,createUserAccount} from './account-access.js';
 import {updateEmployeeProfile} from './employee-profiles.js';
@@ -42,7 +42,7 @@ import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
 import {ownerTimeRouter} from './owner-time.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
-import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,newTaskAssignees,reviewTask,taskAssignees} from './workflow.js';
+import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,editTaskPrice,newTaskAssignees,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
 import {directorBatchStatus,directorBatchTasks,sendDirectorBatch} from './management-notices.js';
@@ -287,6 +287,10 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.put('/api/tasks/:id',async(req,res)=>{
   const input=taskInput.extend({reason:z.string().trim().min(5).max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);
   await taskWrite(req,res,200,()=>editTask(req.actor,String(req.params.id),input,input.expectedVersion,input.reason));
+ });
+ app.patch('/api/tasks/:id/price',async(req,res)=>{
+  const {price,expectedVersion}=z.object({price:taskPriceInput,expectedVersion:z.number().int().positive()}).parse(req.body);
+  await taskWrite(req,res,200,()=>editTaskPrice(req.actor,String(req.params.id),price,expectedVersion));
  });
  app.put('/api/tasks/:id/branch',async(req,res)=>{
   const {branchId,expectedVersion}=z.object({branchId:z.string().trim().min(1).max(100),expectedVersion:z.number().int().positive()}).parse(req.body);

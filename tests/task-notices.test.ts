@@ -294,6 +294,8 @@ test('only self-assigned changes bypass approvals and creator pricing controls b
  const hierarchy=await import('../server/approval-hierarchy.js'),service=await import('../server/service.js');
  const adminUser=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
  const liza=(await db.pool.query<User>("SELECT * FROM users WHERE id='anna'")).rows[0];
+ await db.pool.query(`INSERT INTO users(id,name,role,branch_id,position,company_branch_access)
+  VALUES('branch-fixture','Руководитель фикстуры','branch_manager','Тест','Рукфил',true) ON CONFLICT(id) DO NOTHING`);
  const old=at('2035-01-22','12:00').toISOString(),next=at('2035-01-23','12:00').toISOString();
  const create=async(creator:User,assignee:User,price:number)=>{
   const input={title:'Задача проверки маршрута',description:'Фикстура маршрута согласования',assigneeId:assignee.id,price,deadline:old,
@@ -356,7 +358,24 @@ test('only self-assigned changes bypass approvals and creator pricing controls b
  assert.equal((await workflow.reviewTask(other,work,'submit','Результат подготовлен',1)).state,'review');
  assert.deepEqual(await route(work),[liza.id,director.id]);
  assert.equal((await allow(work,liza)).state,'pending');
- assert.equal((await allow(work,director)).state,'approved');
+ const beforeEdit=await approval(work);
+ await login(liza);await login(other);
+ assert.equal((await api(other,'/tasks/'+work+'/price','PATCH',{price:7800,expectedVersion:2})).status,403);
+ assert.equal((await api(liza,'/tasks/'+work+'/price','PATCH',{price:7800,expectedVersion:2})).status,200);
+ const changed=await approval(work);
+ assert.equal(changed.id,beforeEdit.id);
+ assert.equal(changed.task_version,3);assert.equal(changed.current_step,1);
+ assert.equal(changed.action_revision,beforeEdit.action_revision+1);
+ assert.deepEqual(changed.task_change.fields,[{field:'price',before:5000,after:7800}]);
+ const {lastUndo,undoLastAction}=await import('../server/undo.js');
+ const last=await lastUndo(liza,work);assert(last);
+ await undoLastAction(liza,last.id);
+ assert.equal((await approval(work)).task_change,null);
+ assert.equal((await approval(work)).current_step,1);
+ assert.equal((await api(liza,'/tasks/'+work+'/price','PATCH',{price:4999.99,expectedVersion:4})).status,200);
+ assert.deepEqual(await route(work),[liza.id]);assert.equal((await approval(work)).current_step,0);
+ assert.equal((await approval(work)).task_change.routeChanged,true);
+ assert.equal((await allow(work,liza)).state,'approved');
  const existing=await create(liza,other,5000);
  await setStatus(existing,'review');
  assert.equal((await workflow.reviewTask(liza,existing,'accept','',1)).state,'review');

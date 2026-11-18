@@ -17,3 +17,5 @@ export type TaskEditAccess={
 
 export const editsTaskDirectly=(user:User,task:Task)=>
  user.id===task.creator_id||user.role==='admin'||user.root_access===true;
+
+export const canEditTaskPrice=(user:User,task:Task)=>task.status!=='completed'&&editsTaskDirectly(user,task);

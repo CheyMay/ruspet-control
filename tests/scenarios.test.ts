@@ -71,11 +71,15 @@ test('later leaves deadline unchanged; rejection ends route',async()=>{
  assert.equal((await request('lead-msk',`/approvals/${a.id}/decision`,{decision:'reject',comment:'Недостаточное обоснование нового срока'})).data.state,'rejected');
  assert.equal((await db.pool.query("SELECT transfer_count FROM tasks WHERE id='2402'")).rows[0].transfer_count,0);
 });
-test('source change invalidates pending approval',async()=>{
+test('source change keeps the approval and rejects an old decision button',async()=>{
  const a=(await db.pool.query("SELECT * FROM approvals WHERE task_id='2403'")).rows[0];
  assert.equal((await request('admin','/tasks/2403/mock-change',{expectedVersion:1})).status,200);
  assert.equal((await request('lead-kzn',`/approvals/${a.id}/decision`,{decision:'approve',comment:'Согласовано после проверки результата'})).status,409);
- assert.equal((await db.pool.query('SELECT state FROM approvals WHERE id=$1',[a.id])).rows[0].state,'stale');
+ const current=(await db.pool.query('SELECT * FROM approvals WHERE id=$1',[a.id])).rows[0];
+ assert.equal(current.state,'pending');assert.equal(current.task_version,2);
+ assert.equal(current.action_revision,a.action_revision+1);
+ assert.deepEqual(current.task_change.fields.map((field:{field:string})=>field.field),['description']);
+ assert.equal((await request('lead-kzn',`/approvals/${a.id}/decision`,{decision:'approve',comment:'Согласовано после проверки результата',expectedStep:0,expectedRevision:current.action_revision})).status,200);
 });
 test('explanations validate all fields, survive repeat checks, reject duplicate submission',async()=>{
  const c=(await db.pool.query("SELECT * FROM control_requests WHERE task_id='2405'")).rows[0];

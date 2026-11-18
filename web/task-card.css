@@ -108,3 +108,11 @@
  .task-card .task-card-toolbar .button { padding-inline:8px; }
  .task-card-fields, .task-card .source-fields .task-card-fields { grid-template-columns:1fr; }
 }
+
+.task-facts .task-price-editor { display:grid; gap:8px; max-width:18rem; }
+.task-price-editor label { display:grid; gap:5px; }
+.task-price-editor input { width:100%; min-width:0; }
+.task-price-actions { display:flex; flex-wrap:wrap; align-items:center; gap:6px 12px; }
+.approval-update { margin:12px 0; padding:12px 14px; border:1px solid var(--line); border-left:3px solid var(--green); border-radius:8px; background:var(--theme-surface-soft,#f7f8f7); }
+.approval-update ul { margin:8px 0 0; padding-inline-start:20px; }
+.approval-update p { margin:8px 0 0; }

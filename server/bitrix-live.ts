@@ -1,3 +1,4 @@
+import {keepTaskApprovals} from './approval-updates.js';
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {randomUUID} from 'node:crypto';
@@ -92,7 +93,7 @@ async function applyInbound(db:Db,task:Task,next:Values,raw:Record<string,unknow
  completed_at=CASE WHEN $7='completed' THEN $11::timestamptz ELSE NULL END,source_status=$12 WHERE id=$1 RETURNING *`,
  [task.id,next.title,next.description,next.deadline,next.assignee_id,next.price,next.status,next.creator_id,next.title.split(/\s/)[0],branch,typeof closed==='string'&&Number.isFinite(Date.parse(closed))?closed:null,String(fieldValue(raw,'STATUS')),initial])).rows[0];
  await new MockTaskProvider().applyApprovedChange(db,updated,task.version);
- await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[task.id]);
+ await keepTaskApprovals(db,task,updated,changed,'bitrix',null);
  if(next.status==='completed'||task.assignee_id!==next.assignee_id)await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[task.id]);
  await db.query("INSERT INTO task_events(id,task_id,kind,message,data) VALUES($1,$2,'bitrix_change','Обновлены поля из Битрикс24',$3)",[randomUUID(),task.id,JSON.stringify({before:task,after:updated,fields:changed})]);
  if(!initial&&task.status!==updated.status){

@@ -19,7 +19,8 @@ import {pool,transaction,type Db} from './db.js';
 import {acknowledgeAlert,userAlerts,listTaskReminders,saveTaskReminder,disableTaskReminder,saveOneTimeReminder,cancelOneTimeReminder} from './reminders.js';
 import {assert,AppError,canRequest,canSee} from './domain.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
-import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
+import {canEditTaskPrice} from '../shared/task-edit.js';
+import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,editTaskPrice,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
 import {taskQueue} from '../shared/queues.js';
 import {summarize} from '../shared/analytics.js';
 import {defaultReportView,reportViews,reportViewLabels,type ReportView} from '../shared/report-parameters.js';
@@ -329,7 +330,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   if(p.op==='undo_prepare'){const last=await lastUndo(u,undefined,db);assert(last&&last.id===p.target,409,'Отмена недоступна: действие изменилось или прошло пять минут.');return screen(u,ch,`Отменить «${last.label}» по задаче #${last.task_id}? История сохранится, участники получат уточнение.`,[[button('Да, отменить действие','confirm',{kind:'undo',id:last.task_id,list:p.list,target:last.id})],[button('Оставить действие','cancel')]],db);}
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;
-   if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');}
+   if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit||p.kind==='edit_price'&&canEditTaskPrice(u,d.task),403,'Нет права редактировать задачу.');}
    const fields=taskActionFields(p.kind,min,!p.target);
    const values={...p.values};
    const d:Dialog={payload:p,fields,index:0,values};nextMissing(d);
@@ -356,7 +357,9 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   else if(p.kind==='reminder_cancel_once'){await cancelOneTimeReminder(u,p.target!);result='Разовое напоминание отменено.';}
   else if(p.kind==='reminder_cancel'){await disableTaskReminder(u,p.target!);result='Расписание выключено.'}
   else if(p.kind==='alert_ack'){await acknowledgeAlert(u,p.target!);result='ОК, получение напоминания подтверждено. Это не завершает задачу.'}
-  else if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db),t=d.task;const input:TaskInput={title:t.title,description:t.description,assigneeId:t.assignee_id,deadline:t.deadline,plannedStart:t.planned_start||null,plannedEnd:t.planned_end,important:t.important,customerRisk:t.customer_risk,parentId:t.parent_id||null};if(p.kind==='edit_title'){assert(v.value.length<=500,400,'Название не длиннее 500 символов.');input.title=v.value;}else if(p.kind==='edit_description')input.description=v.value;else if(p.kind==='edit_price'){const price=parsePrice(v.price);assert(price!==null,400,'Укажите корректную цену в рублях.');input.price=price;}else input.assigneeId=v.assignee||p.target!;await editTask(u,t.id,input,p.version!,v.reason);result='Изменение сохранено в задаче и истории.'}
+  else if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db),t=d.task;const input:TaskInput={title:t.title,description:t.description,assigneeId:t.assignee_id,deadline:t.deadline,plannedStart:t.planned_start||null,plannedEnd:t.planned_end,important:t.important,customerRisk:t.customer_risk,parentId:t.parent_id||null};if(p.kind==='edit_title'){assert(v.value.length<=500,400,'Название не длиннее 500 символов.');input.title=v.value;}else if(p.kind==='edit_description')input.description=v.value;else if(p.kind==='edit_price'){const price=parsePrice(v.price);assert(price!==null,400,'Укажите корректную цену в рублях.');input.price=price;}else input.assigneeId=v.assignee||p.target!;if(p.kind==='edit_price'&&canEditTaskPrice(u,t))await editTaskPrice(u,t.id,input.price!,p.version!,v.reason);
+   else await editTask(u,t.id,input,p.version!,v.reason);
+   result='Изменение сохранено в задаче и истории.'}
   else if(p.kind==='permission_request'){await requestTaskEdit(u,p.id!,p.version!,v.reason);result='Запрос отправлен постановщику задачи.';}
   else if(p.kind==='permission_approve'||p.kind==='permission_reject'){
    const approved=p.kind==='permission_approve';

@@ -1,3 +1,5 @@
+import {approvalChangeLines} from '../shared/approval-changes.js';
+import {canEditTaskPrice} from '../shared/task-edit.js';
 import {button,htmlScreen,date,type Payload} from './bot-ui.js';
 import {botExcerpt,botTaskStatus,botTextPages} from './bot-presentation.js';
 import {compactTaskTitle} from '../shared/task-title.js';
@@ -33,10 +35,11 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const extra={id:t.id,list:p.list},back=[button('← К задаче','task',extra),button('Меню','home')];
  const form=(label:string,kind:string,target?:string,step?:number)=>button(label,'form',{...extra,kind,version:t.version,target,step,revision:target===pending?.id?pending?.action_revision:undefined});
  const waiting=!!pending?.clarification_requested_at&&!pending.clarification_answered_at;
+ const change=pending?.task_change;
  const approvalRows:ReturnType<typeof button>[][]=[];
  if(pending){
   if(waiting&&pending.requester_id===u.id)approvalRows.push([form('Ответить на уточнение','clarification',pending.id,pending.current_step)]);
-  if(!waiting&&pending.route[pending.current_step]?.userId===u.id){
+  if(!waiting&&!change?.routeIssue&&pending.route[pending.current_step]?.userId===u.id){
    const resultReview=t.status==='review'&&pending.type==='completion';
    approvalRows.push([...(resultReview?[button('Принять без комментария','approval_accept_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision})]:
     [form('Согласовать','approve',pending.id,pending.current_step)]),form(resultReview?'Вернуть с замечаниями':'Отклонить','reject',pending.id,pending.current_step)],
@@ -87,8 +90,14 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   return paged('Результат работы',sections.join('\n\n')||'Результат ещё не сдавали.',
    [...reviewRows,...(external?.state==='pending'?[[button('Обновить результат','task_result',extra)]]:[])]);
  }
+ const changeText=change?[
+  change.source==='bitrix'?'Изменения из Битрикс24':'Изменения в РУСПЭТ',
+  ...approvalChangeLines(change,id=>people.find(x=>x.id===id)?.name),
+  ...(change.routeChanged?['Маршрут пересчитан. Запрос снова на первом этапе.']:[]),
+  ...(change.routeIssue?['Нужен другой согласующий.']:[])
+ ].join('\n')+'\n\n':'';
  if(p.op==='task_approval')return paged('Согласование',pending?
-  `Запрос: ${pending.type==='deadline'?'перенос срока':'закрытие задачи'}\nЭтап ${pending.current_step+1} из ${pending.route.length}\nАвтор: ${name(pending.requester_id)}\n${waiting?'Ждём уточнения от: '+name(pending.requester_id):'Решение за: '+name(approver?.userId??'')}\nТекущий крайний срок: ${date(t.deadline)}${pending.proposed_deadline?'\nПредложенный крайний срок: '+date(pending.proposed_deadline):''}\n\nПричина:\n${pending.reason}\n\nПлан:\n${pending.plan}${pending.clarification_question?'\n\nВопрос:\n'+pending.clarification_question:''}${pending.clarification_answer?'\n\nОтвет:\n'+pending.clarification_answer:''}`:'Текущих согласований нет.',approvalRows);
+  `Запрос: ${pending.type==='deadline'?'перенос срока':'закрытие задачи'}\nЭтап ${pending.current_step+1} из ${pending.route.length}\nАвтор: ${name(pending.requester_id)}\n${waiting?'Ждём уточнения от: '+name(pending.requester_id):'Решение за: '+name(approver?.userId??'')}\nТекущий крайний срок: ${date(t.deadline)}${pending.proposed_deadline?'\nПредложенный крайний срок: '+date(pending.proposed_deadline):''}\n\n${changeText}Причина:\n${pending.reason}\n\nПлан:\n${pending.plan}${pending.clarification_question?'\n\nВопрос:\n'+pending.clarification_question:''}${pending.clarification_answer?'\n\nОтвет:\n'+pending.clarification_answer:''}`:'Текущих согласований нет.',approvalRows);
  if(p.op==='discussion'){
   const external=d.bitrixLinked?await taskBitrixDiscussion(u,t.id):null;
   const list=discussionMessages(d.comments,name,external).reverse(),page=Math.max(0,Math.min(p.page||0,Math.max(0,list.length-1))),c=list[page];
@@ -120,6 +129,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    if(!watch.byCode)rows.push([button(watch.manual?'Снять с контроля':'Взять на контроль','approval_watch',{...extra,values:{enabled:String(!watch.manual)}})]);
   }
   if(canEdit)rows.push([button('Редактировать задачу','edit',extra)]);
+  else if(canEditTaskPrice(u,t))rows.push([form('Изменить цену','edit_price')]);
   if(canRequestEdit||request)rows.push([button(request?'Разрешение на редактирование':'Запросить редактирование','task_edit_permission',extra)]);
   if(!pending&&t.status==='active'&&canRequest(u,t))rows.push([form('Предложить новый срок','deadline')]);
   if(await canDelegateTask(u,t))rows.push([button('Делегировать задачу','delegate_list',extra)]);

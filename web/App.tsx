@@ -44,7 +44,9 @@ import {summarize} from '../shared/analytics.js';
 import {TeamTasks} from './TeamTasks.js';
 import { Dashboard } from './Dashboard.js';
 import {Appearance} from './Appearance.js';
-import { CompleteTaskDialog,ReviewActions,TaskEditor } from './TaskWorkflow.js';
+import {canEditTaskPrice} from '../shared/task-edit.js';
+import {approvalChangeLines} from '../shared/approval-changes.js';
+import { CompleteTaskDialog,ReviewActions,TaskEditor,TaskPriceEditor } from './TaskWorkflow.js';
 import {TaskPeople} from './TaskPeople.js';
 import {activeTaskApproval,approvalTurn,canComplete,taskNextAction} from '../shared/actions.js';
 import { History as TaskHistory } from './History.js';
@@ -55,7 +57,7 @@ const Reports=lazy(()=>import('./Reports.js').then(module=>({default:module.Repo
 const Okb=lazy(()=>import('./WorkDesign.js').then(module=>({default:module.Okb})));
 const WorkDesign=lazy(()=>import('./WorkDesign.js').then(module=>({default:module.WorkDesign})));
 const canUseOkb=(user:User)=>canOpenWorkspacePage(user,'okb');
-const retryableTaskWrite=(method:string,path:string)=>method==='POST'&&(path==='/tasks'||/^\/tasks\/[^/]+\/(comments|review|approvals)$/.test(path)||/^\/approvals\/[^/]+\/(decision|clarification)$/.test(path))
+const retryableTaskWrite=(method:string,path:string)=>method==='PATCH'&&/^\/tasks\/[^/]+\/price$/.test(path)||method==='POST'&&(path==='/tasks'||/^\/tasks\/[^/]+\/(comments|review|approvals)$/.test(path)||/^\/approvals\/[^/]+\/(decision|clarification)$/.test(path))
  ||method==='PUT'&&/^\/tasks\/[^/]+$/.test(path);
 class WorkspaceSection extends Component<{label:string;children:ReactNode},{failed:boolean}>{
  state={failed:false};
@@ -417,7 +419,7 @@ export function App(){
         <div><span>Исполнитель</span><div className="person"><Avatar small user={userById(detail.task.assignee_id)}/><strong>{userById(detail.task.assignee_id)?.name}</strong></div></div>
         <div><span>Постановщик</span><strong>{userById(detail.task.creator_id)?.name}</strong></div>
         <div><span>Крайний срок</span><strong className={overdue(detail.task)?'red-text':''}>{date(detail.task.deadline,true)}{detail.task.deadline?' МСК':''}</strong></div>
-        <div><span>Цена задачи</span><strong>{formatPrice(detail.task)}</strong><small>{priceLabels[priceBand(detail.task)]}</small></div>
+        <div><span>Цена задачи</span><strong>{formatPrice(detail.task)}</strong><small>{priceLabels[priceBand(detail.task)]}</small>{!viewingEmployee&&canEditTaskPrice(data.user,detail.task)&&<TaskPriceEditor key={detail.task.id+':'+detail.task.version} task={detail.task} busy={busy} act={act}/>}</div>
        </div>
        <div className="task-card-buttons">
         {detail.approvals.some(a=>a.state==='pending')?<button type="button" className="button secondary" onClick={()=>setDrawerTab('approvals')}>Открыть согласование</button>:
@@ -462,7 +464,7 @@ export function App(){
      <TaskResults key={selected} id={selected} linked={detail.bitrixLinked} hasLocal={!!detail.submissions.length}/>
     </>}
   {drawerTab==='discussion'&&<><TaskDiscussion key={selected} id={selected} comments={detail.comments} users={data.users}/>{!viewingEmployee&&detail.controls.filter(c=>['waiting','escalated'].includes(c.state)&&(data.user.id===c.assignee_id||data.user.role==='admin')).map(c=><ExplanationForm key={c.id} min={data.rules.responseMinLength} busy={busy} submit={body=>act(`/controls/${c.id}/answer`,body)}/>)}{!viewingEmployee&&<form className="comment-form" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const f=new FormData(form),body=String(f.get('body')),approvalId=String(f.get('approvalId')||'')||undefined;if(await act(`/tasks/${selected}/comments`,{body,approvalId}))form.reset();}}><label>К чему относится сообщение<select name="approvalId"><option value="">К задаче в целом</option>{detail.approvals.filter(a=>!a.canceled_at).map(a=><option key={a.id} value={a.id}>{a.type==='deadline'?'Перенос':'Закрытие'} от {date(a.created_at,true)}</option>)}</select></label><label>Комментарий<textarea name="body" required maxLength={4000} placeholder="Добавьте уточнение или результат работы…"/></label><button className="button primary" disabled={busy}><Send size={15}/>Отправить</button></form>}</>}
-  {drawerTab==='history'&&<>{!viewingEmployee&&<UndoAction taskId={selected} refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}<TaskHistory showPlanning={!!data.rules.showPlanning} events={detail.events} users={data.users}/>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="history"/>}{demo&&!viewingEmployee&&data.user.role==='admin'&&<div className="demo-action"><p>Проверка защиты от устаревшего решения</p><button className="text-button" disabled={busy} onClick={()=>void act('/tasks/'+selected+'/mock-change',{expectedVersion:detail.task.version})}>Изменить описание в mock-источнике <ArrowUpRight size={14}/></button></div>}</>}
+  {drawerTab==='history'&&<>{!viewingEmployee&&<UndoAction taskId={selected} refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}<TaskHistory showPlanning={!!data.rules.showPlanning} events={detail.events} users={data.users}/>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="history"/>}{demo&&!viewingEmployee&&data.user.role==='admin'&&<div className="demo-action"><p>Проверка сохранения согласования при изменении задачи</p><button className="text-button" disabled={busy} onClick={()=>void act('/tasks/'+selected+'/mock-change',{expectedVersion:detail.task.version})}>Изменить описание в mock-источнике <ArrowUpRight size={14}/></button></div>}</>}
   {drawerTab==='approvals'&&<>{!viewingEmployee&&<TaskEditPanel key={selected} task={detail.task} access={detail.editAccess} users={data.users} busy={busy} act={act}/>}<div className='task-card-approvals'>{detail.approvals.map(a=><div key={a.id}><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask} inDrawer/>{detail.decisions.filter(d=>d.approval_id===a.id).map(d=><div className="decision-record" key={d.id}><Check size={14}/><div>{userById(d.actor_id)?.name} · {({approve:'Согласовал',reject:'Отказал',later:'Вернётся позже',clarify:'Запросил уточнение'} as Record<string,string>)[d.decision]}<small>{d.retracted?'Отменено · ':''}{date(d.created_at,true)}{d.comment&&` · ${d.comment}`}</small></div></div>)}</div>)}{!detail.approvals.length&&<Empty>Запросить перенос крайнего срока можно в обзоре.</Empty>}</div></>}
     </div></>:<div className="empty">{detailError?<><p role="alert">{detailError}</p><button className="button secondary" onClick={()=>void openTask(selected,drawerTab)}>Повторить загрузку</button></>:'Загружаем карточку…'}</div>}</div></div>}
   {requestType&&detail&&<RequestModal type={requestType} task={detail.task} min={data.rules.responseMinLength} busy={busy} error={error} close={()=>setRequestType(null)} submit={async body=>{if(await act(`/tasks/${detail.task.id}/approvals`,body)){setRequestType(null);setDrawerTab('approvals');}}}/>}
@@ -483,12 +485,19 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false}: {a:Approval;dat
  const nextPerson=data.users.find(u=>u.id===turn.userId)?.name;
  const waiting=turn.clarification;
  const resultReview=a.type==='completion'&&task?.status==='review';
- const canDecide=a.state==='pending'&&actor?.id===data.user.id&&!waiting;
+ const change=a.task_change;
+ const canDecide=a.state==='pending'&&!a.canceled_at&&!change?.routeIssue&&actor?.id===data.user.id&&!waiting;
  const canAnswer=a.state==='pending'&&waiting&&a.requester_id===data.user.id;
  return <section className={`panel approval-card ${inDrawer?'in-drawer':''}`}>
   <div className="approval-header"><div><span className="eyebrow">{a.type==='deadline'?'ПЕРЕНОС КРАЙНЕГО СРОКА':'ЗАКРЫТИЕ ЗАДАЧИ'} · #{a.task_id}</span>{!inDrawer&&<button className="approval-title" onClick={()=>void openTask(a.task_id,'approvals')}>{task?.title}<ArrowUpRight size={16}/></button>}</div><Badge state={a.canceled_at?'canceled':a.state}/></div>
   {task&&<TaskPeople task={task} users={data.users}/>}
   {a.type==='deadline'&&<div className="deadline-change"><div><span>Текущий крайний срок</span><strong>{date(task?.deadline||null,true)}</strong></div><ArrowRight size={20}/><div><span>Предложенный крайний срок</span><strong>{date(a.proposed_deadline,true)}</strong></div><small>МСК</small></div>}
+  {change&&<aside className="approval-update">
+   <strong>{change.source==='bitrix'?'Изменения из Битрикс24':'Изменения в РУСПЭТ'} · {date(change.at,true)} МСК</strong>
+   <ul>{approvalChangeLines(change,id=>data.users.find(u=>u.id===id)?.name).map(line=><li key={line}>{line}</li>)}</ul>
+   {change.routeChanged&&<p>Маршрут пересчитан. Запрос снова на первом этапе.</p>}
+   {change.routeIssue&&a.state==='pending'&&<p>Нужен другой согласующий. Проверьте участников и маршрут задачи.</p>}
+  </aside>}
   <div className="approval-context"><div><span>Причина</span><p>{a.reason}</p></div><div><span>План выполнения / результат</span><p>{a.plan}</p></div></div>
   <div className="route-stage"><strong>Этап {a.current_step+1} из {a.route.length}: {a.route[a.current_step]?.label}</strong><span>{waiting?`Уточнение ждём от ${nextPerson||'автора запроса'}`:a.state==='pending'?`Решение за ${nextPerson||'согласующим'}`:a.canceled_at?'Отменено':stateLabels[a.state]}</span></div>
   <div className="route">{a.route.map((s,i)=><div key={i} className={i<a.current_step||a.state==='approved'?'done':i===a.current_step?'current':''}><span>{i<a.current_step||a.state==='approved'?<Check size={13}/>:i+1}</span><div><strong>{s.label}</strong><small>{data.users.find(u=>u.id===s.userId)?.name}</small></div>{i<a.route.length-1&&<ChevronRight size={14}/>}</div>)}</div>

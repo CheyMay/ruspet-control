@@ -15,6 +15,7 @@ export async function managementNotice(db:Db,recipient:string,body:string,key:st
 }
 
 const ready=`a.state='pending' AND a.canceled_at IS NULL AND a.route->a.current_step->>'userId'=$1
+ AND (a.task_change->>'routeIssue') IS DISTINCT FROM 'true'
  AND (a.clarification_requested_at IS NULL OR a.clarification_answered_at IS NOT NULL)
  AND (a.deferred_until IS NULL OR a.deferred_until<=now()) AND a.task_version=t.version
  AND (a.type<>'deadline' OR a.proposed_deadline>now())

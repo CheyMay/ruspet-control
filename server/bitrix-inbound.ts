@@ -1,3 +1,4 @@
+import {keepTaskApprovals} from './approval-updates.js';
 import {isDeepStrictEqual as equal} from 'node:util';
 import {pool,transaction,type Db} from './db.js';
 import {assert,AppError} from './domain.js';
@@ -151,13 +152,7 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
     task.branch_id,changed.includes('status')?remote.status:task.source_status,
     changed.includes('price')&&merged.price===null,!!link])).rows[0];
    await new MockTaskProvider().applyApprovedChange(db,updated,task.version);
-   const stale=(await db.query<{id:string;type:string;proposed_deadline:string|null}>(`UPDATE approvals
-    SET state='stale',deferred_until=NULL WHERE task_id=$1 AND state='pending' RETURNING id,type,proposed_deadline`,[id])).rows;
-   for(const approval of stale)await event(db,id,null,'approval_stale',
-    changed.includes('deadline')&&approval.type==='deadline'?
-     'Запрос на перенос устарел после изменения крайнего срока в Битрикс24':
-     'Запрос устарел после обновления задачи из Битрикс24',
-    {approvalId:approval.id,fields:changed,previousDeadline:task.deadline,currentDeadline:updated.deadline,proposedDeadline:approval.proposed_deadline});
+   await keepTaskApprovals(db,task,updated,changed,'bitrix',null);
    if(changed.includes('status')&&updated.status!=='review')await db.query(`UPDATE task_submissions SET state=$2,
     remark='Статус получен из Битрикс24',decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL`,
     [id,updated.status==='completed'?'accepted':'returned']);

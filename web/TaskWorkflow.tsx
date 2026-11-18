@@ -9,6 +9,21 @@ import {EmployeeFilter} from './SearchFilter.js';
 import {plannedInterval} from '../shared/analytics.js';
 import {unassignedBranch} from '../shared/branches.js';
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
+export function TaskPriceEditor({task,busy,act}:{task:Task;busy:boolean;act:Act}){
+ const [open,setOpen]=useState(false),[price,setPrice]=useState('');
+ if(!open)return <button type="button" className="text-button" onClick={()=>{setPrice(String(taskPrice(task)??''));setOpen(true);}}>Изменить цену</button>;
+ return <form className="task-price-editor" onSubmit={e=>{
+  e.preventDefault();
+  void act('/tasks/'+task.id+'/price',{price:Number(price),expectedVersion:task.version},'PATCH','Цена задачи сохранена').then(ok=>{if(ok)setOpen(false);});
+ }}>
+  <label>Новая цена, ₽<input autoFocus type="number" required min="0" max="999999999999.99" step="0.01" value={price}
+   onChange={e=>setPrice(e.target.value)}/></label>
+  <div className="task-price-actions">
+   <button className="button primary" disabled={busy}>Сохранить</button>
+   <button type="button" className="text-button" onClick={()=>setOpen(false)}>Отмена</button>
+  </div>
+ </form>;
+}
 export function ReviewActions({task,user,busy,pending,act,scope}: {task:Task;user:User;busy:boolean;pending:boolean;act:Act;scope?:ApprovalScope|null}){
  const [comment,setComment]=useState('');
  const submit=user.id===task.assignee_id||user.id===task.creator_id||['admin','director','sales_head','branch_manager'].includes(user.role);
@@ -158,7 +173,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
    <label>Интервал<input name="every" type="number" required min="1" max="30" value={schedule.every??'1'} onChange={e=>setSchedule({...schedule,every:e.target.value})}/></label>
    <label>Срок после запуска · часов<input name="deadlineHours" type="number" min="1" max="8760" placeholder="Без срока" value={schedule.deadlineHours??''} onChange={e=>setSchedule({...schedule,deadlineHours:e.target.value})}/></label>
   </div>}
-  {task&&<p className="muted">Крайний срок меняется через запрос переноса. Изменение параметров отменит актуальность открытого согласования.</p>}
+  {task&&<p className="muted">Крайний срок меняется через запрос переноса. Открытое согласование сохранится и покажет, какие поля изменились.</p>}
   <details className="compose-extra"><summary>Дополнительные параметры{fields.length?' · '+fields.length+' полей':''}</summary>
   {mode!=='conditional'&&<>
    <div className="editor-grid">{showPlanning&&mode==='once'&&<><label>Плановое начало · МСК<input name="plannedStart" type="datetime-local" value={extra.plannedStart??localDate(plan.start)} onChange={e=>setExtra({...extra,plannedStart:e.target.value})}/></label><label>Плановое окончание · МСК<input name="plannedEnd" type="datetime-local" value={extra.plannedEnd??localDate(plan.end)} onChange={e=>setExtra({...extra,plannedEnd:e.target.value})}/></label></>}

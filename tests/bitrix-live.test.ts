@@ -65,6 +65,27 @@ test('verified event mode skips background task scans and reads an idle task onl
  await db.pool.query('UPDATE bitrix_event_capture SET enabled=false,verified_at=NULL WHERE id=1');await db.pool.query('UPDATE bitrix_task_links SET live_enabled=false WHERE task_id=$1',[task.id]);
 });
 
+test('a Bitrix price change keeps a pending request with its new version and price',async()=>{
+ const task=await makeLinked('9798');
+ const {id}=await service.requestApproval(anna,task.id,{type:'deadline',reason:'Требуется время на проверку исходных данных',
+  plan:'Проверить данные и отправить результат',proposedDeadline:'2035-02-01T09:00:00.000Z',expectedVersion:task.version});
+ const old=(await db.pool.query('SELECT * FROM approvals WHERE id=$1',[id])).rows[0];
+ remote.get('9798')!.ufPrice=7488;
+ await live.tickLiveSync(transport,{taskIds:[task.id],poll:false});
+ const current=(await db.pool.query('SELECT * FROM approvals WHERE id=$1',[id])).rows[0];
+ assert.equal(current.state,'pending');
+ assert.equal(current.task_version,task.version+1);
+ assert.equal(current.current_step,old.current_step);
+ assert.equal(current.action_revision,old.action_revision+1);
+ assert.equal(current.task_change.source,'bitrix');
+ assert.deepEqual(current.task_change.fields,[{field:'price',before:10000,after:7488}]);
+ const approver=(await db.pool.query<User>('SELECT * FROM users WHERE id=$1',[old.route[old.current_step].userId])).rows[0];
+ await assert.rejects(()=>service.decide(approver,id,{decision:'approve',comment:'Подтвердил перенос',expectedRevision:old.action_revision}),/Версия согласования/);
+ assert.equal((await service.decide(approver,id,{decision:'approve',comment:'Подтвердил перенос',expectedRevision:current.action_revision})).state,old.route.length===1?'approved':'pending');
+ await db.pool.query("UPDATE bitrix_operations SET state='canceled' WHERE task_id=$1 AND state='pending'",[task.id]);
+ await db.pool.query('UPDATE bitrix_task_links SET live_enabled=false WHERE task_id=$1',[task.id]);
+});
+
 test('delegated acceptance arriving from Bitrix closes its source through the existing transport',async()=>{
  const lead=(await db.pool.query<User>("SELECT * FROM users WHERE id='lead-msk'")).rows[0];
  await fields.mapBitrixUser(transport,lead.id,'204',true);await db.pool.query("INSERT INTO bitrix_pilot_members(user_id,pilot_role) VALUES($1,'leader')",[lead.id]);

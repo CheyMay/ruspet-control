@@ -1,3 +1,4 @@
+import {keepTaskApprovals} from './approval-updates.js';
 import {randomUUID} from 'node:crypto';
 import type {Task} from '../shared/types.js';
 import {pool,transaction,type Db} from './db.js';
@@ -96,8 +97,8 @@ export async function syncLinkedTask(request:BitrixRequest,taskId:string,allowWr
      version=version+1,updated_at=now(),transfer_count=transfer_count+CASE WHEN deadline IS DISTINCT FROM $4::timestamptz THEN 1 ELSE 0 END
      WHERE id=$1 RETURNING *`,[taskId,next.title,next.description,next.deadline,next.title.split(/\s/)[0]])).rows[0];
    await new MockTaskProvider().applyApprovedChange(db,updated,task.version);
-   await db.query("UPDATE approvals SET state='stale' WHERE task_id=$1 AND state='pending'",[taskId]);
-   await db.query("INSERT INTO task_events(id,task_id,kind,message,data) VALUES($1,$2,'bitrix_change','Поля обновлены из Битрикс24',$3)",[randomUUID(),taskId,JSON.stringify({before:task,after:updated})]);
+   await keepTaskApprovals(db,task,updated,plan.inbound,'bitrix',null);
+   await db.query("INSERT INTO task_events(id,task_id,kind,message,data) VALUES($1,$2,'bitrix_change','Поля обновлены из Битрикс24',$3)",[randomUUID(),taskId,JSON.stringify({before:task,after:updated,fields:plan.inbound})]);
   }
   await db.query(`UPDATE task_sync_queue SET state='sent',retry_at=NULL WHERE task_id=$1 AND task_version>$2 AND task_version<=$3
    AND state IN ('pending','failed') AND payload->>'kind' IN ('task_edited','deadline_changed','action_undone')
