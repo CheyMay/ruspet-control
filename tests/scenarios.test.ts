@@ -260,13 +260,20 @@ test('an overdue explanation preserves the deadline and offers a separate prefil
  assert.match(draft.text,/Дата и время по Москве/);
  const confirmation=await type('завтра в 15:00');
  assert.match(confirmation.text,/^Запросить перенос/);
- assert.ok(confirmation.text.includes(reason)&&confirmation.text.includes(plan));
+ assert.ok(confirmation.text.includes(reason));assert.ok(!confirmation.text.includes(plan));
  await press(confirmation,'Подтвердить и отправить');
  const after=(await details()).data;
  assert.equal(after.task.deadline,deadline);
  assert.equal(after.approvals[0].state,'pending');
  assert.equal(after.approvals[0].reason,reason);
- assert.equal(after.approvals[0].plan,plan);
+ assert.equal(after.approvals[0].plan,'');
+ const first=users.find(u=>u.id===after.approvals[0].route[0].userId)!;
+ const queue=await bot.botView(first,ch,{op:'task_approval',id});
+ const confirm=await bot.botClick(first,ch,botButton(queue,'Согласовать'));
+ await bot.botClick(first,ch,botButton(confirm,'Да, согласовать'));
+ const decided=(await details()).data;
+ assert.equal(decided.decisions[0].decision,'approve');
+ assert.equal(decided.decisions[0].comment,'');
 });
 test('bot result → return → resubmission → acceptance shares panel history and ignores repeated confirmation',async()=>{
  const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,director=users.find(u=>u.id==='director')!;
