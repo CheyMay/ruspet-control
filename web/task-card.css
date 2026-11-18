@@ -135,3 +135,5 @@
 .change-approval-deadline { margin-bottom:12px; }
 .approval-card.in-drawer .approval-body { grid-template-columns:1fr; }
 @media(max-width:1060px){ .approval-body { grid-template-columns:1fr; } }
+
+.approval-transfer-comment { padding:7px 9px; margin:4px 0 0; border-left:2px solid var(--line); white-space:pre-wrap; }

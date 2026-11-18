@@ -1,4 +1,4 @@
-import {deadlineHistoryResource,refreshDeadlineHistory} from './deadline-history.js';
+import {deadlineCommentsResource,deadlineHistoryResource,refreshDeadlineHistory,refreshPastDeadlineComments} from './deadline-history.js';
 import {ruspetTaskReference} from './bitrix-task-reference.js';
 import {keepTaskApprovals} from './approval-updates.js';
 import {isDeepStrictEqual as equal} from 'node:util';
@@ -299,11 +299,12 @@ export async function tickInboundTasks(request:BitrixRequest,id?:string){
   const item=(await pool.query<QueueRow>(`SELECT resource,external_id,generation,delete_hint FROM bitrix_refresh_queue
    WHERE portal=$1 AND resource=ANY($2) AND state IN ('pending','failed') AND generation>done_generation
    AND (retry_at IS NULL OR retry_at<=now()) AND ($3::text IS NULL OR external_id=$3)
-   ORDER BY (resource=ANY($4)),updated_at,external_id LIMIT 1`,[portal,[taskResource,newTaskResource,commentsResource,resultsResource,deadlineHistoryResource],id??null,[commentsResource,resultsResource,deadlineHistoryResource]])).rows[0];
+   ORDER BY (resource=ANY($4)),updated_at,external_id LIMIT 1`,[portal,[taskResource,newTaskResource,commentsResource,resultsResource,deadlineHistoryResource,deadlineCommentsResource],id??null,[commentsResource,resultsResource,deadlineHistoryResource,deadlineCommentsResource]])).rows[0];
   if(!item)return null;
   const args=[portal,item.resource,item.external_id,item.generation];
   try{
-   const result=item.resource===deadlineHistoryResource?await refreshDeadlineHistory(request,item.external_id):
+   const result=item.resource===deadlineCommentsResource?await refreshPastDeadlineComments(request,item.external_id):
+    item.resource===deadlineHistoryResource?await refreshDeadlineHistory(request,item.external_id):
     item.resource===resultsResource?await refreshBitrixResults(request,item.external_id):
     item.resource===commentsResource?await refreshComments(request,item.external_id):await refreshTask(request,item);
    const ignored='ignored' in result?result.ignored:null;

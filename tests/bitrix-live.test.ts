@@ -131,9 +131,15 @@ test('new RUSPET task creates one Bitrix task even if the result is lost and the
   remoteTask.deadlineHistory=[{id:4,field:'DEADLINE',createdDate:'2026-11-03T12:15:00+03:00',
    value:{from:'02.11.2026 17:00:00',to:'2026-11-03T17:00:00+03:00'},user:{name:'Мария',lastName:'Орлова'}}];
   await refreshDeadlineHistory(request,remoteTask.id);
+  await db.pool.query(`INSERT INTO bitrix_task_activity(task_id,kind,external_id,occurred_at,author,body) VALUES
+   ($1,'comment',810,'2026-11-05T09:00:00Z','Мария Орлова','[B]Причина переноса:[/B] клиент попросил перенести встречу на 03.11.'),
+   ($1,'comment',811,'2026-11-03T09:15:00Z','Битрикс24','Изменён крайний срок на 03.11.'),
+   ($1,'comment',812,'2026-11-03T09:15:00Z','Мария Орлова','Цена задачи на 03.11 была пересчитана'),
+   ($1,'comment',813,'2026-11-03T09:16:00Z','Мария Орлова','Причина переноса: договорились на 04.11.')`,[task.id]);
   const history=(await loadDeadlineHistories(db.pool,[task.id]))[task.id];
   assert.deepEqual(history.map(({from,to,author})=>({from,to,author})),[
    {from:'2026-11-02T14:00:00.000Z',to:'2026-11-03T14:00:00.000Z',author:'Мария Орлова'}]);
+  assert.deepEqual(history[0].comments?.map(note=>note.text),['Причина переноса: клиент попросил перенести встречу на 03.11.']);
   assert.deepEqual(calls.at(-1)?.body.filter,{FIELD:'DEADLINE'});
   await db.pool.query('DELETE FROM bitrix_refresh_queue WHERE portal=$1 AND external_id=$2',[portal,remoteTask.id]);
  }finally{

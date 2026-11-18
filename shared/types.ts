@@ -26,8 +26,9 @@ export interface ApprovalTaskChange {
  fields:{field:string;before:string|number|boolean|null;after:string|number|boolean|null}[];
  routeChanged:boolean; routeIssue?:boolean;
 }
+export interface DeadlineTransferComment {id:string; occurredAt:string; author:string; text:string}
 export interface DeadlineTransfer {
- id:string; occurredAt:string; from:string|null; to:string|null; author:string; source:'ruspet'|'bitrix'; reason:string|null;
+ id:string; occurredAt:string; from:string|null; to:string|null; author:string; source:'ruspet'|'bitrix'; reason:string|null; comments?:DeadlineTransferComment[];
 }
 export interface Approval { approved_deadline?:string|null; task_change?:ApprovalTaskChange|null; action_revision:number; canceled_at?:string|null; id: string; task_id: string; requester_id: string; type: 'deadline' | 'completion'; reason: string; plan: string; proposed_deadline: string | null; task_version: number; state: 'pending' | 'approved' | 'rejected' | 'stale'; current_step: number; route: Step[]; route_version: number; created_at: string; deferred_until: string | null; clarification_question: string | null; clarification_answer: string | null; clarification_requested_at: string | null; clarification_answered_at: string | null }
 export interface TaskApprovalProgress {

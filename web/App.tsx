@@ -497,7 +497,11 @@ function DeadlineHistory({items}:{items:DeadlineTransfer[]}){
    {items.map(item=><li key={item.id}>
     <strong>{transferDate(item.from)} <span aria-hidden="true">→</span> {transferDate(item.to)}</strong>
     <small>{transferDate(item.occurredAt)} МСК · {item.author}</small>
-    {item.reason&&<p>{item.reason}</p>}
+    {item.reason&&<p><strong>Причина</strong><br/>{item.reason}</p>}
+    {item.comments?.map(note=><div className="approval-transfer-comment" key={note.id}>
+     <small>Из комментария · {note.author} · {transferDate(note.occurredAt)} МСК</small><p>{note.text}</p>
+    </div>)}
+    {!item.reason&&!item.comments?.length&&<small>Причина не найдена в комментариях</small>}
    </li>)}
   </ol>}
  </aside>;
