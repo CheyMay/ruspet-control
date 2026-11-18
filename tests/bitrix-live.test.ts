@@ -142,11 +142,18 @@ test('new RUSPET task creates one Bitrix task even if the result is lost and the
    ($1,73,NULL,'2026-11-02T12:00:00Z','Анна','Работа принята, документ подписан.','[]')`,[task.id]);
   await db.pool.query(`INSERT INTO bitrix_task_activity(task_id,kind,external_id,occurred_at,author,body)
    VALUES($1,'comment',814,'2026-11-02T10:00:00Z','Анна','Образцы пока в пути. Изменить срок на 03.11.2026')`,[task.id]);
+  await db.pool.query(`INSERT INTO task_events(id,task_id,kind,message,data,created_at)
+   VALUES(gen_random_uuid(),$1,'source_refreshed','Задержанный снимок выгрузки',$2,'2026-11-08T12:00:00Z')`,
+   [task.id,JSON.stringify({before:{deadline:'2026-11-02T14:00:00.000Z'},after:{deadline:'2026-11-03T14:00:00.000Z'}})]);
+  await db.pool.query(`INSERT INTO bitrix_task_results(task_id,external_id,occurred_at,author,body,files) VALUES
+   ($1,74,'2026-11-03T08:45:00Z','Анна','Клиент ждёт образцы. Прошу перенести срок на 04.11.02026','[]'),
+   ($1,75,'2026-11-03T08:48:00Z','Анна','Клиент ждёт другую поставку. Прошу перенести срок на 05.11.2026','[]')`,[task.id]);
   const history=(await loadDeadlineHistories(db.pool,[task.id]))[task.id];
   assert.deepEqual(history.map(({from,to,author})=>({from,to,author})),[
    {from:'2026-11-02T14:00:00.000Z',to:'2026-11-03T14:00:00.000Z',author:'Мария Орлова'}]);
   assert.deepEqual(history[0].comments?.map(({text,source})=>({text,source})),[
    {text:'Образцы пока в пути. Изменить срок на 03.11.2026',source:'result'},
+   {text:'Клиент ждёт образцы. Прошу перенести срок на 04.11.02026',source:'result'},
    {text:'Причина переноса: клиент попросил перенести встречу на 03.11.',source:'comment'}
   ]);
   assert.deepEqual(calls.at(-1)?.body.filter,{FIELD:'DEADLINE'});

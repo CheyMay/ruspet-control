@@ -1,6 +1,7 @@
 import type {DeadlineTransfer,DeadlineTransferComment} from './types.js';
 
 const transferWords=/перен[еёо][\p{L}]*|продл[\p{L}]*|сдвиг[\p{L}]*|(?:новый|крайний) срок|срок согласован|измен[\p{L}]*\s+(?:крайний\s+)?срок/iu;
+const deadlineRequest=/(?:измен|перен[еёо]|продл)[\p{L}]*\s+(?:крайний\s+)?срок/iu;
 const reasonHeader=/^(?:причина|основание)(?:\s+переноса)?\s*[:—-]/iu;
 const contextWords=/жд[её]м|ожида[\p{L}]*|в связи с|потому что|так как|задерж[\p{L}]*|не успе[\p{L}]*/iu;
 const delayedWork=/нет\s+(?:оплат|заказ|ответ|сырь|свет|возможност)|не\s+(?:удалось|поступил[аио]?|было|смог[лои]*)|обещал[аи]?\s+(?:оплатить|перезвонить|прислать)/iu;
@@ -16,7 +17,7 @@ function cleanMessage(body:string){
 }
 
 function statedDates(text:string,preferRequested:boolean){
- const all=[...text.matchAll(/(?<![\d.])(0?[1-9]|[12]\d|3[01])\.(0?[1-9]|1[0-2])(?:\.(20\d\d|\d\d))?(?!\d|\.\d)/g)];
+ const all=[...text.matchAll(/(?<![\d.])(0?[1-9]|[12]\d|3[01])\.(0?[1-9]|1[0-2])(?:\.0?(20\d\d|\d\d))?(?!\d|\.\d)/g)];
  const requested=preferRequested?all.filter(date=>{
   const prefix=text.slice(Math.max(0,date.index-50),date.index);
   return transferWords.test(prefix)&&/(?:срок(?:\s+(?:на|до|к))?|(?:перенест|перенос|измен)[\p{L}]*(?:\s+на)?)\s*[:—-]?\s*$/iu.test(prefix);
@@ -30,11 +31,23 @@ function resultCandidates(transfers:DeadlineTransfer[],text:string,at:number,exp
   const delta=Date.parse(item.occurredAt)-at;
   return delta>=-30*minuteMs&&delta<=14*dayMs;
  });
- if(dates.length)return next.filter(item=>{
-  if(!item.to||Date.parse(item.to)<at)return false;
-  const finalDate=moscowDay.format(new Date(item.to));
-  return dates.includes(finalDate)||dates.includes(finalDate.slice(0,5));
- });
+ if(dates.length){
+  const exact=next.filter(item=>{
+   if(!item.to||Date.parse(item.to)<at)return false;
+   const finalDate=moscowDay.format(new Date(item.to));
+   return dates.includes(finalDate)||dates.includes(finalDate.slice(0,5));
+  });
+  if(exact.length||!deadlineRequest.test(text))return exact;
+  // An explicit request can precede a decision for the adjacent calendar day.
+  return next.filter(item=>{
+   const delta=Date.parse(item.occurredAt)-at;
+   if(!item.to||Date.parse(item.to)<at||delta<0||delta>120*minuteMs)return false;
+   return [-dayMs,dayMs].some(offset=>{
+    const day=moscowDay.format(new Date(Date.parse(item.to!)+offset));
+    return dates.includes(day)||dates.includes(day.slice(0,5));
+   });
+  });
+ }
  if(!explicit&&!contextWords.test(text)&&!delayedWork.test(text))return [];
  return next.filter(item=>{
   const delta=Date.parse(item.occurredAt)-at;

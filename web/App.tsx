@@ -490,7 +490,7 @@ export function App(){
 }
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
 const transferDate=(value:string|null)=>value?new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'}):'Без срока';
-function DeadlineHistory({items}:{items:DeadlineTransfer[]}){
+function DeadlineHistory({items,openDiscussion}:{items:DeadlineTransfer[];openDiscussion:()=>void}){
  return <aside className="approval-deadline-history" aria-label="История переносов">
   <h3>Прошлые переносы <small>{items.length}</small></h3>
   {!items.length?<p>Записей о переносах пока нет.</p>:<ol aria-label="Изменения крайнего срока" tabIndex={0}>
@@ -504,6 +504,7 @@ function DeadlineHistory({items}:{items:DeadlineTransfer[]}){
     {!item.reason&&!item.comments?.length&&<small>Причина не найдена в обсуждении</small>}
    </li>)}
   </ol>}
+  {items.length>0&&<button type="button" className="text-button approval-history-discussion" onClick={openDiscussion}>Открыть обсуждение</button>}
  </aside>;
 }
 const moscowDateInput=(value:string)=>new Date(Date.parse(value)+3*3600000).toISOString().slice(0,16);
@@ -563,7 +564,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
    <input aria-label="Комментарий или вопрос" placeholder={defaultAccept?"Комментарий обязателен при отказе или уточнении":"Комментарий к решению или вопрос · минимум 5 символов"} maxLength={4000} value={comment} onChange={e=>setComment(e.target.value)}/><div><button className="button primary" disabled={busy||invalidOverride||!defaultAccept&&comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'approve',comment,expectedRevision:a.action_revision,expectedStep:a.current_step,...(approvedDeadline?{approvedDeadline}:{})})}><Check size={16}/>{a.current_step<a.route.length-1?"Согласовать и передать":resultReview?"Принять результат":override!==null?"Согласовать с новым сроком":"Согласовать"}</button><button className="button reject" disabled={busy||comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'reject',comment,expectedRevision:a.action_revision,expectedStep:a.current_step})}>{resultReview?"Вернуть с замечаниями":"Отклонить запрос"}</button><button className="button secondary" disabled={busy||comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'clarify',comment,expectedRevision:a.action_revision,expectedStep:a.current_step})}>Уточнить</button><button className="text-button" disabled={busy} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'later',comment,expectedRevision:a.action_revision,expectedStep:a.current_step,remindMinutes:60})}><Clock3 size={15}/>Напомнить через час</button></div></div>}
 
  <details className="approval-discussion"><summary>Обсуждение запроса · {(data.approvalComments||[]).filter(c=>c.approval_id===a.id).length}</summary>{(data.approvalComments||[]).filter(c=>c.approval_id===a.id).map(c=><article className="comment" key={c.id}><div><strong>{data.users.find(u=>u.id===c.author_id)?.name}<small>{date(c.created_at,true)}</small></strong><p>{c.body}</p></div></article>)}{!viewingEmployee&&<><label>Сообщение по этому запросу<textarea maxLength={4000} value={thread} onChange={e=>setThread(e.target.value)} placeholder="Уточнение, ответ или ссылка на результат…"/></label><button className="button secondary" disabled={busy||!thread.trim()} onClick={async()=>{if(await act(`/tasks/${a.task_id}/comments`,{body:thread,approvalId:a.id}))setThread('')}}>Отправить сообщение</button></>}</details>
- </div><DeadlineHistory items={transfers}/></div>
+ </div><DeadlineHistory items={transfers} openDiscussion={()=>void openTask(a.task_id,'discussion')}/></div>
  </section>;
 }
 function ExplanationForm({min,busy,submit}: {min:number;busy:boolean;submit:(body:unknown)=>Promise<boolean>}){return <form className="explanation-form" onSubmit={async e=>{e.preventDefault();const f=new FormData(e.currentTarget);await submit({reason:f.get('reason'),progress:f.get('progress'),plan:f.get('plan')});}}><h3>Ответ по результатам проверки</h3><p>Каждое поле — минимум {min} символов. Это проверка полноты, содержание оценивает руководитель.</p>{[{id:'reason',label:'Что помешало выполнить задачу?'},{id:'progress',label:'Что уже сделано?'},{id:'plan',label:'Что будете делать дальше?'}].map(f=><label key={f.id}>{f.label}<textarea name={f.id} required minLength={min} maxLength={4000}/></label>)}<button disabled={busy} className="button primary">Сохранить объяснение</button></form>;}

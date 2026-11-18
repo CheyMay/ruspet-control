@@ -31,7 +31,7 @@ function fromBitrix(raw:RemoteEntry):DeadlineTransfer[] {
 export async function loadDeadlineHistories(db:Db,taskIds:string[]){
  const result:Record<string,DeadlineTransfer[]>={};
  if(!taskIds.length)return result;
- const local=await db.query<DeadlineTransfer&{task_id:string}>(`SELECT e.task_id,e.id::text,e.created_at AS "occurredAt",
+ const local=await db.query<DeadlineTransfer&{task_id:string;kind:string}>(`SELECT e.task_id,e.kind,e.id::text,e.created_at AS "occurredAt",
   e.data->'before'->>'deadline' AS "from",e.data->'after'->>'deadline' AS "to",
   coalesce(u.name,CASE WHEN e.kind='bitrix_change' THEN 'Битрикс24' ELSE 'Система' END) AS author,
   CASE WHEN e.kind='bitrix_change' THEN 'bitrix' ELSE 'ruspet' END AS source,
@@ -41,7 +41,6 @@ export async function loadDeadlineHistories(db:Db,taskIds:string[]){
   AND e.data ? 'before' AND e.data ? 'after'
   AND e.data->'before'->>'deadline' IS DISTINCT FROM e.data->'after'->>'deadline'
   AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id)`,[taskIds]);
- for(const {task_id,...item} of local.rows)(result[task_id]??=[]).push(item);
  const remote=await db.query<DeadlineTransfer&{task_id:string}>(`SELECT task_id,'bitrix:'||external_id AS id,occurred_at AS "occurredAt",
   from_deadline AS "from",to_deadline AS "to",author,'bitrix' AS source,NULL AS reason
   FROM bitrix_deadline_history WHERE task_id=ANY($1)`,[taskIds]);
@@ -51,10 +50,25 @@ export async function loadDeadlineHistories(db:Db,taskIds:string[]){
  const stored=remote.rows.concat(archive.rows.flatMap(({task_id,raw})=>fromBitrix(raw).map(row=>({task_id,...row}))));
  for(const {task_id,...item} of stored){
   const history=result[task_id]??=[];
-  const duplicate=history.findIndex(old=>old.id===item.id||!old.id.startsWith('bitrix:')&&old.from===item.from&&old.to===item.to&&
-   Math.abs(Date.parse(old.occurredAt)-Date.parse(item.occurredAt))<600000);
-  if(duplicate<0)history.push(item);
-  else if(history[duplicate].source==='bitrix'&&!history[duplicate].id.startsWith('bitrix:'))history[duplicate]=item;
+  if(!history.some(old=>old.id===item.id))history.push(item);
+ }
+ // A snapshot can record the portal's change hours or days after the actual transfer.
+ // Match the last portal event before the snapshot, preserving genuine repeated transfers there.
+ const canonical=new Map(Object.entries(result).map(([taskId,items])=>
+  [taskId,[...items].sort((a,b)=>Date.parse(b.occurredAt)-Date.parse(a.occurredAt))]));
+ for(const {task_id,kind,...item} of local.rows){
+  const history=result[task_id]??=[];
+  const at=Date.parse(item.occurredAt),sameTransition=(entry:DeadlineTransfer)=>entry.from===item.from&&entry.to===item.to;
+  const isSnapshot=kind==='source_refreshed'||kind==='bitrix_change';
+  if(isSnapshot){
+   const observed=canonical.get(task_id)?.find(entry=>Date.parse(entry.occurredAt)<=at+600000);
+   if(observed&&sameTransition(observed))continue;
+  }else{
+   const echo=history.findIndex(entry=>entry.id.startsWith('bitrix:')&&sameTransition(entry)&&
+    Math.abs(Date.parse(entry.occurredAt)-at)<600000);
+   if(echo>=0){history[echo]=item;continue;}
+  }
+  history.push(item);
  }
  const withHistory=Object.keys(result);
  if(!withHistory.length)return result;
