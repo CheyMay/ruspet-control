@@ -147,7 +147,9 @@ function missingLabel(d:Dialog){
 }
 async function prompt(u:User,ch:string,d:Dialog,db:Db){
  return screen(u,ch,(d.payload.id?'Задача #'+d.payload.id:'Новая задача')+'\n'+missingLabel(d),
-  [[button('Отменить ввод','cancel',{id:d.payload.id,list:d.payload.list})]],db);
+  [...(d.payload.kind==='create_task'&&d.fields[d.index]?.key==='assignee'?
+   [[button('Себе','form',{...d.payload,values:{...d.values,assignee:u.id}})]]:[]),
+   [button('Отменить ввод','cancel',{id:d.payload.id,list:d.payload.list})]],db);
 }
 const dayNames=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
 async function draftSummary(d:Dialog,db:Db){
@@ -185,7 +187,6 @@ async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Dat
   kind==='accept'&&!intent.values.comment?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
  const values:Record<string,string>={};
  if(kind==='create_task'){
-  if(u.role==='employee'&&!intent.values.assignee)values.assignee=u.id;
   if(!intent.values.deadline)values.deadline='none';
   if(!intent.values.description)values.description='';
  }
@@ -330,7 +331,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    const min=(await config(db)).config.responseMinLength;
    if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');}
    const fields=taskActionFields(p.kind,min,!p.target);
-   const values={...(p.kind==='create_task'&&u.role==='employee'?{assignee:u.id}:{}),...p.values};
+   const values={...p.values};
    const d:Dialog={payload:p,fields,index:0,values};nextMissing(d);
    if(d.index===fields.length)return confirmation(u,ch,d,db,p.kind==='permission_approve'?'Разрешить одно редактирование задачи #'+p.id+'?':undefined);
    await saveDialog(db,u,ch,d);return prompt(u,ch,d,db);

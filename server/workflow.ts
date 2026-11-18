@@ -16,9 +16,21 @@ import type {Task,User} from '../shared/types.js';
 import type {TaskInput} from './task-input.js';
 export type {TaskInput} from './task-input.js';
 const provider=new MockTaskProvider();
+const newAssigneeAllowed=`(u.id=$1 OR NOT u.root_access AND (
+ EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled)
+ OR NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id)))`;
+
+export async function newTaskAssignees(actor:User,db:Db=pool){
+ return (await db.query<User>(`SELECT u.id,u.name,u.role,u.branch_id,u.position FROM users u
+  WHERE ${newAssigneeAllowed} ORDER BY u.name,u.id`,[actor.id])).rows;
+}
+
 export async function validateTaskAssignment(db:Db,u:User,input:TaskInput,id?:string,currentOwner?:string,creator?:string){
- const owner=(await db.query('SELECT * FROM users WHERE id=$1',[input.assigneeId])).rows[0] as User|undefined;
- assert(owner,400,'Исполнитель не найден.');assert(owner.id===currentOwner||creator===u.id||globalAccess(u)||owner.id===u.id||(u.role==='branch_manager'&&branchCovers(u.branch_id,owner.branch_id)),403,'Этот исполнитель вне вашей области доступа.');
+ const owner=(await db.query<User&{canAssignNew:boolean}>(`SELECT u.*, ${newAssigneeAllowed} AS "canAssignNew" FROM users u WHERE u.id=$2`,
+  [u.id,input.assigneeId])).rows[0];
+ assert(owner,400,'Исполнитель не найден.');
+ if(id)assert(owner.id===currentOwner||creator===u.id||globalAccess(u)||owner.id===u.id||(u.role==='branch_manager'&&branchCovers(u.branch_id,owner.branch_id)),403,'Этот исполнитель вне вашей области доступа.');
+ else assert(owner.canAssignNew,403,'Этот сотрудник недоступен для назначения. Выберите другого исполнителя.');
  if(input.plannedStart&&input.plannedEnd)assert(new Date(input.plannedEnd)>=new Date(input.plannedStart),400,'Плановое окончание раньше начала.');
  if(input.parentId){assert(input.parentId!==id,400,'Задача не может быть своим родителем.');const parent=(await db.query('SELECT * FROM tasks WHERE id=$1',[input.parentId])).rows[0];assert(parent&&canSee(u,parent),400,'Родительская задача не найдена или недоступна.');
  const chain=(await db.query('WITH RECURSIVE tree AS (SELECT id,parent_id,ARRAY[id] path FROM tasks WHERE id=$1 UNION ALL SELECT t.id,t.parent_id,tree.path||t.id FROM tasks t JOIN tree ON t.id=tree.parent_id WHERE NOT(t.id=ANY(tree.path))) SELECT id FROM tree',[input.parentId])).rows;assert(!chain.some(t=>t.id===id),400,'Возникнет цикл родительских задач.');}

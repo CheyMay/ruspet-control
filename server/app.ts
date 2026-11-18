@@ -42,7 +42,7 @@ import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
 import {ownerTimeRouter} from './owner-time.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
-import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,reviewTask,taskAssignees} from './workflow.js';
+import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,newTaskAssignees,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
 import {directorBatchStatus,directorBatchTasks,sendDirectorBatch} from './management-notices.js';
@@ -172,6 +172,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   instruction:z.string().trim().max(2000).optional(),deadline:date.nullable().optional()
  }).parse(req.body))));
  app.get('/api/tasks/:id/assignees',async(req,res)=>res.json(await taskAssignees(req.actor,String(req.params.id))));
+ app.get('/api/task-assignees',async(req,res)=>res.json(await newTaskAssignees(req.actor)));
  app.get('/api/tasks/:id/reminders',async(req,res)=>res.json(await listTaskReminders(req.actor,String(req.params.id))));
  app.post('/api/tasks/:id/reminders',async(req,res)=>res.status(201).json(await saveTaskReminder(req.actor,String(req.params.id),reminderInput.parse(req.body))));
  app.delete('/api/reminders/:id',async(req,res)=>res.json(await disableTaskReminder(req.actor,String(req.params.id))));

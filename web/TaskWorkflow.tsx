@@ -7,7 +7,7 @@ import {canComplete,canReview} from '../shared/actions.js';
 import {TaskPeople} from './TaskPeople.js';
 import {EmployeeFilter} from './SearchFilter.js';
 import {plannedInterval} from '../shared/analytics.js';
-import {branchCovers,unassignedBranch} from '../shared/branches.js';
+import {unassignedBranch} from '../shared/branches.js';
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
 export function ReviewActions({task,user,busy,pending,act,scope}: {task:Task;user:User;busy:boolean;pending:boolean;act:Act;scope?:ApprovalScope|null}){
  const [comment,setComment]=useState('');
@@ -55,7 +55,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
  const draftKey='ruspet-task-draft:'+user.id+':'+(task?'edit:'+task.id+':'+task.version:copyOf?'copy:'+copyOf.id:'new:'+(initialCompany??''));
  const [draft]=useState(()=>readDraft(draftKey));
  const [copyRequestId]=useState(()=>copyOf?crypto.randomUUID():undefined);
- const [error,setError]=useState(''),[assignees,setAssignees]=useState(users);
+ const [error,setError]=useState(''),[assignees,setAssignees]=useState<User[]|null>(null),[assigneeRetry,setAssigneeRetry]=useState(0);
  const [title,setTitle]=useState(draft.title??initial?.title??''),[description,setDescription]=useState(draft.description??initial?.description??'');
  const [price,setPrice]=useState(draft.price??(initial?String(taskPrice(initial)??''):''));
  const [owner,setOwner]=useState(draft.owner??initial?.assignee_id??user.id),[deadline,setDeadline]=useState(draft.deadline??localDate(copyOf?.deadline));
@@ -71,11 +71,12 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   if(edited)storeDraft(draftKey,{title,description,price,owner,deadline,branch,companyId,important,risk,mode,fields,schedule,extra});
  },[edited,draftKey,title,description,price,owner,deadline,branch,companyId,important,risk,mode,fields,schedule,extra]);
  useEffect(()=>{
-  if(!task)return;
   let live=true;
-  api<User[]>(`/tasks/${task.id}/assignees`).then(a=>{if(live)setAssignees(a);}).catch(e=>{if(live)setError(e.message);});
+  setError('');setAssignees(null);
+  api<User[]>(task?`/tasks/${encodeURIComponent(task.id)}/assignees`:'/task-assignees')
+   .then(options=>{if(live)setAssignees(options);}).catch(e=>{if(live)setError(e.message);});
   return()=>{live=false;};
- },[task?.id,user.id]);
+ },[task?.id,user.id,assigneeRetry]);
  function applyTemplate(value:TemplateContent){
   setEdited(true);
   if(!title.trim())setTitle(value.title);
@@ -88,9 +89,9 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
  }
  const plan=initial?plannedInterval(initial):{start:null,end:null};
  const canSetBranch=['admin','director','sales_head'].includes(user.role);
- const allowedOwners=assignees.filter(person=>person.id===task?.assignee_id||user.id===task?.creator_id||canSetBranch||person.id===user.id||user.role==='branch_manager'&&branchCovers(user.branch_id,person.branch_id));
+ const allowedOwners=assignees??users.filter(person=>person.id===owner);
  const branches=[...new Set(users.map(person=>person.branch_id).filter(id=>id&&id!==unassignedBranch))].sort((a,b)=>a.localeCompare(b,'ru'));
- const ownerAllowed=allowedOwners.some(person=>person.id===owner);
+ const ownerAllowed=!!assignees?.some(person=>person.id===owner);
  const heading=task?'Редактировать задачу':copyOf?'Копия задачи':'Новая задача';
  return <div className="modal-backdrop"><form className="modal task-editor task-compose-editor" role="dialog" aria-modal="true" aria-label={heading}
   onChangeCapture={()=>setEdited(true)}
@@ -118,7 +119,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   <div className="panel-heading"><div><h2>{heading}</h2>{copyOf&&<p>Исходная задача #{copyOf.id}. Проверьте поля перед созданием.</p>}</div><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
   <div className="task-compose-body">
   {draft.title!==undefined&&<div className="task-draft-banner"><span>Черновик восстановлен</span><button type="button" className="text-button" onClick={()=>{storeDraft(draftKey);close();}}>Удалить черновик</button></div>}
-  {(saveError||error)&&<p className="alert error" role="alert">{saveError||error}</p>}
+  {saveError&&<p className="alert error" role="alert">{saveError}</p>}
   {!initial&&<fieldset className="task-mode"><legend>Когда создавать</legend><div>
    {([{id:'once',label:'Разовая',detail:'Поставить сейчас'},{id:'repeat',label:'Регулярная',detail:'По расписанию'},
     ...(onConditional?[{id:'conditional',label:'По условию',detail:'При событии в процессе'}]:[])]).map(item=><label key={item.id}>
@@ -130,13 +131,18 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   <label>Название<input autoFocus name="title" required minLength={3} maxLength={500} value={title} onChange={e=>setTitle(e.target.value)}/></label>
   <label>Описание<textarea name="description" maxLength={10000} value={description} onChange={e=>setDescription(e.target.value)}/></label>
   <div className="editor-grid">
-   <EmployeeFilter caption="Исполнитель" label="Исполнитель задачи" value={owner} people={allowedOwners} onChange={value=>{
-    setEdited(true);setOwner(value);setBranch(value===initial?.assignee_id&&initial.branch_id!==unassignedBranch?initial.branch_id:'');
-   }}/>
+   <div>
+    <EmployeeFilter caption="Исполнитель" label="Исполнитель задачи" value={owner} people={allowedOwners} disabled={!assignees} onChange={value=>{
+     setEdited(true);setOwner(value);setBranch(value===initial?.assignee_id&&initial.branch_id!==unassignedBranch?initial.branch_id:'');
+    }}/>
+    {!assignees&&(error?<div className="alert error" role="alert">Не удалось загрузить список сотрудников. <button type="button" className="text-button" onClick={()=>setAssigneeRetry(n=>n+1)}>Повторить</button></div>:
+     <small className="muted" role="status">Загружаем сотрудников…</small>)}
+    {assignees&&!ownerAllowed&&<small className="muted">Выберите доступного исполнителя.</small>}
+   </div>
    <label>Цена задачи · ₽<input name="price" type="number" required min="0" max="999999999999.99" step="0.01" value={price} onChange={e=>setPrice(e.target.value)}/></label>
   </div>
   {canSetBranch&&mode!=='conditional'&&<label>Филиал или подразделение задачи<select value={branch} onChange={e=>setBranch(e.target.value)}>
-   <option value="">По умолчанию · {initial?.assignee_id===owner?initial.branch_id:assignees.find(person=>person.id===owner)?.branch_id??unassignedBranch}</option>
+   <option value="">По умолчанию · {initial?.assignee_id===owner?initial.branch_id:allowedOwners.find(person=>person.id===owner)?.branch_id??unassignedBranch}</option>
    {branch&&!branches.includes(branch)&&<option value={branch}>{branch}</option>}
    {branches.map(id=><option key={id} value={id}>{id}</option>)}
   </select></label>}

@@ -122,8 +122,7 @@ test('local task edit protects deadline and version; review supports return and 
  assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'Повторное нажатие',expectedVersion:5})).status,409);
  const d=(await request('anna',`/tasks/${id}`)).data;assert.equal(d.task.status,'completed');assert.equal(d.task.transfer_count,0);assert.equal(d.comments.length,4);assert.equal(d.events.filter((e:any)=>e.kind==='review_returned')[0].data.comment,'Исправьте расчёт суммы в результате');assert.equal(d.events.filter((e:any)=>e.kind==='task_completed').length,1);
 });
-test('hierarchy rejects cycles, assignment enforces scope and incoming dates are validated',async()=>{
- assert.equal((await request('anna','/tasks',{...taskInput,assigneeId:'ivan'})).status,403);
+test('task hierarchy rejects cycles and invalid dates',async()=>{
  assert.equal((await request('admin','/tasks',{...taskInput,plannedStart:'2026-11-10T15:00:00.000Z',plannedEnd:'2026-11-09T15:00:00.000Z'})).status,400);
  const first=(await request('admin','/tasks',taskInput)).data.id;const second=(await request('admin','/tasks',{...taskInput,parentId:first})).data.id;
  assert.equal((await request('admin',`/tasks/${first}`,{...taskInput,reason:'Проверка защиты от циклов',parentId:second,expectedVersion:1},'PUT')).status,400);

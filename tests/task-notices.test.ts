@@ -383,3 +383,50 @@ test('mobile Tasks switches between assigned and created without changing who ca
  assert(!created.body.text.includes('#'+withMe)&&!created.body.text.includes('#'+foreign));
  assert.equal((await open('mine')).body.taskScope,'mine');
 });
+
+test('an employee can assign a new task across branches from the form, chat and voice',async()=>{
+ const colleague:User={id:'fixture-cross-branch',name:'Кирилл Зареченский',role:'employee',branch_id:'Другой филиал',position:'Менеджер'};
+ await db.pool.query("INSERT INTO users(id,name,role,branch_id,position) VALUES($1,$2,$3,$4,$5)",[colleague.id,colleague.name,colleague.role,colleague.branch_id,colleague.position]);
+ await db.pool.query("INSERT INTO login_accounts(username,user_id,password_hash,enabled) VALUES('blocked-colleague',$1,'fixture',false)",[other.id]);
+ await login(worker);await login(colleague);
+ const people=await api(worker,'/task-assignees');
+ assert.equal(people.status,200);
+ assert(people.body.some((person:User)=>person.id===colleague.id));
+ assert(!people.body.some((person:User)=>person.id===other.id));
+
+ const input={title:'Проверить макет наклейки',description:'Задача сотруднику из другого филиала',assigneeId:colleague.id,price:2000,deadline:null,
+  plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null};
+ const made=await api(worker,'/tasks','POST',input);
+ assert.equal(made.status,201);
+ const own=await api(worker,'/tasks/'+made.body.id);
+ const incoming=await api(colleague,'/tasks/'+made.body.id);
+ assert.equal(incoming.status,200);
+ assert.equal(own.body.task.creator_id,worker.id);
+ assert.equal(incoming.body.task.assignee_id,colleague.id);
+ assert.equal(incoming.body.task.branch_id,colleague.branch_id);
+ assert.equal((await api(worker,'/tasks','POST',{...input,assigneeId:other.id})).status,403);
+ assert.equal((await db.pool.query('SELECT recipient_id FROM outbox WHERE task_id=$1 AND task_assignment',[made.body.id])).rows[0].recipient_id,colleague.id);
+
+ const {botClick,botText,botView,botVoiceDraft}=await import('../server/bot.js');
+ const pick=(screen:Awaited<ReturnType<typeof botView>>,label:string)=>screen.buttons.flat().find(choice=>choice.text===label)!.token;
+ const channel='mobile:assignment';
+ const home=await botView(worker,channel);
+ await botClick(worker,channel,pick(home,'Новая задача'));
+ const title=await botText(worker,channel,'Уточнить готовность макета',randomUUID());
+ assert.match(title.text,/Имя и фамилия исполнителя/);
+ assert(title.buttons.flat().some(item=>item.text==='Себе'));
+ const who=await botText(worker,channel,'Зареченскому',randomUUID());
+ assert.match(who.text,/Цена задачи/);
+ for(const value of ['2000','без срока'])await botText(worker,channel,value,randomUUID());
+ const confirmation=await botText(worker,channel,'Сверить макет с клиентом',randomUUID());
+ assert.match(confirmation.text,/Исполнитель: Кирилл Зареченский/);
+ const saved=await botClick(worker,channel,pick(confirmation,'Подтвердить и отправить'));
+ assert.match(saved.text,/поставлена/);
+
+ const voice=await botVoiceDraft(worker,channel,'Поставь задачу Зареченскому: Сверить цвета макета. Цена 2000.',randomUUID());
+ assert.match(voice.text,/Исполнитель: Кирилл Зареченский/);
+ assert(voice.buttons.flat().some(item=>item.text==='Подтвердить и отправить'),voice.text);
+ assert.match((await botClick(worker,channel,pick(voice,'Подтвердить и отправить'))).text,/поставлена/);
+ const voiceNoOwner=await botVoiceDraft(worker,channel,'Поставь задачу: сверить макет. Цена 2000.',randomUUID());
+ assert.match(voiceNoOwner.text,/Имя и фамилия исполнителя/);
+});

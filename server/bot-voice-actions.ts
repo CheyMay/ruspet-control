@@ -1,12 +1,11 @@
 import type {Db} from './db.js';
-import {assert,canManage,canRequest,canSee,globalAccess} from './domain.js';
+import {assert,canManage,canRequest,canSee} from './domain.js';
 import {taskEditAccess} from './task-edit-permissions.js';
 import {canComplete,canReview} from '../shared/actions.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
-import {branchCovers} from '../shared/branches.js';
 import {parsePrice} from '../shared/pricing.js';
 import type {Approval,Task,User} from '../shared/types.js';
-import {delegationTargets,taskAssignees} from './workflow.js';
+import {delegationTargets,newTaskAssignees,taskAssignees} from './workflow.js';
 import {lastUndo} from './undo.js';
 import {spokenDeadline,spokenPrice,spokenTime,type VoiceIntent,type VoiceKind} from './voice-intent.js';
 import type {Payload} from './bot-ui.js';
@@ -61,14 +60,13 @@ const tokenNames=(text:string)=>text.toLocaleLowerCase('ru-RU').replaceAll('ё',
 const personName=(text:string)=>tokenNames(text).sort().join(' ');
 function relatedName(a:string,b:string){
  if(a===b)return true;
- const stem=(s:string)=>s.length>3?s.replace(/(?:у|ю|е|а|я|ом|ем|ым)$/u,''):s;
+ const stem=(s:string)=>s.length>3?s.replace(/(ск)(?:ий|ая|ого|ому|ую|им|ой|ом)$/u,'$1').replace(/(?:у|ю|е|а|я|ом|ем|ым)$/u,''):s;
  return stem(a)===stem(b);
 }
 async function availableAssignees(actor:User,payload:Payload,db:Db){
  if(payload.kind==='delegate')return (await delegationTargets(actor,payload.id!,undefined,db)).people;
  if(payload.kind==='edit_assignee')return taskAssignees(actor,payload.id!,db);
- return (await db.query<User>('SELECT * FROM users WHERE NOT root_access OR id=$1 ORDER BY name',[actor.id])).rows
-  .filter(person=>person.id===actor.id||globalAccess(actor)||actor.role==='branch_manager'&&branchCovers(actor.branch_id,person.branch_id));
+ return newTaskAssignees(actor,db);
 }
 export async function resolveAssignee(actor:User,payload:Payload,value:string,db:Db){
  const people=await availableAssignees(actor,payload,db);
