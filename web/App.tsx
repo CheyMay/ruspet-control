@@ -514,10 +514,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
  const [comment,setComment]=useState(''),[thread,setThread]=useState('');
  const [answer,setAnswer]=useState('');
  const task=taskDetail?.task??data.tasks.find(t=>t.id===a.task_id);
- const [override,setOverride]=useState<string|null>(null);
- useEffect(()=>setOverride(null),[a.id,a.action_revision,a.current_step]);
- const overrideTime=override?Date.parse(override+':00+03:00'):NaN;
- const approvedDeadline=Number.isFinite(overrideTime)?new Date(overrideTime).toISOString():undefined;
+ const [deadlineDraft,setDeadlineDraft]=useState<{revision:string;value:string}|null>(null);
  const transfers=taskDetail?.deadlineHistory??data.deadlineHistory?.[a.task_id]??[];
  const turn=approvalTurn(a);
  const actor=data.users.find(u=>u.id===a.route[a.current_step]?.userId);
@@ -528,9 +525,20 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
  const canDecide=a.state==='pending'&&!a.canceled_at&&!change?.routeIssue&&actor?.id===data.user.id&&!waiting;
  const canAnswer=a.state==='pending'&&waiting&&a.requester_id===data.user.id;
  const isDeadline=a.type==='deadline';
- const mayOverride=canDecide&&canSetApprovedDeadline(data.user.id,taskDetail?.deadlineApproverId??data.deadlineApproverId,a);
+ const editDeadlineInline=!viewingEmployee&&canDecide&&canSetApprovedDeadline(data.user.id,taskDetail?.deadlineApproverId??data.deadlineApproverId,a);
+ const revision=`${a.id}:${a.action_revision}:${a.current_step}`;
+ const proposed=a.proposed_deadline?moscowDateInput(a.proposed_deadline):'';
+ const finalDate=deadlineDraft?.revision===revision?deadlineDraft.value:proposed;
+ const changedDeadline=editDeadlineInline&&finalDate!==proposed;
+ const finalTime=Date.parse(changedDeadline?finalDate+':00+03:00':a.proposed_deadline??'');
+ const alreadySet=!changedDeadline&&!!a.proposed_deadline&&a.proposed_deadline===task?.deadline;
+ const deadlineError=!Number.isFinite(finalTime)?'Укажите дату и время.':
+  finalTime<=Date.now()&&!alreadySet?'Укажите срок в будущем.':'';
  const defaultAccept=isDeadline||resultReview;
- const invalidOverride=override!==null&&(!approvedDeadline||Date.parse(approvedDeadline)<=Date.now());
+ const approve=()=>void act(`/approvals/${a.id}/decision`,{
+  decision:'approve',comment,expectedRevision:a.action_revision,expectedStep:a.current_step,
+  ...(changedDeadline?{approvedDeadline:new Date(finalTime).toISOString()}:{})
+ });
  return <section className={`panel approval-card ${inDrawer?'in-drawer':''}`}>
   <div className="approval-header"><div><span className="eyebrow">{a.type==='deadline'?'ПЕРЕНОС КРАЙНЕГО СРОКА':'ЗАКРЫТИЕ ЗАДАЧИ'} · #{a.task_id}</span>{!inDrawer&&<button className="approval-title" onClick={()=>void openTask(a.task_id,'approvals')}>{task?.title}<ArrowUpRight size={16}/></button>}</div><Badge state={a.canceled_at?'canceled':a.state}/></div>
   <div className="approval-task-meta">
@@ -539,6 +547,19 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
   </div>
   <div className="approval-body"><div className="approval-main">
   {isDeadline&&<div className="deadline-change"><div><span>Текущий крайний срок</span><strong>{date(task?.deadline||null,true)}</strong></div><ArrowRight size={20}/><div><span>Предложенный крайний срок</span><strong>{date(a.proposed_deadline,true)}</strong></div><small>МСК</small></div>}
+  {editDeadlineInline&&<div className="approval-deadline-editor">
+   <label>Итоговый крайний срок · МСК
+    <input type="datetime-local" value={finalDate} min={moscowDateInput(new Date().toISOString())}
+     aria-invalid={!!deadlineError} disabled={busy} onChange={e=>setDeadlineDraft({revision,value:e.target.value})}/>
+   </label>
+   <button type="button" className="button primary" disabled={busy||!!deadlineError} onClick={approve}>
+    <Check size={16}/>{changedDeadline?'Согласовать с новым сроком':'Согласовать перенос'}
+   </button>
+   {(deadlineError||changedDeadline)&&<div className="approval-deadline-feedback">
+    {deadlineError&&<small className="red-text">{deadlineError}</small>}
+    {changedDeadline&&proposed&&<button type="button" className="text-button" disabled={busy} onClick={()=>setDeadlineDraft(null)}>Вернуть предложенный</button>}
+   </div>}
+  </div>}
   {a.approved_deadline&&a.approved_deadline!==a.proposed_deadline&&<p className="inline-note"><Check size={15}/> Согласованный крайний срок <strong>{date(a.approved_deadline,true)} МСК</strong></p>}
   {change&&<aside className="approval-update">
    <strong>{change.source==='bitrix'?'Изменения из Битрикс24':'Изменения в РУСПЭТ'} · {date(change.at,true)} МСК</strong>
@@ -556,12 +577,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
   {a.state==='stale'&&!a.canceled_at&&<p className="inline-note red-text">Задача изменилась. Нужен новый запрос с актуальными данными.</p>}
   {!viewingEmployee&&canAnswer&&<div className="decision-form"><textarea aria-label="Ответ на уточнение" placeholder="Ответьте на вопрос согласующего…" value={answer} onChange={e=>setAnswer(e.target.value)} maxLength={4000}/><button className="button primary" disabled={busy||answer.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/clarification`,{answer})}>Отправить ответ</button></div>}
   {!viewingEmployee&&canDecide&&<div className="decision-form">
-   {mayOverride&&(override===null
-    ?<button type="button" className="text-button change-approval-deadline" onClick={()=>setOverride(a.proposed_deadline?moscowDateInput(a.proposed_deadline):'')}>Выбрать другой срок</button>
-    :<div className="approval-deadline-editor"><label>Итоговый крайний срок · МСК
-     <input autoFocus type="datetime-local" value={override} onChange={e=>setOverride(e.target.value)} min={moscowDateInput(new Date().toISOString())}/>
-    </label><button type="button" className="text-button" onClick={()=>setOverride(null)}>Вернуть предложенный</button></div>)}
-   <input aria-label="Комментарий или вопрос" placeholder={defaultAccept?"Комментарий обязателен при отказе или уточнении":"Комментарий к решению или вопрос · минимум 5 символов"} maxLength={4000} value={comment} onChange={e=>setComment(e.target.value)}/><div><button className="button primary" disabled={busy||invalidOverride||!defaultAccept&&comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'approve',comment,expectedRevision:a.action_revision,expectedStep:a.current_step,...(approvedDeadline?{approvedDeadline}:{})})}><Check size={16}/>{a.current_step<a.route.length-1?"Согласовать и передать":resultReview?"Принять результат":override!==null?"Согласовать с новым сроком":"Согласовать"}</button><button className="button reject" disabled={busy||comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'reject',comment,expectedRevision:a.action_revision,expectedStep:a.current_step})}>{resultReview?"Вернуть с замечаниями":"Отклонить запрос"}</button><button className="button secondary" disabled={busy||comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'clarify',comment,expectedRevision:a.action_revision,expectedStep:a.current_step})}>Уточнить</button><button className="text-button" disabled={busy} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'later',comment,expectedRevision:a.action_revision,expectedStep:a.current_step,remindMinutes:60})}><Clock3 size={15}/>Напомнить через час</button></div></div>}
+   <input aria-label="Комментарий или вопрос" placeholder={defaultAccept?"Комментарий обязателен при отказе или уточнении":"Комментарий к решению или вопрос · минимум 5 символов"} maxLength={4000} value={comment} onChange={e=>setComment(e.target.value)}/><div>{!editDeadlineInline&&<button className="button primary" disabled={busy||!defaultAccept&&comment.trim().length<5} onClick={approve}><Check size={16}/>{a.current_step<a.route.length-1?"Согласовать и передать":resultReview?"Принять результат":"Согласовать"}</button>}<button className="button reject" disabled={busy||comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'reject',comment,expectedRevision:a.action_revision,expectedStep:a.current_step})}>{resultReview?"Вернуть с замечаниями":"Отклонить запрос"}</button><button className="button secondary" disabled={busy||comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'clarify',comment,expectedRevision:a.action_revision,expectedStep:a.current_step})}>Уточнить</button><button className="text-button" disabled={busy} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'later',comment,expectedRevision:a.action_revision,expectedStep:a.current_step,remindMinutes:60})}><Clock3 size={15}/>Напомнить через час</button></div></div>}
 
  <details className="approval-discussion"><summary>Обсуждение запроса · {(data.approvalComments||[]).filter(c=>c.approval_id===a.id).length}</summary>{(data.approvalComments||[]).filter(c=>c.approval_id===a.id).map(c=><article className="comment" key={c.id}><div><strong>{data.users.find(u=>u.id===c.author_id)?.name}<small>{date(c.created_at,true)}</small></strong><p>{c.body}</p></div></article>)}{!viewingEmployee&&<><label>Сообщение по этому запросу<textarea maxLength={4000} value={thread} onChange={e=>setThread(e.target.value)} placeholder="Уточнение, ответ или ссылка на результат…"/></label><button className="button secondary" disabled={busy||!thread.trim()} onClick={async()=>{if(await act(`/tasks/${a.task_id}/comments`,{body:thread,approvalId:a.id}))setThread('')}}>Отправить сообщение</button></>}</details>
  </div><DeadlineHistory items={transfers} openDiscussion={()=>void openTask(a.task_id,'discussion')}/></div>
