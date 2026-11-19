@@ -6,6 +6,13 @@ main select:not([multiple]) {
 }
 main select:disabled { opacity:.6; }
 .task-panel .active-filter { padding:0 16px; flex-wrap:wrap; }
+.task-metrics-content { display:grid; gap:12px; margin-bottom:12px; }
+.task-metrics-content .dashboard-toolbar { display:flex; flex-wrap:wrap; gap:10px; margin:0; }
+.task-metrics-content .price-counters { margin:0; }
+.task-metrics-content .section-footnote { padding:0 16px 12px; }
+.telegram-pairing { background:var(--theme-surface-soft); border:1px solid var(--theme-border); padding:12px; border-radius:8px; margin-bottom:12px; }
+.telegram-pairing .pilot-controls { margin:8px 0 0; }
+.sidebar > .brand { margin-bottom:12px; }
 .workspace-main { min-inline-size:0; }
 .table-scroll { overscroll-behavior-inline:contain; }
 .drawer-body { overflow-wrap:anywhere; }

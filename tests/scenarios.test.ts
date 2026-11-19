@@ -465,7 +465,7 @@ test('bot lists four tasks per screen, preserves the search page and keeps full 
  const onlyTask=second.buttons.flat().find(b=>b.text.startsWith('#'));assert(onlyTask);
  const card=await botClick(anna,channel,onlyTask.token);
  assert.match(card.text,/Крайний срок/);assert.match(card.text,/&lt;28 мм&gt;/);assert(!card.text.includes('Последняя строка техзадания'));
- assert(card.text.length<500);assert.equal(card.buttons[0][0].text,'Сдать результат');
+ assert(card.text.length<500);assert.equal(card.buttons[0][0].text,'Добавить в мой план');
  const details=await botClick(anna,channel,botButton(card,'Описание'));assert.match(details.text,/<b>Описание/);assert(!details.text.includes('Номер партии'));
  const end=await botClick(anna,channel,botButton(details,'Продолжение →'));assert.match(end.text,/Последняя строка техзадания/);
  const fields=await botClick(anna,channel,botButton(details,'Поля задачи'));assert.match(fields.text,/Номер партии: Тест 26/);assert(!fields.text.includes('Сверить позиции'));
@@ -807,6 +807,31 @@ test('Telegram task alerts repeat after 30 minutes, acknowledge once and stop wh
   assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'Результат проверен и принят',expectedVersion:2})).status,200);
   await reminders.tickTaskReminders(new Date('2035-01-03T14:00:00+03:00'));assert(!(await reminders.pendingAlerts(anna,new Date('2035-01-03T14:00:00+03:00'))).some(a=>a.task_id===id));
  }finally{globalThis.fetch=original;if(previous===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previous;await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');}
+});
+
+test('the bot asks to acknowledge only reminders that are due and still valid',async()=>{
+ const anna=users.find(u=>u.id==='anna')!;
+ const {botView}=await import('../server/bot.js');
+ const alerts=[
+  [randomUUID(),'-5 minutes','5 minutes'],
+  [randomUUID(),'5 minutes','15 minutes'],
+  [randomUUID(),'-15 minutes','-5 minutes']
+ ];
+ try{
+  for(const [id,due,expires] of alerts){
+   await db.pool.query("INSERT INTO task_alerts(id,dedupe_key,recipient_id,kind,body,due_at,expires_at) VALUES($1::uuid,$1::uuid::text,$2,'task',$1::uuid::text,now()+$3::interval,now()+$4::interval)",[id,anna.id,due,expires]);
+  }
+  const response=await request('anna','/alerts');
+  assert.equal(response.status,200);
+  for(const [id] of alerts)assert.ok(response.data.find((alert:{id:string;expires_at:string})=>alert.id===id)?.expires_at);
+  const menu=await botView(anna,'test:reminder-menu',{op:'alerts'});
+  const tokens=menu.buttons.flat().filter(button=>button.text.startsWith('ОК ·')).map(button=>button.token);
+  const targets=await db.pool.query("SELECT payload->>'target' id FROM bot_buttons WHERE token=ANY($1)",[tokens]);
+  assert(targets.rows.some(row=>row.id===alerts[0][0]));
+  assert(!targets.rows.some(row=>row.id===alerts[1][0]||row.id===alerts[2][0]));
+ }finally{
+  await db.pool.query("DELETE FROM task_alerts WHERE id=ANY($1)",[alerts.map(([id])=>id)]);
+ }
 });
 
 test('bot creates a reminder through weekday buttons and validates times before final confirmation',async()=>{

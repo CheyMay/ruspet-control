@@ -1,27 +1,62 @@
-import {TaskPeople} from './TaskPeople.js';
 import {useRememberedFilter} from './remembered-filter.js';
+import {EmployeeFilter} from './SearchFilter.js';
 import {priceCounts,priceLabels} from '../shared/pricing.js';
-import {actionItems} from '../shared/actions.js';
-import {ArrowRight,ArrowUpRight,CalendarDays,Clock3,CheckCheck,GitPullRequest,AlertCircle,CircleHelp} from 'lucide-react';
-import type {Bootstrap,Task} from '../shared/types.js';
-import {summarize,queueLabels,daysFrom,plannedMinutesOn,plannedInterval} from '../shared/analytics.js';
-import {businessDay,taskQueue} from '../shared/queues.js';
-const short=(d:string)=>new Date(d+'T12:00:00+03:00').toLocaleDateString('ru-RU',{day:'numeric',month:'short',timeZone:'Europe/Moscow'});
-const colors={overdue:'#b65e50',today:'#b59650',upcoming:'#628977',no_deadline:'#9a879c',review:'#718caa',completed:'#b1c3b5'};
-export function Dashboard({data,now,go,open}: {data:Bootstrap;now:Date;go:(filter:string,owner?:string,price?:string)=>void;open:(id:string)=>void}){
- const [owner,setOwner]=useRememberedFilter(data.user.id,'Dashboard.owner','all'),[tab,setTab]=useRememberedFilter(data.user.id,'Dashboard.tab','control');
- const tasks=data.tasks.filter(t=>owner==='all'||t.assignee_id===owner),stats=summarize(tasks,now),ids=new Set(tasks.map(t=>t.id));
- const users=data.users.filter(u=>data.tasks.some(t=>t.assignee_id===u.id));
- const pending=data.approvals.filter(a=>a.state==='pending'&&ids.has(a.task_id)),waiting=data.controls.filter(c=>['waiting','escalated'].includes(c.state)&&ids.has(c.task_id));
- const days=daysFrom(now,7),daily=days.map(day=>tasks.filter(t=>t.status==='active'&&t.deadline&&businessDay(t.deadline)===day).length),max=Math.max(1,...daily);
- const click=(filter:string,id=owner)=>go(filter,id==='all'?undefined:id);
- const focus=tasks.filter(t=>taskQueue(t,now)==='overdue').sort((a,b)=>Number(b.customer_risk)-Number(a.customer_risk)||(a.deadline||'').localeCompare(b.deadline||'')).slice(0,6);
- const inbox=actionItems(data),mine=inbox.filter(a=>a.mine).length;
- return <><section className="price-counters" aria-label="Задачи по цене">{Object.entries(priceCounts(tasks)).map(([key,count])=><button key={key} onClick={()=>go('all',owner==='all'?undefined:owner,key)}><strong>{count}</strong><span>{priceLabels[key as keyof typeof priceLabels]}</span></button>)}</section><div className="management-focus"><div><strong>{mine} требуют вашего действия</strong><p>Здесь собраны запросы ответов, решения по срокам, приёмка и возвраты на доработку.</p></div><span>{inbox.filter(a=>a.since&&now.getTime()-Date.parse(a.since)>86400000).length} ожиданий дольше суток</span></div><div className="dashboard-toolbar"><div className="tabs"><button className={(!data.rules.showPlanning||tab==='control')?'selected':''} onClick={()=>setTab('control')}>Контроль задач</button>{data.rules.showPlanning&&<button className={tab==='load'?'selected':''} onClick={()=>setTab('load')}>Нагрузка команды</button>}</div><select aria-label="Сотрудник на дашборде" value={owner} onChange={e=>setOwner(e.target.value)}><option value="all">Вся доступная команда</option>{users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></div>
- {(!data.rules.showPlanning||tab==='control')?<><section className="total-banner"><div><span className="eyebrow">ЗАДАЧ В ВЫБОРКЕ</span><button onClick={()=>click('all')} className="total-number">{stats.total}<ArrowUpRight size={24}/></button></div><div><strong>{stats.unfinished} незавершённых</strong><p>{stats.completed} завершённых · {users.filter(u=>tasks.some(t=>t.assignee_id===u.id)).length} исполнителей</p><small>Нажмите на показатель, чтобы увидеть его задачи.</small></div><div className="total-date"><CalendarDays size={19}/><span>Состояние сроков<br/><strong>{short(businessDay(now))} · МСК</strong></span></div></section>
- <section className="queue-grid">{Object.entries(queueLabels).map(([key,label])=>{const id=key as keyof typeof queueLabels;return <button className={`queue-card queue-${key}`} key={key} onClick={()=>click(key)} title={key==='today'?'Дедлайн приходится на сегодняшний день по московскому времени.':key==='overdue'?'Дедлайн был до начала сегодняшнего дня; задачи на приёмке учитываются отдельно.':key==='review'?'Результат сдан и ожидает решения постановщика или руководителя.':key==='no_deadline'?'В задаче не задан крайний срок.':'Нажмите, чтобы открыть список задач этой категории.'}><span>{label}<CircleHelp size={13}/><ArrowUpRight size={14}/></span><strong>{stats[id]}</strong><small>{key==='today'?(stats.elapsedToday?`У ${stats.elapsedToday} уже истекло время`:'Крайний срок в течение дня'):key==='overdue'?'Срок до начала сегодняшнего дня':key==='review'?'Результат ожидает решения':key==='no_deadline'?'Требуется назначить срок':`${stats.total?Math.round(stats[id]/stats.total*100):0}% от всех задач`}</small></button>;})}</section>
- <div className="reconciliation"><div className="queue-strip">{Object.keys(queueLabels).map(k=><span key={k} title={`${queueLabels[k as keyof typeof queueLabels]}: ${stats[k as keyof typeof queueLabels]}`} style={{width:`${stats[k as keyof typeof queueLabels]/Math.max(1,stats.total)*100}%`,background:colors[k as keyof typeof colors]}}/>)}</div><p>{stats.overdue} + {stats.today} + {stats.upcoming} + {stats.no_deadline} + {stats.review} + {stats.completed} = <b>{stats.total} задач</b>. Каждая задача учтена один раз.</p></div>
- <div className="workflow-signals"><button onClick={()=>click('pending')}><GitPullRequest size={18}/><strong>{pending.length}</strong><span>на согласовании</span><ArrowRight size={14}/></button><button onClick={()=>click('waiting')}><Clock3 size={18}/><strong>{waiting.length}</strong><span>ожидают ответа исполнителя</span><ArrowRight size={14}/></button><button onClick={()=>click('risk')}><AlertCircle size={18}/><strong>{tasks.filter(t=>t.customer_risk&&t.status!=='completed').length}</strong><span>с риском потери клиента</span><ArrowRight size={14}/></button></div><p className="metric-definition">Эти признаки могут пересекаться с очередями выше; они не прибавляются к общему числу задач.</p>
- <div className="dashboard-columns"><section className="panel"><div className="panel-heading"><div><h2>С чего начать</h2><p>Просрочки, сначала задачи с риском потери клиента</p></div><button className="text-button" onClick={()=>click('overdue')}>Все просрочки <ArrowRight size={14}/></button></div>{focus.length?focus.map(t=><button key={t.id} className="focus-task" onClick={()=>open(t.id)}><span className="focus-task-id">#{t.id}</span><div><strong>{t.title}</strong><TaskPeople task={t} users={data.users}/><small>Крайний срок {short(businessDay(t.deadline!))}{t.customer_risk?' · риск клиента':''}</small></div><ArrowUpRight size={16}/></button>):<div className="empty"><CheckCheck size={27}/><h3>Просрочек с прошлых дней нет</h3><p>Проверьте сегодняшние сроки и очередь приёмки.</p></div>}</section><section className="panel"><div className="panel-heading"><div><h2>Крайние сроки · 7 дней</h2><p>Только задачи в работе, без приёмки и завершённых</p></div></div><div className="deadline-chart">{days.map((d,i)=><button key={d} onClick={()=>click('day:'+d)} title={`${short(d)}: ${daily[i]} задач`}><strong>{daily[i]}</strong><span className="bar-space"><i style={{height:`${daily[i]/max*100}%`,minHeight:daily[i]?4:0}}/></span><small>{i===0?'Сегодня':short(d)}</small></button>)}</div><div className="chart-footer">Все значения рассчитаны из текущей локальной копии задач.</div></section></div>
- <section className="panel team-summary"><div className="panel-heading"><h2>Сроки по сотрудникам</h2><span className="muted">Нажмите число, чтобы открыть выборку</span></div><div className="table-scroll"><table><thead><tr><th>Исполнитель</th><th>Всего</th><th>Просрочены</th><th>Сегодня</th><th>Впереди</th><th>Приёмка</th><th>Без срока</th><th>Завершены</th></tr></thead><tbody>{users.filter(u=>owner==='all'||u.id===owner).map(u=>{const s=summarize(tasks.filter(t=>t.assignee_id===u.id),now);return <tr key={u.id}><td><strong>{u.name}</strong></td>{(['total','overdue','today','upcoming','review','no_deadline','completed'] as const).map(k=><td key={k}><button className={`number-link ${k==='overdue'&&s[k]?'red-text':''}`} onClick={()=>click(k==='total'?'all':k,u.id)}>{s[k]}</button></td>)}</tr>;})}</tbody></table></div></section></>:<section className="panel"><div className="panel-heading"><div><h2>Плановая нагрузка · ближайшие 7 дней</h2><p>Часы по плановым интервалам. Это не фактически отработанное время.</p></div></div><div className="table-scroll"><table><thead><tr><th>Сотрудник</th>{days.map(d=><th key={d}>{short(d)}</th>)}<th>Без полного плана</th></tr></thead><tbody>{users.filter(u=>owner==='all'||owner===u.id).map(u=>{const own=tasks.filter(t=>t.assignee_id===u.id&&t.status==='active');return <tr key={u.id}><td>{u.name}</td>{days.map(d=>{const minutes=own.reduce((sum,t)=>sum+(plannedMinutesOn(t,d)||0),0);return <td key={d} className={minutes>480?'load-high':''}>{minutes?(minutes/60).toLocaleString('ru-RU',{maximumFractionDigits:1})+' ч':'—'}</td>})}<td>{own.filter(t=>{const p=plannedInterval(t);return !p.start||!p.end||new Date(p.end)<new Date(p.start)}).length}</td></tr>;})}</tbody></table></div><p className="section-footnote" style={{padding:20}}>Интервалы распределяются по календарным дням, включая ночи и выходные. Пересечения суммируются. Более 8 часов выделены для проверки плана, а не как оценка эффективности сотрудника.</p></section>}</>;
+import type {Bootstrap} from '../shared/types.js';
+import {daysFrom,plannedMinutesOn,plannedInterval} from '../shared/analytics.js';
+import {businessDay} from '../shared/queues.js';
+
+const short=(day:string)=>new Date(day+'T12:00:00+03:00').toLocaleDateString('ru-RU',{day:'numeric',month:'short',timeZone:'Europe/Moscow'});
+
+export function Dashboard({data,now,go}:{data:Bootstrap;now:Date;go:(filter:string,owner?:string,price?:string)=>void}){
+ const [owner,setOwner]=useRememberedFilter(data.user.id,'Dashboard.owner','all');
+ const [tab,setTab]=useRememberedFilter(data.user.id,'Dashboard.tab','control');
+ const tasks=data.tasks.filter(task=>owner==='all'||task.assignee_id===owner);
+ const assignees=new Set(data.tasks.map(task=>task.assignee_id));
+ const users=data.users.filter(user=>user.id===owner||assignees.has(user.id));
+ const days=daysFrom(now,7);
+ const active=tasks.filter(task=>task.status==='active');
+ const daily=days.map(day=>active.filter(task=>task.deadline&&businessDay(task.deadline)===day).length);
+ const max=Math.max(1,...daily);
+ const click=(filter:string,price?:string)=>go(filter,owner==='all'?undefined:owner,price);
+ const showLoad=data.rules.showPlanning&&tab==='load';
+ const waiting=tasks.filter(task=>data.controls.some(control=>control.task_id===task.id&&['waiting','escalated'].includes(control.state))).length;
+ const risk=tasks.filter(task=>task.customer_risk&&task.status!=='completed').length;
+
+ return <div className="task-metrics-content">
+  <div className="dashboard-toolbar">
+   <EmployeeFilter label="Исполнитель в сводке" value={owner} onChange={setOwner}
+    people={users} empty={{value:'all',label:'Все исполнители'}}/>
+   {data.rules.showPlanning&&<div className="tabs" aria-label="Показатели задач">
+    <button type="button" className={!showLoad?'selected':''} onClick={()=>setTab('control')}>Цены и крайние сроки</button>
+    <button type="button" className={showLoad?'selected':''} onClick={()=>setTab('load')}>Плановая нагрузка</button>
+   </div>}
+  </div>
+  {showLoad?<section className="panel">
+   <div className="panel-heading"><div><h2>Плановая нагрузка · 7 дней</h2><p>Часы по запланированным интервалам задач</p></div></div>
+   <div className="table-scroll"><table><thead><tr><th>Сотрудник</th>{days.map(day=><th key={day}>{short(day)}</th>)}<th>Без полного плана</th></tr></thead>
+    <tbody>{users.filter(user=>owner==='all'||user.id===owner).map(user=>{
+     const own=active.filter(task=>task.assignee_id===user.id);
+     return <tr key={user.id}><td>{user.name}</td>{days.map(day=>{
+      const minutes=own.reduce((sum,task)=>sum+(plannedMinutesOn(task,day)||0),0);
+      return <td key={day} className={minutes>480?'load-high':''}>{minutes?(minutes/60).toLocaleString('ru-RU',{maximumFractionDigits:1})+' ч':'—'}</td>;
+     })}<td>{own.filter(task=>{const plan=plannedInterval(task);return !plan.start||!plan.end||new Date(plan.end)<new Date(plan.start);}).length}</td></tr>;
+    })}</tbody></table></div>
+   <p className="section-footnote">Учитываются пересечения, вечера и выходные. Если получилось больше 8 часов за день, проверьте план.</p>
+  </section>:<>
+   <section className="price-counters" aria-label="Задачи по цене">{Object.entries(priceCounts(tasks)).map(([key,count])=>
+    <button type="button" key={key} onClick={()=>click('all',key)}><strong>{count}</strong><span>{priceLabels[key as keyof typeof priceLabels]}</span></button>
+   )}</section>
+   <div className="task-scope-actions">
+    <button className="button secondary" type="button" onClick={()=>click('waiting')}>Ждут ответа сотрудника · {waiting}</button>
+    <button className="button secondary" type="button" onClick={()=>click('risk')}>Риск потери клиента · {risk}</button>
+   </div>
+   <section className="panel">
+    <div className="panel-heading"><div><h2>Крайние сроки · 7 дней</h2><p>Задачи в работе по московскому времени</p></div></div>
+    <div className="deadline-chart">{days.map((day,i)=><button type="button" key={day} onClick={()=>click('day:'+day)} title={short(day)+': '+daily[i]+' задач'}>
+     <strong>{daily[i]}</strong><span className="bar-space"><i style={{height:daily[i]/max*100+'%',minHeight:daily[i]?4:0}}/></span>
+     <small>{i===0?'Сегодня':short(day)}</small>
+    </button>)}</div>
+   </section>
+  </>}
+ </div>;
 }

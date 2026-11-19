@@ -51,19 +51,19 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
  function row(item:WorkTask){
   const task=item.task,myStep=item.ownerId===data.user.id;
   const finish=complete&&myStep&&task.assignee_id===data.user.id&&!item.action&&!item.needsAcceptance&&!item.pendingApproval&&canComplete(data.user,task,data.approvalScope);
-  const button=item.needsAcceptance?'К приёму задачи':item.action?labels[item.action.kind]:item.tab==='approvals'?'К согласованию':item.tab==='result'?'К результату':'Открыть задачу';
+  const button=item.action?labels[item.action.kind]:item.tab==='approvals'?'К согласованию':item.tab==='result'?'К результату':null;
   const deadline=task.deadline,clock=deadline?item.deadlineState==='today'?'До '+time.format(new Date(deadline))+' МСК':
    (item.deadlineState==='expired'?'Истёк сегодня в '+time.format(new Date(deadline)):'Крайний срок '+shortDate.format(new Date(deadline)))+' МСК':'';
   return <article className="work-row" key={task.id}>
    <div className="work-row-content">
     <div className="work-row-meta"><span>#{task.id}</span>{clock&&<span className={item.deadlineState==='expired'||item.deadlineState==='earlier'?'urgent':''}>{clock}</span>}</div>
-    <button type="button" className="work-task-title" onClick={()=>void open(task.id,item.tab)}>{task.title}</button>
+    <button type="button" className="work-task-title" onClick={()=>void open(task.id)}>{task.title}</button>
     <div className="work-row-people"><span>Исполнитель · {name(task.assignee_id)}</span><span>Постановщик · {name(task.creator_id)}</span></div>
     {(item.label!=='Выполнить задачу'||!myStep)&&<p className="work-step">{myStep?'Ваш шаг':name(item.ownerId)||'Следующий шаг'} · {item.label}</p>}
    </div>
    <div className="work-row-action">
     {finish?<button type="button" className="button secondary" disabled={busy} onClick={()=>complete(task)}>Завершить</button>:
-     <button type="button" className={'button '+(myStep?'primary':'secondary')} onClick={()=>void open(task.id,item.tab)}>{button}<ArrowRight size={15}/></button>}
+     button&&item.tab!=='info'&&<button type="button" className={'button '+(myStep?'primary':'secondary')} onClick={()=>void open(task.id,item.tab)}>{button}<ArrowRight size={15}/></button>}
    </div>
   </article>;
  }

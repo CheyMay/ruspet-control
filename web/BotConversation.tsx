@@ -1,5 +1,5 @@
 import {useEffect,useRef,useState} from 'react';
-import {Bell,House,ListTodo,Search,Send} from 'lucide-react';
+import {Clock3,House,ListTodo,Search,Send} from 'lucide-react';
 import type {BotScreen} from '../server/bot.js';
 import {api,ApiError} from './api.js';
 import {BotText} from './BotText.js';
@@ -7,7 +7,7 @@ import {VoiceRecorder} from './VoiceRecorder.js';
 import {TaskRoleSwitch} from './TaskRoleSwitch.js';
 import type {PersonalTaskScope} from '../shared/types.js';
 
-type Entry='home'|'tasks'|'notices'|'search_prompt';
+type Entry='home'|'tasks'|'notices'|'inbox'|'search_prompt';
 type Props={mobile?:boolean;initial?:Entry;refresh:()=>Promise<unknown>};
 
 export function BotConversation({mobile=false,initial='home',refresh}:Props){
@@ -77,7 +77,7 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
   }finally{clearTimeout(deadline);active.current=false;setBusy(false);}
  }
  return <section className={mobile?'mobile-conversation':'panel'} aria-label="Рабочий бот">
-  {!mobile&&<div className="panel-heading"><div><h2>Рабочий бот</h2><p>Найдите задачу, ответьте или запишите голосовое.</p></div><button className="button secondary" disabled={busy} onClick={()=>open('home')}>Меню</button></div>}
+
   <div className="bot-preview" ref={message}>
    {view?.taskScope&&<TaskRoleSwitch value={view.taskScope} change={scope=>open('tasks',scope)} disabled={busy}/>}
    <div aria-live="polite">
@@ -100,7 +100,7 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
    <button type="button" onClick={()=>open('tasks')} disabled={busy}><ListTodo size={19}/><span>Задачи</span></button>
    {voice&&<VoiceRecorder mobile disabled={busy} onSend={sendVoice}/>}
    <button type="button" onClick={()=>open('search_prompt')} disabled={busy}><Search size={19}/><span>Поиск</span></button>
-   <button type="button" onClick={()=>open('notices')} disabled={busy}><Bell size={19}/><span>События</span></button>
+   <button type="button" onClick={()=>open('inbox')} disabled={busy}><Clock3 size={19}/><span>Сроки</span></button>
   </nav>}
  </section>;
 }

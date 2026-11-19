@@ -6,6 +6,20 @@
 }
 .task-card .drawer-top { flex-wrap:wrap; gap:10px; }
 .task-card .task-card-toolbar { display:flex; align-items:center; flex-wrap:wrap; gap:7px; }
+.task-card-more { position:relative; }
+.task-card-more > summary { cursor:pointer; list-style:none; }
+.task-card-more > summary::-webkit-details-marker { display:none; }
+.task-card-more-actions {
+ position:absolute; right:0; top:calc(100% + 5px); z-index:5; min-width:195px; padding:5px;
+ background:var(--theme-surface); border:1px solid var(--theme-border); border-radius:8px;
+ box-shadow:0 10px 28px rgb(21 42 33 / .14);
+}
+.task-card-more-actions > :is(button,span) {
+ display:flex; align-items:center; gap:8px; width:100%; padding:9px; text-align:left;
+ color:var(--theme-text); border:0; background:transparent; border-radius:5px; font-size:13px; line-height:1.3;
+}
+.task-card-more-actions > button:not(:disabled):hover { background:var(--theme-surface-raised); }
+.task-card-more-actions > span { color:var(--theme-text-secondary); }
 .task-card .drawer-heading { flex:none; max-height:34dvh; overflow:auto; padding-block:16px 19px; }
 .task-card .drawer-heading h2 { max-width:75ch; overflow-wrap:anywhere; }
 .task-card > .tabs { flex:none; min-width:0; overflow-x:auto; }
@@ -58,6 +72,7 @@
 .task-card .task-facts { grid-template-columns:repeat(2,minmax(0,1fr)); gap:16px 12px; margin:0; padding:0; border:0; }
 .task-card .task-facts .person { white-space:normal; }
 .task-card .task-facts > div { min-width:0; }
+.task-card .task-facts > div > small { display:block; margin-top:3px; color:var(--theme-text-secondary); }
 .task-card-buttons { display:flex; align-items:center; flex-wrap:wrap; gap:8px; margin-top:12px; }
 .task-card-fields, .task-card .source-fields .task-card-fields {
  display:grid;

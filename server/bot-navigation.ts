@@ -192,26 +192,25 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  }
  if(p.op==='menu_more'){
   const last=await lastUndo(u);
-  return htmlScreen(u,ch,'<b>Другие разделы</b>\n\nНапоминания, отчёты и помощь.',[
-   [button('🔔 Напоминания','alerts'),button('📁 Отчёты','reports')],
+  return htmlScreen(u,ch,'<b>Другие разделы</b>',[
+   [button('Напоминания','alerts'),...(!canManage(u)?[button('Отчёты','reports',{filter:'mine'})]:[])],
    [button('Мой календарь','personal_plan')],
    ...(canManage(u)?[[button('Сводка команды','brief',{filter:'team'})]]:[]),
    ...(last?[[button('Отменить последнее действие','undo_prepare',{id:last.task_id,target:last.id})]]:[]),
-   [button('Поиск','search_prompt'),button('Как пользоваться','help')],[button('Меню','home')]
+   [button('Как пользоваться','help')],[button('Меню','home')]
   ]);
  }
  if(p.op==='help')return htmlScreen(u,ch,'<b>Как пользоваться ботом</b>\n\n1. «Сроки и действия» — начните с просрочек и сроков на сегодня. Там же новые назначения, ответы и решения.\n2. «Ждут решения» — по этим задачам сейчас ход за другим участником.\n3. В карточке сверху ближайшее действие, ниже описание и обсуждение.\n4. В «Ещё действиях» есть перенос срока, напоминания и история.\n\nДля поиска напишите название, номер или имя исполнителя. Изменения выполняются после подтверждения.',[[button('Найти задачу','search_prompt')],[button('Меню','home')]]);
  const s=summarize(own,now);
  const company=hasCompanyOverview(u);
- const total=company?summarize(data.tasks,now):null;
- const overview=total?`\n\n<b>Вся компания</b>\nОткрыто: ${total.unfinished} · Просрочено: ${total.overdue} · Сегодня: ${total.today} · Приёмка: ${total.review}`:'';
- return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nПросрочено · ${queue.overdue.length} · На сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}${overview}`,[
+
+ return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nПросрочено · ${queue.overdue.length} · На сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}`,[
   [button(workQueueTitle+' · '+workCount(queue),'inbox')],
-  [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)?[button('Задачи команды','team')]:[button('Поиск','search_prompt')])],
+  [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)?[button('Задачи команды','team')]:[])],
   ...(company?[[button('Сводка компании','brief',{filter:'company'}),button('Отчёты','reports')]]:
-   canManage(u)?[[button('Мои отчёты','reports',{filter:'mine'}),button('Поиск','search_prompt')]]:[]),
+   canManage(u)?[[button('Мои отчёты','reports',{filter:'mine'})]]:[]),
   ...(data.pendingAssignments?[[button('Новые задачи к приёму · '+data.pendingAssignments,'personal_plan',{filter:'awaiting'})]]:[]),
-  [button('Новая задача','form',{kind:'create_task'}),button('Уведомления','notices')],
+  [button('Новая задача','form',{kind:'create_task'}),button('Поиск','search_prompt'),button('Уведомления','notices')],
   [button('Ещё разделы','menu_more')]
  ]);
 }
