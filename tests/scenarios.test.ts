@@ -66,6 +66,74 @@ test('employee cannot view another branch task or run checks',async()=>{
  assert.equal((await request('anna','/checks/run',{})).status,403);
  const result=await request('anna','/bootstrap');assert.ok(result.data.tasks.every((t:any)=>t.assignee_id==='anna'||t.creator_id==='anna'));
 });
+
+test('per-task undo survives work on another task; staff undo is explicit and limited to the Moscow day',async t=>{
+ const template={title:'Проверка отмены действий',description:'Фикстура',price:0,assigneeId:'anna',
+  deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null};
+ const paths:string[]=[];
+ for(let i=0;i<4;i++){
+  const {status,data}=await request('admin','/tasks',template);assert.equal(status,201);
+  const path='/tasks/'+data.id;paths.push(path);
+  assert.equal((await request('anna',path+'/comments',{body:'Рабочий комментарий '+i})).status,200);
+ }
+ const lastFor=(path:string)=>request('anna','/undo/last?taskId='+path.slice('/tasks/'.length));
+ const own=(await lastFor(paths[0])).data;
+ assert.equal(own.task_id,paths[0].slice('/tasks/'.length));
+ assert(own.remainingMs>0&&own.remainingMs<=300000);
+ const {botView,botClick}=await import('../server/bot.js');
+ const anna=users.find(u=>u.id==='anna')!;
+ const screen=await botView(anna,'undo-fixture',{op:'task_more',id:own.task_id});
+ const undoButton=screen.buttons.flat().find(b=>b.text==='Отменить последнее действие');
+ assert(undoButton);
+ const confirm=await botClick(anna,'undo-fixture',undoButton.token);
+ assert(confirm.buttons.flat().some(b=>b.text==='Да, отменить действие'));
+ assert.equal((await request('anna','/undo',{id:own.id,confirmed:true})).status,200);
+
+ const auditPath=paths[1]+'/staff-undo',candidate=(await lastFor(paths[1])).data;
+ const second=(await lastFor(paths[2])).data,changed=(await lastFor(paths[3])).data;
+ const body={id:candidate.id,confirmed:true,reason:'Комментарий добавили по ошибке.'};
+ assert.equal((await request('admin',auditPath)).status,403);
+ assert.equal((await request('admin','/undo/staff',body)).status,403);
+ assert.equal((await request('director','/undo/staff',body)).status,403);
+ await db.pool.query("UPDATE users SET staff_undo_access=true WHERE id IN ('admin','anna')");
+ t.after(()=>db.pool.query("UPDATE users SET staff_undo_access=false WHERE id IN ('admin','anna')"));
+ assert.equal((await request('anna',auditPath)).status,403);
+ assert.equal((await request('anna','/undo/staff',body)).status,403);
+ assert.equal((await fetch(base+'/api'+auditPath,{headers:{Cookie:cookies.get('admin')!,'X-Ruspet-View-As':'anna'}})).status,403);
+
+ const at='2026-11-19T00:06:00+03:00';
+ const clock=t.mock.method(Date,'now',()=>Date.parse(at));
+ await db.pool.query("UPDATE undo_actions SET created_at='2026-11-18T10:00:00+03:00' WHERE NOT supported AND task_id=ANY($1)",
+  [paths.map(path=>path.slice('/tasks/'.length))]);
+ const times=['2026-11-19T00:00:00+03:00','2026-11-18T23:59:59+03:00','2026-11-19T00:01:00+03:00'];
+ await db.pool.query('UPDATE undo_actions SET created_at=$2 WHERE id=$1',[candidate.id,times[0]]);
+ await db.pool.query('UPDATE undo_actions SET created_at=$2 WHERE id=$1',[second.id,times[1]]);
+ await db.pool.query('UPDATE undo_actions SET created_at=$2 WHERE id=$1',[changed.id,times[2]]);
+ assert.equal((await lastFor(paths[1])).data,null);
+ const today=(await request('admin',auditPath)).data.find((row:{id:string})=>row.id===candidate.id);
+ assert.equal(today.author,anna.name);
+ assert.equal(today.problem,null);
+ assert(!(await request('admin',paths[2]+'/staff-undo')).data.some((row:{id:string})=>row.id===second.id));
+ const expired=await request('admin','/undo/staff',{...body,id:second.id});
+ assert.equal(expired.status,409);
+ assert.match(expired.data.error,/текущий день/);
+
+ await db.pool.query('UPDATE tasks SET version=version+1 WHERE id=$1',[changed.task_id]);
+ assert.match((await request('admin',paths[3]+'/staff-undo')).data.find((row:{id:string})=>row.id===changed.id).problem,/изменились/);
+ assert.equal((await request('admin','/undo/staff',{...body,id:changed.id})).status,409);
+ assert.equal((await request('admin','/undo/staff',body)).status,200);
+ assert.equal((await request('admin','/undo/staff',body)).status,409);
+ clock.mock.restore();
+
+ const events=(await request('admin',paths[1])).data.events;
+ const entry=events.find((event:{kind:string})=>event.kind==='action_undone');
+ assert.equal(entry.actor_id,'admin');
+ assert.equal(entry.data.originalActorId,'anna');
+ assert.equal(entry.data.reason,body.reason);
+ assert(events.some((event:{id:string})=>entry.data.originalEvents.includes(event.id)));
+ const saved=(await db.pool.query('SELECT undone_by,undo_reason FROM undo_actions WHERE id=$1',[body.id])).rows[0];
+ assert.deepEqual(saved,{undone_by:'admin',undo_reason:body.reason});
+});
 test('repeated checks do not create duplicate controls or deadline changes',async()=>{
  const count=async()=>Number((await db.pool.query('SELECT count(*) FROM control_requests')).rows[0].count);
  const before=await count();await service.runChecks(users[0]);await service.runChecks(users[0]);assert.equal(await count(),before);

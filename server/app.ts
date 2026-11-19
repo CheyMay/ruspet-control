@@ -18,7 +18,7 @@ import {setOwnerBitrixExchange} from './owner-operations.js';
 import {taskIntegration} from './bitrix-fields.js';
 import {pilotReadiness,pilotQueue} from './pilot-readiness.js';
 import {managementProgress,resetObservation,setNudgePreference,nudgeTeam} from './management.js';
-import {lastUndo,undoLastAction} from './undo.js';
+import {lastUndo,staffUndoHistory,undoLastAction,undoStaffAction} from './undo.js';
 import {listJournal} from './journal.js';
 import {reportPdf} from './report-pdf.js';
 import {taskSyncStatus} from './task-sync.js';
@@ -128,9 +128,20 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   }
   res.json({...snapshot,serverTime});
  });
- app.get('/api/undo/last',async(req,res)=>res.json(await lastUndo(req.actor)));
+ app.get('/api/undo/last',async(req,res)=>{
+  res.setHeader('Cache-Control','no-store');
+  res.json(await lastUndo(req.actor,z.string().min(1).max(100).optional().parse(req.query.taskId)));
+ });
  app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
  app.post('/api/undo',async(req,res)=>{const input=z.object({id:z.uuid(),confirmed:z.literal(true)}).parse(req.body);res.json(await undoLastAction(req.actor,input.id));});
+ app.get('/api/tasks/:id/staff-undo',async(req,res)=>{
+  res.setHeader('Cache-Control','no-store');
+  res.json(await staffUndoHistory(req.actor,String(req.params.id)));
+ });
+ app.post('/api/undo/staff',async(req,res)=>{
+  const {id,reason}=z.object({id:z.uuid(),confirmed:z.literal(true),reason:z.string().trim().min(5).max(1000)}).parse(req.body);
+  res.json(await undoStaffAction(req.actor,id,reason));
+ });
  app.get('/api/management/progress',async(req,res)=>res.json(await managementProgress(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),owner:z.string().max(100).optional()}).parse(req.query))));
  app.post('/api/management/observation',async(req,res)=>{const input=z.object({confirmed:z.literal(true),expected:z.iso.datetime({offset:true}).nullable()}).parse(req.body);res.json(await resetObservation(req.actor,input.expected));});
  app.put('/api/management/preferences',async(req,res)=>res.json(await setNudgePreference(req.actor,z.object({enabled:z.boolean()}).parse(req.body).enabled)));

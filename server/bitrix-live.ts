@@ -156,6 +156,13 @@ function writeFields(before:Task,after:Task,cfg:Config){
  return changeFields.filter(key=>!same(old[key],next[key])&&(!cfg.sync_linked_tasks||
   (key!=='price'||!!cfg.price_field)&&(key!=='status'||next.status!=='review')));
 }
+export function canRestoreLinkedFields(before:Task,after:Task,cfg:Config){
+ // These are portal fields we can restore and verify with the existing outbound worker.
+ const restore=writeFields(after,before,cfg);
+ return cfg.sync_linked_tasks&&restore.length===writeFields(before,after,cfg).length&&restore.length>0&&
+  (!restore.includes('price')||taskPrice(before)!==null)&&
+  (!restore.includes('status')||before.status==='active');
+}
 async function outboundFields(before:Task,after:Task,raw:Record<string,unknown>,cfg:Config){
  const remote=await remoteValues(raw,cfg),old=localValues(before),next=localValues(after),changed=writeFields(before,after,cfg);
  const conflicts=changed.filter(k=>!same(remote[k],old[k])&&!same(remote[k],next[k])&&

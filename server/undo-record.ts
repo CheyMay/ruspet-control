@@ -16,6 +16,10 @@ export function sameState(a:ActionState,b:ActionState){
  // changed controls, routes or submissions still prevent an unsafe undo.
  const stable=({outbox,task,approvals,...rest}:ActionState)=>({...rest,approvals:approvals.map(a=>({...a,task_change:a.task_change??null,approved_deadline:a.approved_deadline??null})),task:{...task,custom_fields:task.custom_fields??[],company_id:task.company_id??null,delegated_from_id:task.delegated_from_id??null}});return isDeepStrictEqual(stable(a),stable(b));
 }
+export async function spawnedTasks(db:Db,eventIds:string[]){
+ return !!(await db.query(`SELECT 1 FROM task_acceptance_events e JOIN business_runs r USING(event_id)
+  WHERE e.event_id=ANY($1::uuid[]) AND r.task_id IS NOT NULL LIMIT 1`,[eventIds])).rowCount;
+}
 export async function recordTaskAction<T>(u:User,id:string,label:string,run:()=>Promise<T>):Promise<T>{
  return transaction(async db=>{
   await lockDelegationChain(db,id);

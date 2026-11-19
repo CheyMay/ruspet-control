@@ -331,7 +331,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    [button('Да, принять результат','confirm',{...p,op:'confirm',values:{comment:''}})],
    [button('К согласованию','task_approval',{id:p.id,list:p.list})]
   ],db);
-  if(p.op==='undo_prepare'){const last=await lastUndo(u,undefined,db);assert(last&&last.id===p.target,409,'Отмена недоступна: действие изменилось или прошло пять минут.');return screen(u,ch,`Отменить «${last.label}» по задаче #${last.task_id}? История сохранится, участники получат уточнение.`,[[button('Да, отменить действие','confirm',{kind:'undo',id:last.task_id,list:p.list,target:last.id})],[button('Оставить действие','cancel')]],db);}
+  if(p.op==='undo_prepare'){const last=await lastUndo(u,p.id,db);assert(last&&last.id===p.target,409,'Отмена недоступна: действие изменилось или прошло пять минут.');return screen(u,ch,`Отменить «${last.label}» по задаче #${last.task_id}? История сохранится, участники получат уточнение.`,[[button('Да, отменить действие','confirm',{kind:'undo',id:last.task_id,list:p.list,target:last.id})],[button('Оставить действие','cancel')]],db);}
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;
    if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit||p.kind==='edit_price'&&canEditTaskPrice(u,d.task),403,'Нет права редактировать задачу.');}

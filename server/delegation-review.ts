@@ -1,6 +1,6 @@
 import {randomUUID} from 'node:crypto';
 import {transaction,type Db} from './db.js';
-import {actionState,sameState,type ActionState} from './undo-record.js';
+import {actionState,sameState,spawnedTasks,type ActionState} from './undo-record.js';
 import {lockDelegationChain} from './delegation-lock.js';
 import {assert} from './domain.js';
 import {event,notify,refreshTaskFindings} from './service.js';
@@ -62,6 +62,7 @@ export async function undoDelegatedSource(db:Db,child:Task,undoId:string,actor:U
  if(!row)return;
  const before=row.before_state as ActionState,after=row.after_state as ActionState,live=await actionState(db,row.source_id);
  assert(sameState(live,after),409,'Основная задача уже изменилась после автоматического закрытия. Требуется отдельное исправление.');
+ assert(!await spawnedTasks(db,[row.event_id]),409,'Автоматизация основной задачи уже создала новые задачи.');
  assert(!(await db.query("SELECT 1 FROM bitrix_operations WHERE event_id=$1 AND (attempts>0 OR state IN ('processing','sent','uncertain'))",[row.event_id])).rowCount,409,'Изменение основной задачи уже передавалось в Битрикс24.');
  assert(!(await db.query("SELECT 1 FROM task_sync_queue WHERE task_id=$1 AND task_version>$2 AND (attempts>0 OR state='sent')",[row.source_id,before.task.version])).rowCount,409,'Основная задача уже передавалась внешнему обработчику.');
  if(live.task.status==='completed')await undoDelegatedSource(db,live.task,undoId,actor);

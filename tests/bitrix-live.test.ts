@@ -233,6 +233,43 @@ test('remote changes pull in with history; conflicts and unknown comment sends b
  const status=await (await import('../server/pilot-readiness.js')).pilotReadiness();assert.equal(status.ready,false);assert(status.checks.some(c=>c.level==='block'));
 });
 
+test('staff undo reverses a verified linked deadline in Bitrix and blocks uncertain sends',async()=>{
+ const task=await makeLinked('9811');
+ const admin=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
+ const staff={...admin,staff_undo_access:true};
+ const {staffUndoHistory,undoStaffAction}=await import('../server/undo.js');
+ const request=Object.assign((...args:Parameters<BitrixRequest>)=>transport(...args),{portal:'fixture.bitrix24.ru',mode:'webhook' as const}) as BitrixRequest;
+ const deadline='2036-12-12T15:00:00.000Z';
+ const previousRules=await service.config();
+ const previousEnabled=(await db.pool.query('SELECT enabled FROM bitrix_live_config WHERE id=1')).rows[0].enabled;
+ try{
+  await db.pool.query('UPDATE bitrix_live_config SET sync_linked_tasks=true,enabled=true WHERE id=1');
+  await service.saveRules(admin,{...previousRules.config,routes:{deadline:['creator'],completion:['creator']}},previousRules.version);
+  const approval=await service.requestApproval(anna,task.id,{type:'deadline',reason:'Требуется дополнительная проверка',proposedDeadline:deadline,expectedVersion:task.version});
+  await service.decide(director,approval.id,{decision:'approve',comment:'',expectedStep:0});
+  await live.tickLiveSync(request,{taskIds:[task.id]});
+  assert.equal(remote.get('9811')!.deadline,deadline);
+  const [edit]=await staffUndoHistory(staff,task.id);
+  assert.equal(edit.problem,null);
+  await undoStaffAction(staff,edit.id,'Вернуть согласованный срок');
+  await live.tickLiveSync(request,{taskIds:[task.id]});
+  assert.equal(remote.get('9811')!.deadline,task.deadline);
+  assert.deepEqual((await db.pool.query("SELECT payload->>'kind' kind,state FROM bitrix_operations WHERE task_id=$1 ORDER BY sequence",[task.id])).rows,
+   [{kind:'deadline_changed',state:'sent'},{kind:'action_undone',state:'sent'}]);
+  assert.equal((await db.pool.query('SELECT state FROM approvals WHERE id=$1',[approval.id])).rows[0].state,'pending');
+
+  await service.addComment(director,task.id,'Комментарий с неизвестным результатом отправки');
+  lostComment=true;await live.tickLiveSync(request,{taskIds:[task.id]});lostComment=false;
+  const [comment]=await staffUndoHistory(staff,task.id);
+  assert.match(comment.problem!,/Битрикс24/);
+  await assert.rejects(()=>undoStaffAction(staff,comment.id,'Комментарий нужно отозвать'),/Битрикс24/);
+ }finally{
+  lostComment=false;
+  await db.pool.query('UPDATE bitrix_live_config SET sync_linked_tasks=false,enabled=$1 WHERE id=1',[previousEnabled]);
+  await service.saveRules(admin,previousRules.config,(await service.config()).version);
+ }
+});
+
 test('independent portal edits survive outbound writes; unknown messages without evidence and interrupted sends never replay blindly',async()=>{
  await db.pool.query('UPDATE bitrix_live_config SET enabled=true WHERE id=1');
  let task=await makeLinked('905');
