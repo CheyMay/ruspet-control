@@ -181,7 +181,7 @@ export async function handlePilotUpdate(update:any){
 export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:string,limit:number|null=null,now=new Date()){
  const included=(await visibleTasks(user)).map(t=>t.id);
  return (await pool.query<{id:string;task_id:string|null;created_at:string;body:string}>(`SELECT o.* FROM outbox o
-  WHERE o.withdrawn_at IS NULL AND o.read_at IS NULL AND NOT o.task_assignment AND o.task_notice IS NULL AND o.management_notice IS NULL AND o.dedupe_key NOT LIKE 'staff-review:%'
+  WHERE o.withdrawn_at IS NULL AND o.read_at IS NULL AND NOT o.task_assignment AND o.task_notice IS NULL AND o.management_notice IS NULL AND o.dedupe_key NOT LIKE 'staff-review:%' AND o.personal_plan_alert_id IS NULL
    AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[]))
    AND o.created_at BETWEEN greatest($2::timestamptz,$3::timestamptz,$6::timestamptz-interval '2 days') AND $6
    AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text)
@@ -191,7 +191,8 @@ export async function deliver(now=new Date()){
  const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled)return;
  const personal=cfg.delivery?null:(await pool.query(`SELECT
   EXISTS(SELECT 1 FROM task_reminders WHERE enabled AND personal_delivery) AS schedules,
-  EXISTS(SELECT 1 FROM task_alerts WHERE dedupe_key LIKE 'task-once:%' AND due_at<=$1 AND expires_at>$1 AND acknowledged_at IS NULL AND canceled_at IS NULL) AS due`,[now.toISOString()])).rows[0];
+  EXISTS(SELECT 1 FROM task_alerts WHERE (dedupe_key LIKE 'task-once:%' OR personal_plan_epoch IS NOT NULL)
+   AND due_at<=$1 AND expires_at>$1 AND acknowledged_at IS NULL AND canceled_at IS NULL) AS due`,[now.toISOString()])).rows[0];
  const hasAlerts=cfg.delivery||personal?.schedules||personal?.due;
  if(cfg.delivery||personal?.schedules)await tickTaskReminders(now);
  const bindings=(await pool.query(`SELECT b.*,u.name,u.role,u.branch_id,u.position,u.company_branch_access,COALESCE(p.telegram_digest,true) AS telegram_digest

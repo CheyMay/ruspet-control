@@ -7,6 +7,7 @@ import {z} from 'zod';
 import {pool,transaction,reportTransaction,type Db} from './db.js';
 import {assert,canSee,canManageTaskReminders} from './domain.js';
 import {event,visibleTasks} from './service.js';
+import {validPlanAlert} from './personal-calendar.js';
 import {businessDay,taskQueue,elapsedToday} from '../shared/queues.js';
 import type {User,Task} from '../shared/types.js';
 
@@ -22,7 +23,7 @@ async function task(db:Db,u:User,id:string,lock=false){const t=(await db.query('
 export async function listTaskReminders(u:User,id:string){return transaction(async db=>{
  const t=await task(db,u,id);
  const schedules=(await db.query('SELECT * FROM task_reminders WHERE task_id=$1 AND (recipient_id=$2 OR created_by=$2 OR $3) ORDER BY created_at',[id,u.id,canManageTaskReminders(u,t)])).rows;
- const alerts=(await db.query('SELECT a.id,kind,recipient_id,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE task_id=$1 AND (recipient_id=$2 OR $3) ORDER BY due_at DESC LIMIT 30',[id,u.id,canManageTaskReminders(u,t)])).rows;
+ const alerts=(await db.query('SELECT a.id,kind,recipient_id,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE task_id=$1 AND (recipient_id=$2 OR $3) AND a.personal_plan_epoch IS NULL ORDER BY due_at DESC LIMIT 30',[id,u.id,canManageTaskReminders(u,t)])).rows;
  const bound=(await db.query('SELECT user_id FROM telegram_binding WHERE user_id=ANY($1)',[[u.id,t.assignee_id]])).rows.map(r=>r.user_id);
  const oneTime=(await db.query<{id:string;due_at:string}>("SELECT id,due_at FROM task_alerts WHERE task_id=$1 AND recipient_id=$2 AND dedupe_key LIKE 'task-once:%' AND canceled_at IS NULL AND acknowledged_at IS NULL AND expires_at>now() ORDER BY due_at LIMIT 20",[id,u.id])).rows;
  return {schedules,alerts,bound,oneTime};
@@ -50,10 +51,14 @@ export async function disableTaskReminder(u:User,id:string){return transaction(a
 export async function acknowledgeAlert(u:User,id:string){return transaction(async db=>{
  const r=(await db.query('SELECT * FROM task_alerts WHERE id=$1 FOR UPDATE',[id])).rows[0];assert(r&&r.recipient_id===u.id,404,'Напоминание недоступно.');
  if(r.task_id)await task(db,u,r.task_id);assert(!r.canceled_at,409,'Напоминание уже отменено.');
- if(!r.acknowledged_at){await db.query('UPDATE task_alerts SET acknowledged_at=now() WHERE id=$1',[id]);await event(db,r.task_id,u.id,'reminder_acknowledged','Подтверждено получение напоминания. Это не выполнение задачи.',{alertId:id,dueAt:r.due_at,kind:r.kind});}
+ if(!r.acknowledged_at){
+  await db.query('UPDATE task_alerts SET acknowledged_at=now() WHERE id=$1',[id]);
+  if(r.personal_plan_epoch)await db.query("UPDATE outbox SET read_at=coalesce(read_at,now()) WHERE dedupe_key=$1 AND recipient_id=$2",['personal-plan-notice:'+id,u.id]);
+  else await event(db,r.task_id,u.id,'reminder_acknowledged','Подтверждено получение напоминания. Это не выполнение задачи.',{alertId:id,dueAt:r.due_at,kind:r.kind});
+ }
  return {ok:true};
 });}
-export async function userAlerts(u:User){const allowed=(await visibleTasks(u)).map(t=>t.id);return (await pool.query('SELECT a.id,task_id,kind,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=ANY($3))) ORDER BY due_at DESC LIMIT 100',[u.id,allowed,reportScopes(u)])).rows;}
+export async function userAlerts(u:User,includePrivate=true){const allowed=(await visibleTasks(u)).map(t=>t.id);return (await pool.query('SELECT a.id,task_id,kind,body,due_at,acknowledged_at,canceled_at,(SELECT state FROM task_alert_deliveries WHERE alert_id=a.id ORDER BY created_at DESC LIMIT 1) delivery_state FROM task_alerts a WHERE recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) AND ($4 OR personal_plan_epoch IS NULL) AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=ANY($3))) ORDER BY due_at DESC LIMIT 100',[u.id,allowed,reportScopes(u),includePrivate])).rows;}
 const at=(day:string,time:string)=>new Date(day+'T'+time+':00+03:00');
 async function add(db:Db,recipient:string,key:string,kind:string,body:string,due:Date,expires:Date,taskId:string|null=null,reminderId:string|null=null,reportId:string|null=null,links:ReportLink[]=[]){
  return db.query('INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,reminder_id,kind,body,due_at,expires_at,report_id,links) VALUES($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),key,recipient,taskId,reminderId,kind,body,due.toISOString(),expires.toISOString(),reportId,JSON.stringify(links)]);
@@ -114,9 +119,10 @@ export async function pendingAlerts(u:User,now=new Date(),limit:number|null=5,al
  return (await pool.query(`SELECT a.* FROM task_alerts a WHERE recipient_id=$1 AND acknowledged_at IS NULL
   AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3))
   AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=ANY($4)))
-  AND ($6 OR a.dedupe_key LIKE 'task-once:%' OR EXISTS(SELECT 1 FROM task_reminders r WHERE r.id=a.reminder_id AND r.enabled AND r.personal_delivery))
+  AND (a.personal_plan_epoch IS NULL OR ${validPlanAlert})
+  AND ($6 OR a.personal_plan_epoch IS NOT NULL OR a.dedupe_key LIKE 'task-once:%' OR EXISTS(SELECT 1 FROM task_reminders r WHERE r.id=a.reminder_id AND r.enabled AND r.personal_delivery))
   AND (a.kind='task' OR COALESCE((SELECT p.telegram_digest FROM notification_preferences p WHERE p.user_id=$1),true))
-  AND (SELECT count(*) FROM task_alert_deliveries d WHERE d.alert_id=a.id) < CASE WHEN a.kind='task' THEN 2 ELSE 1 END
+  AND (SELECT count(*) FROM task_alert_deliveries d WHERE d.alert_id=a.id) < CASE WHEN a.kind='task' AND a.personal_plan_epoch IS NULL THEN 2 ELSE 1 END
   AND NOT EXISTS(SELECT 1 FROM task_alert_deliveries d WHERE d.alert_id=a.id
    AND (d.state IN ('sending','uncertain') OR d.created_at>$2::timestamptz-interval '30 minutes'))
   ORDER BY due_at LIMIT $5`,[u.id,now.toISOString(),allowed,reportScopes(u),limit,allDelivery])).rows;

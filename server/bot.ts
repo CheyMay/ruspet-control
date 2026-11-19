@@ -11,6 +11,8 @@ import {compactTaskTitle} from '../shared/task-title.js';
 import {responsibilityLabels} from '../shared/company-responsibility.js';
 export type {BotScreen} from './bot-ui.js';
 import {lastUndo,undoLastAction} from './undo.js';
+import {saveTaskPlan} from './personal-calendar.js';
+import {moscowClock} from '../shared/personal-calendar.js';
 import {formatPrice,priceBand,priceLabels,parsePrice,taskPrice} from '../shared/pricing.js';
 import {reportText,publicOrigin} from './report-content.js';
 import {linkedText,reportLink,escapeHtml,taskLink} from '../shared/report-links.js';
@@ -164,7 +166,7 @@ async function draftSummary(d:Dialog,db:Db){
   if(f.key==='assignee'||f.key==='days')continue;
   const value=d.values[f.key];
   if(!value)continue;
-  if(f.key==='deadline')result.push('Дата: '+(value==='none'?'Без срока':date(value)+' МСК'));
+ if(f.key==='deadline')result.push((d.payload.kind==='accept_assignment'||d.payload.kind==='edit_personal_plan'?'Мой план: ':'Дата: ')+(value==='none'?'Без срока':date(value)+' МСК'));
   else result.push(f.label+'\n'+value);
  }
  return result.join('\n\n');
@@ -334,7 +336,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   if(p.op==='undo_prepare'){const last=await lastUndo(u,p.id,db);assert(last&&last.id===p.target,409,'Отмена недоступна: действие изменилось или прошло пять минут.');return screen(u,ch,`Отменить «${last.label}» по задаче #${last.task_id}? История сохранится, участники получат уточнение.`,[[button('Да, отменить действие','confirm',{kind:'undo',id:last.task_id,list:p.list,target:last.id})],[button('Оставить действие','cancel')]],db);}
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;
-   if(p.kind?.startsWith('edit_')){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit||p.kind==='edit_price'&&canEditTaskPrice(u,d.task),403,'Нет права редактировать задачу.');}
+   if(p.kind?.startsWith('edit_')&&p.kind!=='edit_personal_plan'){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit||p.kind==='edit_price'&&canEditTaskPrice(u,d.task),403,'Нет права редактировать задачу.');}
    const fields=taskActionFields(p.kind,min,!p.target);
    const values={...p.values};
    if(p.kind==='deadline')delete values.plan;
@@ -351,6 +353,12 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    result='Задача #'+created.id+' поставлена.';
   }
   else if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}
+  else if(p.kind==='accept_assignment'||p.kind==='edit_personal_plan'){
+   const accept=p.kind==='accept_assignment';
+   const saved=await saveTaskPlan(u,p.id!,{epoch:p.version!,revision:p.revision!,plannedAt:v.deadline,accept});
+   result=(accept?'Задача принята. ':'')+'В личном календаре · '+date(saved.plannedAt)+' МСК. Крайний срок задачи не менялся.';
+   nextActions.push([button('Мой календарь','personal_plan',{filter:moscowClock(saved.plannedAt!).slice(0,10)})]);
+  }
   else if(p.kind==='delegate'){
    const copy=await delegateTask(u,p.id!,{...(v.assignment==='auto'?{responsibilityToken:v.responsibilityToken}:{assigneeId:v.assignee||p.target!}),
     companyId:v.companyId,expectedVersion:p.version!,instruction:v.instruction||undefined});

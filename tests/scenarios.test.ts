@@ -134,6 +134,7 @@ test('per-task undo survives work on another task; staff undo is explicit and li
  const saved=(await db.pool.query('SELECT undone_by,undo_reason FROM undo_actions WHERE id=$1',[body.id])).rows[0];
  assert.deepEqual(saved,{undone_by:'admin',undo_reason:body.reason});
 });
+
 test('repeated checks do not create duplicate controls or deadline changes',async()=>{
  const count=async()=>Number((await db.pool.query('SELECT count(*) FROM control_requests')).rows[0].count);
  const before=await count();await service.runChecks(users[0]);await service.runChecks(users[0]);assert.equal(await count(),before);
@@ -1438,4 +1439,84 @@ test('repeating a task write after a lost response returns the saved result once
  assert.equal(decided.status,200);
  assert.deepEqual(await post(next,decisionPath,decisionKey,decision),decided);
  assert.equal((await db.pool.query('SELECT id FROM decisions WHERE approval_id=$1',[approval.data.id])).rowCount,1);
+});
+
+test('sales assignment needs acceptance in web and bot, creates a private calendar entry and one reminder',async t=>{
+ const initial=users.find(user=>user.id==='anna')!;
+ await db.pool.query("UPDATE users SET position='Менеджер по продажам' WHERE id=$1",[initial.id]);
+ t.after(()=>db.pool.query('UPDATE users SET position=$1 WHERE id=$2',[initial.position,initial.id]));
+ const manager={...initial,position:'Менеджер по продажам'};
+ const {businessDay}=await import('../shared/queues.js');
+ const now=Date.now(),deadline=new Date(now+8*3600000).toISOString(),plannedAt=new Date(now+2*3600000).toISOString();
+ const month=businessDay(plannedAt).slice(0,7);
+ const template={title:'Проверка назначения с планированием',description:'Фикстура',price:1000,assigneeId:manager.id,
+  deadline,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null};
+ const created=await request('admin','/tasks',template);assert.equal(created.status,201);
+ const id=created.data.id,path='/tasks/'+id;
+ const {task,personalPlan}= (await request(manager.id,path)).data;
+ assert.equal(personalPlan.needsAcceptance,true);
+ const creatorBefore=(await request('admin',path)).data;
+ assert.equal(creatorBefore.personalPlan,null);assert.equal(creatorBefore.assignmentReceipt.state,'pending');
+ assert.equal((await request(manager.id,path+'/review',{action:'submit',comment:'Проверяется готовый результат',expectedVersion:task.version})).status,409);
+ assert((await request(manager.id,'/personal-calendar?month='+month)).data.awaiting.some((row:{id:string})=>row.id===id));
+
+ const {generateWebTaskNotices}=await import('../server/task-notices.js');
+ const assigned=(await db.pool.query('SELECT id,created_at FROM outbox WHERE task_id=$1 AND task_assignment',[id])).rows[0];
+ await generateWebTaskNotices(new Date(Date.parse(assigned.created_at)+11*60000));
+ const assignmentNotice=(await request(manager.id,'/notifications')).data.find((n:{task_notice?:{assignmentIds:string[]}})=>n.task_notice?.assignmentIds.includes(assigned.id));
+ assert(assignmentNotice?.task_notice.hasAssignments);
+
+ const body={epoch:personalPlan.epoch,revision:0,plannedAt,accept:true};
+ assert.equal((await request('admin',path+'/personal-plan',body,'PUT')).status,403);
+ const result=await request(manager.id,path+'/personal-plan',body,'PUT');
+ assert.equal(result.status,200);
+ assert.equal(result.data.plannedAt,plannedAt);assert(result.data.acceptedAt);
+ assert.deepEqual((await request(manager.id,path+'/personal-plan',body,'PUT')).data,result.data);
+ const after=(await request(manager.id,path)).data;
+ assert.equal(after.task.deadline,deadline);assert.equal(after.task.version,task.version);
+ assert.equal(after.events.filter((e:{kind:string})=>e.kind==='assignment_accepted').length,1);
+ assert.equal((await request('admin',path)).data.assignmentReceipt.state,'accepted');
+ const preview=await fetch(base+'/api'+path,{headers:{Cookie:cookies.get('admin')!,'X-Ruspet-View-As':manager.id}});
+ assert.equal((await preview.json()).personalPlan,null);
+ const own=(await request(manager.id,'/personal-calendar?month='+month)).data;
+ assert.equal(own.canLogWork,false);assert.equal(own.scheduled.find((row:{id:string})=>row.id===id).plan.plannedAt,plannedAt);
+ assert(!(await request('admin','/personal-calendar?month='+month)).data.scheduled.some((row:{id:string})=>row.id===id));
+
+ const {generateWebPlanNotices}=await import('../server/personal-calendar.js');
+ const {pendingAlerts}=await import('../server/reminders.js');
+ const due=new Date(Date.parse(plannedAt)-30*60000+1000);
+ await generateWebPlanNotices(due);await generateWebPlanNotices(due);
+ assert.equal((await pendingAlerts(manager,due,null,false)).filter(a=>a.task_id===id&&a.personal_plan_epoch).length,1);
+ assert.equal((await request(manager.id,'/notifications')).data.filter((n:{task_id:string;body:string})=>n.task_id===id&&n.body.includes('Ваш план')).length,1);
+ const reminders=(await request('admin',path+'/reminders')).data;
+ assert(!(reminders.alerts??[]).some((alert:{body:string})=>alert.body.includes('Ваш план')));
+
+ const replannedAt=new Date(now+4*3600000).toISOString();
+ assert.equal((await request(manager.id,path+'/personal-plan',{...body,revision:1,plannedAt:replannedAt,accept:false},'PUT')).status,200);
+ assert(!(await pendingAlerts(manager,due,null,false)).some(a=>a.task_id===id&&a.personal_plan_epoch));
+ assert(!(await request(manager.id,'/notifications')).data.some((n:{task_id:string;body:string})=>n.task_id===id&&n.body.includes('Ваш план')));
+
+ const edited=await request('admin',path,{...template,assigneeId:'ivan',expectedVersion:task.version,reason:'Новое назначение'},'PUT');
+ assert.equal(edited.status,200);
+ assert(!(await request(manager.id,'/personal-calendar?month='+month)).data.scheduled.some((row:{id:string})=>row.id===id));
+ assert.equal((await request('ivan',path)).data.personalPlan.plannedAt,null);
+ assert(!(await pendingAlerts(manager,new Date(Date.parse(replannedAt)),null,false)).some(a=>a.task_id===id&&a.personal_plan_epoch));
+
+ const today=businessDay(new Date()),monthToday=today.slice(0,7);
+ assert.equal((await request(manager.id,'/personal-calendar/work/'+today,{minutes:120,note:'Не сохраняется',revision:0},'PUT')).status,403);
+ const work=await request('ivan','/personal-calendar/work/'+today,{minutes:430,note:'Отчёт за день',revision:0},'PUT');
+ assert.equal(work.status,200);
+ assert.equal((await request('ivan','/personal-calendar?month='+monthToday)).data.work.find((row:{date:string})=>row.date===today).minutes,430);
+ assert(!(await request('admin','/personal-calendar?month='+monthToday)).data.work.some((row:{note:string})=>row.note==='Отчёт за день'));
+
+ const second=await request('admin','/tasks',{...template,title:'Проверка приёма через Telegram'});
+ const {botView,botClick,botText}=await import('../server/bot.js'),channel='personal-plan-fixture';
+ const card=await botView(manager,channel,{op:'task',id:second.data.id});
+ const start=card.buttons.flat().find(b=>b.text==='Принять задачу');assert(start);
+ await botClick(manager,channel,start.token);
+ const confirm=await botText(manager,channel,'завтра в 15:00','plan-fixture-input');
+ const button=confirm.buttons.flat().find(b=>b.text==='Подтвердить и отправить');assert(button,confirm.text);
+ const accepted=await botClick(manager,channel,button.token);
+ assert.match(accepted.text,/Задача принята/);
+ assert((await request(manager.id,'/tasks/'+second.data.id)).data.personalPlan.plannedAt);
 });

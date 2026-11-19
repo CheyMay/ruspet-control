@@ -30,7 +30,9 @@ const descriptionField=field('description','Описание задачи или
 export function taskActionFields(kind:string|undefined,min:number,withAssignee=true):Field[]{
  switch(kind){
   case 'create_task':return [field('title','Название задачи',3,500),assigneeField,priceField,field('deadline','Крайний срок по Москве или «без срока»',1),descriptionField];
-  case 'reminder_once':return [deadlineField];
+  case 'reminder_once':
+  case 'accept_assignment':
+  case 'edit_personal_plan':return [deadlineField];
   case 'reminder':return [field('days','Дни недели, например «понедельник и среда»',1),field('times','Время по Москве, например 09:00 или 09:00, 15:30',4),field('weeks','Число недель от 1 до 52',1)];
   case 'edit_price':return [priceField,reasonField];
   case 'edit_title':return [field('value','Новое название задачи',3,500),reasonField];

@@ -285,10 +285,14 @@ test('confirmed links exchange completed tasks and comments without overwriting 
  try{
   await configureCapture();
   await db.pool.query('INSERT INTO bitrix_user_links(user_id,external_id) VALUES($1,201),($2,202) ON CONFLICT DO NOTHING',[admin.id,employee.id]);
+  await db.pool.query("UPDATE users SET position='Менеджер по продажам' WHERE id=$1",[employee.id]);
   await events.queueRefresh(db.pool,portal,'task_inbound_new',id);
   assert.equal((await inbound.tickInboundTasks(rest))?.id,id);
   const before=(await db.pool.query('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
   assert.equal(before.status,'active');
+  const assignment=(await db.pool.query('SELECT requires_acceptance,user_id FROM personal_task_plans WHERE task_id=$1',[id])).rows[0];
+  assert.deepEqual(assignment,{requires_acceptance:true,user_id:employee.id});
+  assert.equal((await db.pool.query('SELECT id FROM outbox WHERE task_id=$1 AND recipient_id=$2 AND task_assignment',[id,employee.id])).rowCount,1);
   assert.equal((await live.enableLinkedExchange(rest)).scope,'linked');
   await db.transaction(async client=>{
    const after=(await client.query("UPDATE tasks SET status='completed',completed_at=$2,version=version+1 WHERE id=$1 RETURNING *",[id,'2026-11-17T12:00:00Z'])).rows[0];
@@ -313,6 +317,7 @@ test('confirmed links exchange completed tasks and comments without overwriting 
   assert.equal(current.completed_at,remote.closedDate);
   assert.equal((await taskBitrixDiscussion(admin,id,false)).messages.length,0);
  }finally{
+  await db.pool.query('UPDATE users SET position=$1 WHERE id=$2',[employee.position,employee.id]);
   await db.pool.query('UPDATE bitrix_live_config SET enabled=false,sync_linked_tasks=false WHERE id=1');
   await db.pool.query('DELETE FROM bitrix_user_links WHERE user_id=ANY($1)',[[admin.id,employee.id]]);
   await db.pool.query('UPDATE bitrix_task_links SET conflict=NULL WHERE task_id=$1',[id]);

@@ -6,7 +6,7 @@ import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {actionState,sameState,spawnedTasks,type ActionState} from './undo-record.js';
 import {assert,canSee} from './domain.js';
-import {event,notify,refreshTaskFindings} from './service.js';
+import {event,notify,notifyTaskAssignment,refreshTaskFindings} from './service.js';
 import {MockTaskProvider} from './providers.js';
 import {canRestoreLinkedFields} from './bitrix-live.js';
 import type {User,Task} from '../shared/types.js';
@@ -151,6 +151,8 @@ async function undoAction(u:User,id:string,reason?:string){return transaction(as
  await refreshTaskFindings(db,restored,u);
  await event(db,current.id,u.id,'action_undone',`Отменено действие: ${row.label}`,{undoId:id,before:current,after:restored,originalEvents:originalIds,
   originalActorId:row.actor_id,...(isStaff?{staffUndo:true,reason}:{})});
+ if(restored.status==='active'&&restored.assignee_id!==current.assignee_id)
+  await notifyTaskAssignment(db,restored,null,'Вам вернули задачу');
  // Also notify the task participants even if no original notification was generated.
  for(const recipient of new Set([...recipients.map(r=>r.recipient_id),current.assignee_id,current.creator_id,row.actor_id]))if(recipient!==u.id)await notify(db,current.id,recipient,`По задаче #${current.id} действие «${row.label}» отменено (${u.name}). Проверьте актуальное состояние задачи.`,`undo:${id}:${recipient}`);
  await db.query("UPDATE bot_buttons SET revoked=true WHERE payload->>'id'=$1 AND receipt IS NULL",[current.id]);

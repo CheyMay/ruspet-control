@@ -147,6 +147,12 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  }
  const context:string[]=[];
  const rows:ReturnType<typeof button>[][]=[];
+ const plan=d.personalPlan;
+ if(plan&&t.status==='active'){
+  if(plan.needsAcceptance)context.push('Новое назначение · примите задачу и укажите плановое время');
+  rows.push([button(plan.needsAcceptance?'Принять задачу':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
+   {...extra,kind:plan.needsAcceptance?'accept_assignment':'edit_personal_plan',version:plan.epoch,revision:plan.revision})]);
+ }
  const control=d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));
  const overdue=taskQueue(t,now)==='overdue'||elapsedToday(t,now);
  const explained=!control?d.controls.find(c=>c.state==='answered'&&c.assignee_id===t.assignee_id):undefined;
@@ -157,7 +163,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   rows.push([button(mine?(waiting?'Ответить на уточнение':'Рассмотреть запрос'):'Посмотреть согласование','task_approval',extra)]);
  }else if(t.status==='active'&&canRequest(u,t)){
   if(last?.state==='returned')context.push('Есть замечания к результату');
-  rows.push([canComplete(u,t,d.approvalScope)?form('Завершить задачу','complete'):
+  if(!plan?.needsAcceptance)rows.push([canComplete(u,t,d.approvalScope)?form('Завершить задачу','complete'):
    form(last?.state==='returned'?'Отправить доработку':'Сдать результат','submit')]);
   if(overdue){
    if(explained)context.push('Объяснение сохранено. Крайний срок истёк.');
@@ -172,6 +178,8 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const status=botTaskStatus(t,now,!!pending),facts:string[]=[];
  if(t.status==='completed'&&t.completed_at)facts.push('Закрыта '+date(t.completed_at)+' МСК');
  if(t.status!=='completed')facts.push(t.deadline?'Крайний срок '+date(t.deadline)+' МСК':'Без крайнего срока');
+ if(!plan&&d.assignmentReceipt)facts.push(d.assignmentReceipt.state==='accepted'?'Исполнитель принял задачу':'Исполнитель ещё не принял задачу');
+ if(plan?.plannedAt)facts.push('Мой план '+date(plan.plannedAt)+' МСК');
  if(t.status==='review'&&!pending&&canComplete(u,t,d.approvalScope))rows.push([form('Завершить задачу','complete')]);
  facts.push('Исполнитель · '+name(t.assignee_id),'Постановщик · '+name(t.creator_id));
  const preview=botExcerpt(t.description,155);

@@ -23,6 +23,7 @@ import { pool, transaction, type Db } from './db.js';
 import type { Task, User, Rules, Approval, ControlRequest, Step, BitrixDiscussion, TaskApprovalProgress } from '../shared/types.js';
 import { assert, canAccess, canSee, canRequest, canManage, globalAccess, evaluate, metrics, moscowDay } from './domain.js';
 import { providers } from './providers.js';
+import {pendingAssignmentCount,registerTaskAcceptance,requireTaskAcceptance,taskAssignmentReceipt,taskPersonalPlan,visiblePlanNotice} from './personal-calendar.js';
 const adapters=providers();
 const planningFindings=new Set(['planned_overdue','missing_plan_start','missing_plan_end','negative_plan','long_plan','plan_after_deadline','plan_before_creation','child_plan','parent_unavailable','child_deadline','children_unavailable']);
 export async function event(db:Db,taskId:string|null,actor:string|null,kind:string,message:string,data:object={}) {
@@ -43,6 +44,7 @@ export async function notify(db:Db,taskId:string|null,recipient:string,body:stri
 }
 export async function notifyTaskAssignment(db:Db,task:Task,actorId:string|null,label='Вам поставили задачу'){
  if(task.assignee_id===actorId)return;
+ await registerTaskAcceptance(db,task);
  await notify(db,task.id,task.assignee_id,label+' #'+task.id+' · '+task.title,`task-assignment:${task.id}:${task.version}`,true);
 }
 export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{requiredPrice:true,showPlanning:false,writtenRules:[],...row.config}}; }
@@ -60,7 +62,7 @@ async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
  const task=(await db.query(`SELECT * FROM tasks WHERE id=$1${lock?' FOR UPDATE':''}`,[id])).rows[0];
  assert(task && canSee(user,task),404,'Задача не найдена или недоступна.'); return task;
 }
-export async function bootstrap(user:User,light=false,compactWorkspace=false) {
+export async function bootstrap(user:User,light=false,compactWorkspace=false,includePrivate=true) {
  return transaction(async db=>{
  await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
  const tasks=await visibleTasks(user,db), ids=tasks.map(t=>t.id), cfg=await config(db);
@@ -72,17 +74,19 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false) {
  const people=new Set([...tasks.flatMap(t=>[t.assignee_id,t.creator_id]),...approvals.flatMap((a:Approval)=>a.route.map(step=>step.userId))]);
  const users=(await db.query<User>('SELECT * FROM users ORDER BY name')).rows.filter(u=>globalAccess(user)||branchCovers(user.branch_id,u.branch_id)||u.id===user.id||people.has(u.id));
  const teamIds=await teamMemberIds(user,db);
- if(light)return {approvalScope:scope,user,users,tasks,teamIds,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
+ const pendingAssignments=includePrivate?await pendingAssignmentCount(user,ids,db):0;
+ if(light)return {pendingAssignments,approvalScope:scope,user,users,tasks,teamIds,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
  const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
  const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
  const lastTaskChange=(await db.query("SELECT max(created_at) AS at FROM task_events WHERE task_id=ANY($1) AND (kind=ANY($2) OR (data ? 'before' AND data ? 'after'))",[ids,['created','task_edited','task_completed','deadline_changed','review_submitted','review_returned','action_undone']])).rows[0].at;
  const deadlineHistory=await loadDeadlineHistories(db,[...new Set(approvals.map(a=>a.task_id))]);
- return {deadlineApproverId:hierarchy?.sales_head_id??null,deadlineHistory,approvalScope:scope,lastTaskChange,selection,user,users,
+ return {pendingAssignments,deadlineApproverId:hierarchy?.sales_head_id??null,deadlineHistory,approvalScope:scope,lastTaskChange,selection,user,users,
  tasks:compactWorkspace?tasks.map(({source_fields,...task})=>({...task,price:task.price??taskPrice({price:task.price,source_fields})})):tasks,
  teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
  events:compactWorkspace?[]:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
- notifications:(await db.query("SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2)) ORDER BY created_at DESC LIMIT 150",[user.id,ids])).rows,
+ notifications:(await db.query(`SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox o WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2))
+ AND ($3 OR o.personal_plan_alert_id IS NULL) AND ${visiblePlanNotice} ORDER BY created_at DESC LIMIT 150`,[user.id,ids,includePrivate])).rows,
  reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=ANY($1) AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[reportScopes(user),!!cfg.config.showPlanning])).rows};
  });
 }
@@ -96,7 +100,7 @@ export async function queueApprovalHistories(user:User){
  });
 }
 
-export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHistory=false) {
+export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHistory=false,includePrivate=true) {
  const task=await taskFor(db,id,user);
  const approvals=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows;
  const current=task.status==='completed'?undefined:approvals.find(a=>a.state==='pending'&&!a.canceled_at&&a.task_version===task.version&&a.route[a.current_step]);
@@ -120,8 +124,9 @@ export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHisto
   EXISTS(SELECT 1 FROM bitrix_task_links WHERE task_id=$1) AS linked`,[id])).rows[0];
  const hierarchy=await approvalHierarchy(db);
  const deadlineHistory=includeDeadlineHistory&&approvals.length?(await loadDeadlineHistories(db,[id]))[id]??[]:[];
+ const personalPlan=includePrivate?await taskPersonalPlan(user,task,db):null;
  return {
-  task,deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
+  task,personalPlan,assignmentReceipt:await taskAssignmentReceipt(task,personalPlan,db),deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
   comments:(await db.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,
   bitrixCommentCount:imported.count,bitrixLinked:imported.linked,
@@ -226,6 +231,7 @@ async function routeFor(db:Db,task:Task,selectors:Rules['routes']['deadline']):P
 async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'completion';reason:string;plan?:string;proposedDeadline?:string;expectedVersion:number}) {
  return transaction(async db=>{
   const task=await taskFor(db,id,user,true); assert(canRequest(user,task),403,'У вас нет права запрашивать изменение.');
+  if(input.type==='completion')await requireTaskAcceptance(user,task,db);
   assert(task.version===input.expectedVersion,409,'Задача изменилась. Обновите карточку.');
   assert(task.status!=='completed',409,'Задача уже завершена.');
   assert(!(await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rowCount,409,'У задачи уже есть активное согласование.');

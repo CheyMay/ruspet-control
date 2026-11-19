@@ -5,6 +5,7 @@ import {button,htmlScreen} from './bot-ui.js';
 import {botDue} from './bot-presentation.js';
 import {businessDay} from '../shared/queues.js';
 import {compactTaskTitle} from '../shared/task-title.js';
+import {isSalesManager} from '../shared/personal-calendar.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import type {Task,User} from '../shared/types.js';
 
@@ -127,7 +128,7 @@ function noticeContent(notice:TaskNotice,now:Date){
  add('Крайний срок сегодня',notice.today);
  add('Новые задачи',onlyNew,notice.assignments.length,notice.assignments.length-onlyNew.length);
 
- const taskIds=[...topDeadlines,...onlyNew.slice(0,3)].slice(0,5).map(task=>task.id);
+ const taskIds=[...new Set([...notice.assignments.slice(0,3),...topDeadlines].map(task=>task.id))].slice(0,5);
  return {sections,taskIds,hasDeadlines:!!deadlines.length||!!notice.prepare,hasAssignments:!!assigned.size};
 }
 
@@ -136,7 +137,7 @@ export async function taskNoticeScreen(user:User,ch:string,notice:TaskNotice,now
  const buttons=taskIds.map(id=>button('#'+id,'task',{id}));
  return htmlScreen(user,ch,sections.map(s=>'<b>'+h(s.heading)+'</b>\n'+s.lines.map(h).join('\n')).join('\n\n'),[
   ...Array.from({length:Math.ceil(buttons.length/3)},(_,i)=>buttons.slice(i*3,i*3+3)),
-  [...(hasDeadlines?[button(notice.prepare?'Задачи к 15:00':'Мои сроки','tasks',{filter:'my_due'})]:[]),...(hasAssignments?[button('Мои задачи','tasks',{filter:'mine'})]:[])]
+  [...(hasDeadlines?[button(notice.prepare?'Задачи к 15:00':'Мои сроки','tasks',{filter:'my_due'})]:[]),...(hasAssignments?[isSalesManager(user)?button('Принять новые задачи','personal_plan',{filter:'awaiting'}):button('Мои задачи','tasks',{filter:'mine'})]:[])]
  ]);
 }
 

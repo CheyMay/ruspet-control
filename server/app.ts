@@ -41,6 +41,7 @@ import { AppError, assert } from './domain.js';
 import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
 import {ownerTimeRouter} from './owner-time.js';
+import {calendarMonthInput,personalCalendar,saveStaffWork,saveTaskPlan,staffWorkInput,taskPlanInput} from './personal-calendar.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,editTaskPrice,newTaskAssignees,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
@@ -119,7 +120,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   res.json({ok:true});
  });
  app.get('/api/bootstrap',compress,async(req,res)=>{
-  const {serverTime,...workspace}=await service.bootstrap(req.actor,false,req.query.view==='workspace');
+  const {serverTime,...workspace}=await service.bootstrap(req.actor,false,req.query.view==='workspace',req.get(viewAsHeader)===undefined);
   const snapshot={...workspace,managerPreview:managerPreview||undefined};
   if(req.query.view==='workspace'){
    const version=createHash('sha256').update(JSON.stringify(snapshot)).digest('base64url');
@@ -153,7 +154,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   await service.taskBitrixResults(req.actor,String(req.params.id),req.get(viewAsHeader)===undefined)));
  app.get('/api/tasks/:id/integration',async(req,res)=>res.json(await taskIntegration(req.actor,String(req.params.id))));
  app.get('/api/task-sync',async(req,res)=>{assert(req.actor.role==='admin',403,'Состояние интеграции доступно администратору.');res.json(await taskSyncStatus());});
- app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor)));
+ app.get('/api/alerts',async(req,res)=>res.json(await userAlerts(req.actor,req.get(viewAsHeader)===undefined)));
  app.get('/api/notifications',async(req,res)=>res.json(await personalNotifications(req.actor,req.query.unread==='true')));
  app.post('/api/notifications/read',async(req,res)=>{
   const {ids}=z.object({ids:z.array(z.uuid()).min(1).max(150)}).parse(req.body);
@@ -315,7 +316,27 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const input=z.object({action:z.enum(['submit','accept','return','complete']),comment:z.string().trim().max(4000),expectedVersion:z.number().int().positive()}).parse(req.body);
   await taskWrite(req,res,200,()=>reviewTask(req.actor,String(req.params.id),input.action,input.comment,input.expectedVersion));
  });
- app.get('/api/tasks/:id',compress,async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id),pool,true)));
+ app.get('/api/tasks/:id',compress,async(req,res)=>res.json(await service.detail(req.actor,String(req.params.id),pool,true,req.get(viewAsHeader)===undefined)));
+ app.get('/api/personal-calendar',compress,async(req,res)=>{
+  res.setHeader('Cache-Control','no-store');
+  res.json(await personalCalendar(req.actor,calendarMonthInput.parse(req.query.month)));
+ });
+ app.get('/api/personal-calendar/work.csv',async(req,res)=>{
+  const month=calendarMonthInput.parse(req.query.month),calendar=await personalCalendar(req.actor,month);
+  assert(calendar.canLogWork,403,'Учёт часов недоступен для вашей должности.');
+  const clock=(m:number)=>Math.floor(m/60)+':'+String(m%60).padStart(2,'0');
+  const text=(s:string)=>'"'+(/^[\s]*[=+@-]/.test(s)?"'":"")+s.replaceAll('"','""')+'"';
+  const rows=[['Дата','Отработано (ч:мин)','Что сделано'],
+   ...calendar.work.map(w=>[w.date,w.minutes===null?'':clock(w.minutes),w.note]),
+   ['Итого',clock(calendar.work.reduce((sum,w)=>sum+(w.minutes??0),0)),'']];
+  res.attachment('ruspet-hours-'+month+'.csv').type('text/csv').send('\uFEFF'+rows.map(row=>row.map(text).join(';')).join('\r\n'));
+ });
+ app.put('/api/personal-calendar/work/:date',async(req,res)=>{
+  res.json(await saveStaffWork(req.actor,z.iso.date().parse(req.params.date),staffWorkInput.parse(req.body)));
+ });
+ app.put('/api/tasks/:id/personal-plan',async(req,res)=>{
+  res.json(await saveTaskPlan(req.actor,String(req.params.id),taskPlanInput.parse(req.body)));
+ });
  app.post('/api/tasks/:id/comments',async(req,res)=>{
   const input=z.object({body:text,approvalId:z.uuid().optional()}).parse(req.body);
   await taskWrite(req,res,200,async()=>{await service.addComment(req.actor,String(req.params.id),input.body,input.approvalId);return {ok:true};});

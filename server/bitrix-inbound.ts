@@ -6,7 +6,7 @@ import {pool,transaction,type Db} from './db.js';
 import {assert,AppError} from './domain.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {MockTaskProvider} from './providers.js';
-import {event,refreshTaskFindings} from './service.js';
+import {event,notifyTaskAssignment,refreshTaskFindings} from './service.js';
 import {fieldValue} from './bitrix-fields.js';
 import {bitrixId,remoteTask,stage,syncActivity} from './bitrix-sync.js';
 import {BitrixError,type BitrixRequest} from './bitrix-rest.js';
@@ -119,6 +119,7 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
     [id,remote.id,JSON.stringify({...baseline,inbound:baseline}),created.version]);
    await resumeInboundDiscussion(db,request.portal!,remote.id);
    await event(db,id,null,'imported','Новая задача получена из Битрикс24',{source:'bitrix24',initialSnapshot:created});
+   if(created.status==='active')await notifyTaskAssignment(db,created,created.creator_id);
    await refreshTaskFindings(db,created,owner);
    return {changed:true,conflict:false,created:true};
   }
@@ -165,6 +166,7 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
     [id,updated.status==='completed'?'accepted':'returned']);
    if(updated.status==='completed'||changed.includes('assignee_id'))await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[id]);
    await event(db,id,null,'bitrix_change','Обновлено из Битрикс24',{before:task,after:updated,fields:changed});
+   if(updated.status==='active'&&changed.includes('assignee_id'))await notifyTaskAssignment(db,updated,null,'Вам назначили задачу');
    await refreshTaskFindings(db,updated,owner);
   }
   const carriedBase={...base,...Object.fromEntries(properties.filter(key=>equal(local[key],next[key])||changed.includes(key)).map(key=>[key,next[key]]))};

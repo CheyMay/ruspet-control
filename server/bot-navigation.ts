@@ -4,7 +4,8 @@ import {botDue,botTaskStatus,sortBotTasks} from './bot-presentation.js';
 import {escapeHtml as h,workdayReports} from '../shared/report-links.js';
 import {actionItems,activeTaskApproval,canComplete,taskNextAction} from '../shared/actions.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
-import {taskQueue} from '../shared/queues.js';
+import {businessDay,taskQueue} from '../shared/queues.js';
+import {moscowClock} from '../shared/personal-calendar.js';
 import {summarize} from '../shared/analytics.js';
 import {bootstrap,getReport,visibleTasks} from './service.js';
 import {assert,canManage} from './domain.js';
@@ -13,6 +14,7 @@ import {directorBatchTasks} from './management-notices.js';
 import {lastUndo} from './undo.js';
 import {pool,type Db} from './db.js';
 import {personalNotifications} from './notifications.js';
+import {personalCalendar} from './personal-calendar.js';
 import {groupNotifications} from '../shared/notifications.js';
 import type {PersonalTaskScope,Report,User,Task} from '../shared/types.js';
 
@@ -43,6 +45,28 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
 }
 
 export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool){
+ if(p.op==='personal_plan'){
+  const now=new Date(),today=businessDay(now);
+  const tomorrow=businessDay(new Date(+now+86400000));
+  const awaiting=p.filter==='awaiting';
+  const day=p.filter&&/^20\d{2}-(0[1-9]|1[0-2])-\d{2}$/.test(p.filter)?p.filter:today;
+  const calendar=await personalCalendar(u,day.slice(0,7),db,now);
+  const list=awaiting?calendar.awaiting:calendar.scheduled.filter(task=>businessDay(task.plan.plannedAt!)===day);
+  const page=Math.max(0,Math.min(p.page||0,Math.ceil(list.length/tasksPerPage)-1));
+  const rows=list.slice(page*tasksPerPage,(page+1)*tasksPerPage);
+  const heading=awaiting?'Нужно принять':day===today?'Мой план на сегодня':day===tomorrow?'Мой план на завтра':'Мой план · '+day.split('-').reverse().join('.');
+  const text=rows.map(task=>[
+   task.plan.plannedAt?moscowClock(task.plan.plannedAt).slice(11)+' МСК':null,'#'+task.id,compactTaskTitle(task.title,105),
+   task.status==='completed'?'Завершена':task.status==='review'?'На приёмке':null
+  ].filter(Boolean).join(' · '));
+  const origin={op:p.op,filter:awaiting?'awaiting':day,page};
+  return htmlScreen(u,ch,'<b>'+h(heading)+'</b> · '+list.length+'\n\n'+(text.length?text.map(h).join('\n\n'):'Здесь пока нет задач.'),[
+   ...rows.map(task=>[button((awaiting?'Принять #':'Открыть #')+task.id,'task',{id:task.id,list:origin})]),
+   [...(page?[button('← Назад',p.op,{...origin,page:page-1})]:[]),...((page+1)*tasksPerPage<list.length?[button('Дальше →',p.op,{...origin,page:page+1})]:[])],
+   [button('Сегодня',p.op,{filter:today}),button('Завтра',p.op,{filter:tomorrow}),...(calendar.awaiting.length?[button('Нужно принять · '+calendar.awaiting.length,p.op,{filter:'awaiting'})]:[])],
+   [button('Меню','home')]
+  ],db);
+ }
  if(p.op==='plan_tasks'){
   const report:Report=await getReport(u,p.target!);
   assert(report.kind==='nextday',404,'План не найден.');
@@ -157,6 +181,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   const last=await lastUndo(u);
   return htmlScreen(u,ch,'<b>Другие разделы</b>\n\nНапоминания, отчёты и помощь.',[
    [button('🔔 Напоминания','alerts'),button('📁 Отчёты','reports')],
+   [button('Мой календарь','personal_plan')],
    ...(canManage(u)?[[button('Сводка команды','brief',{filter:'team'})]]:[]),
    ...(last?[[button('Отменить последнее действие','undo_prepare',{id:last.task_id,target:last.id})]]:[]),
    [button('Поиск','search_prompt'),button('Как пользоваться','help')],[button('Меню','home')]
@@ -174,6 +199,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)?[button('Задачи команды','team')]:[button('Поиск','search_prompt')])],
   ...(company?[[button('Сводка компании','brief',{filter:'company'}),button('Отчёты','reports')]]:
    canManage(u)?[[button('Мои отчёты','reports',{filter:'mine'}),button('Поиск','search_prompt')]]:[]),
+  ...(data.pendingAssignments?[[button('Новые задачи к приёму · '+data.pendingAssignments,'personal_plan',{filter:'awaiting'})]]:[]),
   [button('Новая задача','form',{kind:'create_task'}),button('Уведомления','notices')],
   [button('Ещё разделы','menu_more')]
  ]);

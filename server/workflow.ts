@@ -14,6 +14,7 @@ import {pool,transaction,type Db} from './db.js';
 import {assert,canRequest,canSee,canManage,globalAccess} from './domain.js';
 import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {config,decideCore,event,notify,notifyTaskAssignment,refreshTaskFindings} from './service.js';
+import {requireTaskAcceptance} from './personal-calendar.js';
 import {getCompany} from './okb.js';
 import {MockTaskProvider} from './providers.js';
 import type {Task,User} from '../shared/types.js';
@@ -208,6 +209,7 @@ async function queueResultApproval(db:Db,hierarchy:NonNullable<Awaited<ReturnTyp
 }
 async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return'|'complete',comment:string,version:number){return transaction(async db=>{
  const before=(await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0] as Task;assert(before&&canSee(u,before),404,'Задача недоступна.');assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
+ if(action==='submit'||action==='complete')await requireTaskAcceptance(u,before,db);
  const hierarchy=await approvalHierarchy(db,true),scope=approvalScope(hierarchy);
  const managed=requiresTaskApproval(hierarchy,before,'completion',u.id);
  const policy=!!hierarchy&&(hierarchy.only_self_direct||usesCreatorApproval(before,scope));
