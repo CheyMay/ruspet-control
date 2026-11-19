@@ -42,6 +42,7 @@ import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
 import {ownerTimeRouter} from './owner-time.js';
 import {calendarMonthInput,personalCalendar,saveStaffWork,saveTaskPlan,staffWorkInput,taskPlanInput} from './personal-calendar.js';
+import {analyticsOverview,analyticsTasks} from './team-analytics.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,editTaskPrice,newTaskAssignees,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
@@ -144,6 +145,18 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   res.json(await undoStaffAction(req.actor,id,reason));
  });
  app.get('/api/management/progress',async(req,res)=>res.json(await managementProgress(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),owner:z.string().max(100).optional()}).parse(req.query))));
+ app.get('/api/analytics/overview',compress,async(req,res)=>{
+  const part=z.string().min(1).max(200);
+  const query=z.object({period:z.enum(['day','week']).default('day'),
+   group:z.preprocess(v=>typeof v==='string'?[v]:v,z.array(part).max(3).default([]))}).parse(req.query);
+  res.setHeader('Cache-Control','no-store');
+  res.json(await analyticsOverview(req.actor,query.group,query.period));
+ });
+ app.post('/api/analytics/tasks',compress,async(req,res)=>{
+  const {ids}=z.object({ids:z.array(z.string().min(1).max(100)).min(1).max(25)}).parse(req.body);
+  res.setHeader('Cache-Control','no-store');
+  res.json(await analyticsTasks(req.actor,[...new Set(ids)]));
+ });
  app.post('/api/management/observation',async(req,res)=>{const input=z.object({confirmed:z.literal(true),expected:z.iso.datetime({offset:true}).nullable()}).parse(req.body);res.json(await resetObservation(req.actor,input.expected));});
  app.put('/api/management/preferences',async(req,res)=>res.json(await setNudgePreference(req.actor,z.object({enabled:z.boolean()}).parse(req.body).enabled)));
  app.post('/api/management/nudge',async(req,res)=>res.json(await nudgeTeam(req.actor,z.object({confirmed:z.literal(true)}).parse(req.body).confirmed)));
