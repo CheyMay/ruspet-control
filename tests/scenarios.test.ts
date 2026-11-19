@@ -965,6 +965,60 @@ test('undo refuses later task activity and expired actions; comment undo preserv
  await request('director',`/tasks/${id}/comments`,{body:'Действие с истёкшим временем'});const expired=(await request('director','/undo/last')).data;
  await db.pool.query("UPDATE undo_actions SET created_at=now()-interval '6 minutes' WHERE id=$1",[expired.id]);assert.equal((await request('director','/undo',{id:expired.id,confirmed:true})).status,409);
 });
+test('staff rollout covers the approved groups and keeps individual settings and approval routes separate',async()=>{
+ const admin=users.find(user=>user.role==='admin')!;
+ const owner={...admin,root_access:true};
+ const {setStaffRollout,staffWorkIds}=await import('../server/staff-rollout.js');
+ const profiles=[
+  {name:'Ирина Тестова',position:'Менеджер по продажам',branchId:'Краснодар',role:'employee'},
+  {name:'Марина Борисова',position:'Аналитик',branchId:'Технический отдел',role:'employee'},
+  {name:'Павел Соколов',position:'Руководитель отдела закупок',branchId:'Закупки',role:'branch_manager'},
+  {name:'Олег Ветров',position:'Кладовщик',branchId:'AQUAS / Склад',role:'employee'}
+ ];
+ const ids:string[]=[];
+ for(const profile of profiles){
+  const response=await request(admin.id,'/system/access',profile);
+  assert.equal(response.status,201,JSON.stringify(response.data));
+  ids.push(response.data.user.id);
+ }
+ const [sales,analytics,leader,warehouse]=ids;
+ const previous=(await db.pool.query('SELECT * FROM approval_hierarchy WHERE id=1')).rows[0];
+ try{
+  assert.equal((await request(admin.id,'/system/staff-rollout',{enabled:true,confirmed:true},'PUT')).status,403);
+  await setStaffRollout(owner,true);
+  const controlled=await staffWorkIds(db.pool);
+  assert(controlled?.includes(sales));
+  assert(controlled?.includes(analytics));
+  assert(controlled?.includes(leader));
+  assert(!controlled?.includes(warehouse));
+  assert.equal((await request(admin.id,'/system/access/'+analytics+'/work-control',{enabled:false},'PUT')).status,200);
+  assert(!(await staffWorkIds(db.pool))?.includes(analytics));
+  assert.equal((await request(admin.id,'/system/access/'+analytics+'/work-control',{enabled:null},'PUT')).status,200);
+  assert((await staffWorkIds(db.pool))?.includes(analytics));
+  const directory=await request(admin.id,'/system/access');
+  const salesProfile=directory.data.find((person:{id:string})=>person.id===sales);
+  assert.deepEqual(salesProfile.work_groups,['sales']);
+  assert(salesProfile.work_controlled);
+  assert.deepEqual((await db.pool.query('SELECT * FROM approval_hierarchy WHERE id=1')).rows[0],previous);
+ }finally{await setStaffRollout(owner,false);}
+});
+
+test('the staff administrator can create a profile and account while privileged access stays with the owner',async()=>{
+ const actor=users.find(user=>user.role==='admin')!;
+ const director=users.find(user=>user.role==='director')!;
+ const person={name:'Андрей Чистов',position:'Аналитик',branchId:'Технический отдел'};
+ assert.equal((await request(actor.id,'/system/access',{...person,role:'admin'})).status,403);
+ const created=await request(actor.id,'/system/access',{...person,role:'employee'});
+ assert.equal(created.status,201);
+ assert.equal((await request(actor.id,'/system/access',{...person,role:'employee'})).status,409);
+ const id=created.data.user.id;
+ assert.equal((await request(actor.id,'/system/access/'+id,{...person,role:'director',expectedVersion:1},'PATCH')).status,403);
+ assert.equal((await request(actor.id,'/system/access/'+id+'/account',{username:'a.chistov'})).status,201);
+ assert.equal((await request(actor.id,'/system/access/'+director.id+'/account',{username:'protected-director'})).status,403);
+ assert.equal((await request(actor.id,'/system/access/'+director.id+'/telegram',{telegramId:'12345678',confirmed:true},'PUT')).status,403);
+ assert.equal((await request(actor.id,'/telegram/pairing',{userId:director.id})).status,403);
+});
+
 test('management observation is personal, confirmed, role protected and does not reset deadlines',async()=>{
  assert.equal((await request('anna','/management/progress')).status,403);
  const initial=(await request('director','/management/progress')).data;

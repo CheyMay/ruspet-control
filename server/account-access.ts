@@ -4,6 +4,7 @@ import {assert} from './domain.js';
 import {hashPassword} from './passwords.js';
 import {event} from './service.js';
 import type {User} from '../shared/types.js';
+import {mayManageStaffIdentity} from '../shared/workspace-access.js';
 
 export type NewAccount={userId:string;name:string;role:User['role'];username:string;password:string};
 const accountLock=431026;
@@ -23,7 +24,7 @@ export async function createUserAccount(actor:User,userId:string,username:string
   await db.query('SELECT pg_advisory_xact_lock($1)',[accountLock]);
   const user=(await db.query<User>('SELECT * FROM users WHERE id=$1 FOR UPDATE',[userId])).rows[0];
   assert(user,404,'Сотрудник не найден.');
-  assert(!user.root_access,403,'Доступ владельца настраивается отдельно.');
+  assert(mayManageStaffIdentity(actor,user),403,'Вход для этого профиля настраивает владелец.');
   const current=(await db.query('SELECT * FROM login_accounts WHERE user_id=$1',[user.id])).rows;
   if(current.length===1&&!current[0].password_login&&current[0].enabled){
    assert(validLogin(username),400,'Некорректный логин.');
@@ -40,9 +41,9 @@ export async function changeUserAccount(actor:User,userId:string,username:string
  assert(userId!==actor.id||action==='enable',403,'Ваш вход может изменить другой администратор.');
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock($1)',[accountLock]);
-  const target=(await db.query('SELECT name,root_access FROM users WHERE id=$1',[userId])).rows[0];
+  const target=(await db.query('SELECT id,name,role,root_access FROM users WHERE id=$1',[userId])).rows[0];
   assert(target,404,'Сотрудник не найден.');
-  assert(!target.root_access,403,'Доступ владельца настраивается отдельно.');
+  assert(mayManageStaffIdentity(actor,target),403,'Вход для этого профиля настраивает владелец.');
   const account=(await db.query('SELECT enabled,password_login FROM login_accounts WHERE user_id=$1 AND username=$2 FOR UPDATE',[userId,username])).rows[0];
   assert(account,404,'Вход сотрудника не найден.');
   const password=action==='reset'?randomBytes(18).toString('base64url'):undefined;

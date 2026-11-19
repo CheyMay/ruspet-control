@@ -13,6 +13,7 @@ import {tickTaskReminders,pendingAlerts} from './reminders.js';
 import {claimTelegramTaskNotice,taskNoticeScreen} from './task-notices.js';
 import {visibleTasks} from './service.js';
 import {readFile} from 'node:fs/promises';
+import {mayManageStaffIdentity} from '../shared/workspace-access.js';
 import {randomBytes,randomUUID,createHash} from 'node:crypto';
 import {pool,transaction} from './db.js';
 import {assert,AppError} from './domain.js';
@@ -42,9 +43,9 @@ export async function pilotStatus(user?:User){
 }
 export async function pairPilot(u:User,targetUserId=u.id){
  assert(targetUserId===u.id||u.role==='admin',403,'Другую учётную запись подключает администратор.');
- const target=(await pool.query('SELECT root_access FROM users WHERE id=$1',[targetUserId])).rows[0];
+ const target=(await pool.query('SELECT id,role,root_access FROM users WHERE id=$1',[targetUserId])).rows[0];
  assert(target,404,'Пользователь не найден.');
- assert(!target.root_access||targetUserId===u.id,403,'Владелец подключает свой Telegram сам.');
+ assert(targetUserId===u.id||mayManageStaffIdentity(u,target),403,'Для этого профиля ссылку создаёт владелец.');
  const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];assert(cfg.enabled,409,'Сначала включите личный пилот.');
  const cached=(await pool.query('SELECT username FROM telegram_runtime WHERE id=1')).rows[0]?.username;
  if(cached)username=cached;else{const me=await call('getMe');username=me.username;const info=await call('getWebhookInfo');assert(!info.url,409,'У бота уже настроен webhook. Он не изменён; polling не запущен.');}
@@ -197,8 +198,9 @@ export async function deliver(now=new Date()){
  if(cfg.delivery||personal?.schedules)await tickTaskReminders(now);
  const bindings=(await pool.query(`SELECT b.*,u.name,u.role,u.branch_id,u.position,u.company_branch_access,COALESCE(p.telegram_digest,true) AS telegram_digest
   FROM telegram_binding b JOIN users u ON u.id=b.user_id LEFT JOIN notification_preferences p ON p.user_id=u.id
+  CROSS JOIN (SELECT staff_work_ids() ids) scope
   WHERE ($1 OR u.role IN ('admin','branch_manager','sales_head','director') OR $2 AND
-    NOT EXISTS(SELECT 1 FROM approval_hierarchy h WHERE h.id=1 AND h.direct_assignee_ids IS NOT NULL AND u.id<>ALL(h.direct_assignee_ids))
+    (scope.ids IS NULL OR u.id=ANY(scope.ids))
    OR $3 AND EXISTS(SELECT 1 FROM outbox o WHERE o.recipient_id=u.id AND o.dedupe_key='workday:'||$4||':'||u.id AND o.created_at>=b.paired_at))
    AND (NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id)
    OR EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled))

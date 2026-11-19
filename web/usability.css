@@ -13,6 +13,9 @@ main select:disabled { opacity:.6; }
 .telegram-pairing { background:var(--theme-surface-soft); border:1px solid var(--theme-border); padding:12px; border-radius:8px; margin-bottom:12px; }
 .telegram-pairing .pilot-controls { margin:8px 0 0; }
 .sidebar > .brand { margin-bottom:12px; }
+.staff-rollout-status { align-items:flex-start; }
+.staff-unlinked-row { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:8px; padding:8px 0; }
+.staff-control-select { margin-top:5px; max-inline-size:14em; font-size:12px; }
 .workspace-main { min-inline-size:0; }
 .table-scroll { overscroll-behavior-inline:contain; }
 .drawer-body { overflow-wrap:anywhere; }

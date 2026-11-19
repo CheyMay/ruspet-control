@@ -1,8 +1,9 @@
 import {useEffect,useState} from 'react';
 import type {User} from '../shared/types.js';
 import {api,viewAsLink} from './api.js';
-import {EmployeeProfileEditor} from './EmployeeProfileEditor.js';
-import {matchesFilter} from './SearchFilter.js';
+import {EmployeeProfileEditor,type StaffDraft} from './EmployeeProfileEditor.js';
+import {mayManageStaffIdentity} from '../shared/workspace-access.js';
+import {EmployeeFilter,matchesFilter} from './SearchFilter.js';
 import {useRememberedFilter} from './remembered-filter.js';
 
 export function moscowTimestamp(value:string|null|undefined){
@@ -71,7 +72,10 @@ export function SystemHealth(){
  </section>;
 }
 
-type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean;password_login?:boolean}[];visibleTasks:number;paired_at:string|null;telegram_id:string|null;invitation_expires:string|null};
+type AccessPerson=User&{suggestedLogin:string;accounts:{username:string;enabled:boolean;password_login?:boolean}[];visibleTasks:number;paired_at:string|null;telegram_id:string|null;invitation_expires:string|null;
+ work_groups:string[]|null;work_control_override:boolean|null;work_controlled:boolean;active_session:boolean};
+const groupLabels:Record<string,string>={sales:'Продажи',analytics:'Аналитика',leadership:'Руководители'};
+type Rollout={enabled:boolean;missing:StaffDraft[]};
 const accessFilters={all:'Все',ready:'Вход настроен',setup:'Нужно подключить',disabled:'Вход отключён'} as const;
 type StaffAccess=Exclude<keyof typeof accessFilters,'all'>;
 function staffLogin(person:AccessPerson):{state:StaffAccess;label:string}{
@@ -82,8 +86,38 @@ function staffLogin(person:AccessPerson):{state:StaffAccess;label:string}{
  return {state:'setup',label:'Профиль без входа'};
 }
 
-export function AccessDirectory({roles,currentUserId}:{roles:Record<string,string>;currentUserId:string}){
+export function AccessDirectory({roles,actor}:{roles:Record<string,string>;actor:User}){
+ const currentUserId=actor.id;
  const {value,error,busy,refresh}=usePanelData<AccessPerson[]>('/system/access');
+ const rollout=usePanelData<Rollout>('/system/staff-rollout');
+ const [group,setGroup]=useRememberedFilter(currentUserId,'AccessDirectory.group','work');
+ const [controlBusy,setControlBusy]=useState(false),[controlError,setControlError]=useState('');
+ const [draft,setDraft]=useState<true|StaffDraft|null>(null);
+ const [matching,setMatching]=useState<StaffDraft|null>(null),[matchId,setMatchId]=useState('');
+ function focusProfile(user:User){
+  setQuery(user.name);setGroup('all');setAccess('all');refresh();rollout.refresh();
+ }
+ async function linkProfile(){
+  if(!matching||!matchId)return;
+  setControlBusy(true);setControlError('');
+  try{
+   const {user}=await api<{user:User}>('/system/staff-directory/'+matching.id+'/profile','PUT',{userId:matchId});
+   setMatching(null);focusProfile(user);setNotice('Запись справочника связана с существующим профилем.');
+  }catch(e){setControlError((e as Error).message);}finally{setControlBusy(false);}
+ }
+ async function changeControl(id:string,value:string){
+  setControlBusy(true);setControlError('');
+  try{
+   await api('/system/access/'+encodeURIComponent(id)+'/work-control','PUT',{enabled:value==='auto'?null:value==='on'});
+   refresh();
+  }catch(e){setControlError((e as Error).message);}finally{setControlBusy(false);}
+ }
+ async function changeRollout(enabled:boolean){
+  if(!window.confirm(enabled?'Включить рабочий контроль для продаж, аналитиков и руководителей?':'Вернуться к прежнему списку контроля сроков?'))return;
+  setControlBusy(true);setControlError('');
+  try{await api('/system/staff-rollout','PUT',{enabled,confirmed:true});rollout.refresh();refresh();}
+  catch(e){setControlError((e as Error).message);}finally{setControlBusy(false);}
+ }
  const [access,setAccess]=useRememberedFilter(currentUserId,'AccessDirectory.access','all');
  const [sort,setSort]=useRememberedFilter(currentUserId,'AccessDirectory.sort','name');
  const [query,setQuery]=useState(''),[invite,setInvite]=useState<{name:string;url:string}|null>(null),[creating,setCreating]=useState(false),[notice,setNotice]=useState(''),[inviteError,setInviteError]=useState('');
@@ -118,17 +152,51 @@ export function AccessDirectory({roles,currentUserId}:{roles:Record<string,strin
   catch(e){setInviteError((e as Error).message)}finally{setTelegramBusy(false)}
  }
  const entries=value?.map(person=>({person,login:staffLogin(person)}));
- const counts={all:entries?.length??0,ready:0,setup:0,disabled:0};
- for(const entry of entries??[])counts[entry.login.state]++;
+ const working=entries?.filter(({person})=>person.work_controlled)??[];
+ const scoped=entries?.filter(({person})=>group==='all'||(group==='work'?person.work_controlled:person.work_groups?.includes(group)));
+ const counts={all:scoped?.length??0,ready:0,setup:0,disabled:0};
+ for(const entry of scoped??[])counts[entry.login.state]++;
  const rank=sort==='ready'?['ready','setup','disabled']:['setup','disabled','ready'];
- const people=entries?.filter(({person:p,login})=>(access==='all'||access===login.state)&&
-  matchesFilter([p.name,p.position,p.branch_id,roles[p.role],login.label,...p.accounts.map(a=>a.username)].join(' '),query))
+ const people=scoped?.filter(({person:p,login})=>(access==='all'||access===login.state)&&
+  matchesFilter([p.name,p.position,p.branch_id,roles[p.role],login.label,...(p.work_groups??[]).map(g=>groupLabels[g]),...p.accounts.map(a=>a.username)].join(' '),query))
   .sort((a,b)=>(sort==='name'?0:rank.indexOf(a.login.state)-rank.indexOf(b.login.state))||a.person.name.localeCompare(b.person.name,'ru'));
  return <section className="panel automation-settings">
-  <div className="automation-heading"><div><h2>Доступы сотрудников</h2><p className="muted">Роль, вход в панель, подключение к боту и число доступных рабочих задач.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
+  <div className="automation-heading"><div><h2>Сотрудники и права</h2><p className="muted">Вход, Telegram, роль и контроль сроков по каждому сотруднику.</p></div>
+   <div className="task-scope-actions"><button className="button primary" onClick={()=>setDraft(true)}>Добавить сотрудника</button>
+    <button className="button secondary" disabled={busy||rollout.busy} onClick={()=>{refresh();rollout.refresh();}}>Обновить</button></div>
+  </div>
+  {rollout.value&&value&&<div className="source-banner staff-rollout-status">
+   <div><strong>{rollout.value.enabled?'Подключение продаж, аналитиков и руководителей':'Действует прежний список контроля'}</strong>
+    <p>Под контролем {working.length} · Вход настроен у {working.filter(p=>p.login.state==='ready').length} · Telegram подключён у {working.filter(p=>p.person.paired_at).length}</p>
+    <p>Участие определяет проверки сроков и рабочие сводки. Права, маршруты согласований и обмен с Битрикс24 настраиваются отдельно.</p>
+   </div>
+   {actor.root_access&&<button className="button secondary" disabled={controlBusy} onClick={()=>void changeRollout(!rollout.value!.enabled)}>
+    {rollout.value.enabled?'Вернуться к прежнему списку':'Включить рабочую группу'}
+   </button>}
+  </div>}
+  {rollout.value&&rollout.value.missing.length>0&&<details className="report-more"><summary>Нужно сопоставить с профилем · {rollout.value.missing.length}</summary>
+   {rollout.value.missing.map(person=><div className="staff-unlinked-row" key={person.id}>
+    <span>{person.name} · {person.department}</span><div className="task-scope-actions">
+     <button className="button secondary" onClick={()=>{setMatching(person);setMatchId('');}}>Сопоставить</button>
+     <button className="button secondary" onClick={()=>{setMatching(null);setDraft(person);}}>Создать профиль</button>
+    </div>
+   </div>)}
+  </details>}
+  {matching&&<div className="source-banner">
+   <strong>Сопоставить · {matching.name}</strong>
+   <EmployeeFilter label="Существующий профиль" value={matchId} disabled={controlBusy} onChange={setMatchId}
+    people={(value??[]).filter(person=>mayManageStaffIdentity(actor,person))}/>
+   <button type="button" className="button primary" disabled={!matchId||controlBusy} onClick={()=>void linkProfile()}>Сохранить связь</button>
+   <button type="button" className="button secondary" disabled={controlBusy} onClick={()=>setMatching(null)}>Отмена</button>
+  </div>}
+  {(controlError||rollout.error)&&<p className="alert error" role="alert">{controlError||rollout.error}</p>}
   {(error||inviteError)&&<p className="alert error" role="alert">{inviteError||error}</p>}
   {accountError&&<p className="alert error" role="alert">{accountError}</p>}
-  {profile&&<EmployeeProfileEditor person={profile} own={profile.id===currentUserId} close={()=>setProfile(null)} saved={refresh}/>}
+  {profile&&<EmployeeProfileEditor person={profile} actor={actor} close={()=>setProfile(null)} saved={refresh}/>}
+  {draft&&<EmployeeProfileEditor actor={actor} staff={draft===true?undefined:draft} close={()=>setDraft(null)} saved={user=>{
+   focusProfile(user);setNotice('Профиль создан. Выдайте сотруднику вход или приглашение.');
+  }}/>}
+  {notice&&!newAccount&&!invite&&<p role="status">{notice}</p>}
   {telegramPerson&&<form className="source-banner" onSubmit={e=>void saveTelegram(e)}><strong>{telegramPerson.paired_at?'Отключение Telegram':'Привязка Telegram'} · {telegramPerson.name}</strong>
    {telegramPerson.paired_at?<p>Telegram ID: {telegramPerson.telegram_id}. Входы через Telegram будут завершены, новые подтверждения отменены. Для повторного подключения выдайте новое приглашение.</p>:<><p>Предпочтительно выдать сотруднику персональное приглашение. Для ручной привязки нужен проверенный числовой ID личного аккаунта, а не @имя. Сотрудник должен открыть бота и нажать «Старт».</p><label>Telegram ID<input aria-label="Telegram ID сотрудника" inputMode="numeric" autoComplete="off" pattern="[1-9][0-9]*" maxLength={16} required value={telegramId} onChange={e=>setTelegramId(e.target.value)}/></label></>}
    <label><input type="checkbox" checked={telegramConfirmed} onChange={e=>setTelegramConfirmed(e.target.checked)}/>Подтверждаю {telegramPerson.paired_at?'отключение привязки':'личность сотрудника и правильность ID'}</label><button className="button primary" disabled={!telegramConfirmed||telegramBusy}>{telegramBusy?'Сохраняем…':telegramPerson.paired_at?'Отключить Telegram':'Привязать Telegram'}</button><button className="button secondary" type="button" disabled={telegramBusy} onClick={()=>setTelegramPerson(null)}>Отмена</button></form>}
@@ -141,25 +209,37 @@ export function AccessDirectory({roles,currentUserId}:{roles:Record<string,strin
     {(Object.keys(accessFilters) as (keyof typeof accessFilters)[]).map(id=><button type="button" key={id} aria-pressed={access===id}
      className={access===id?'selected':''} onClick={()=>setAccess(id)}>{accessFilters[id]} <small>{counts[id]}</small></button>)}
    </div>
-   <div className="filters"><input aria-label="Поиск сотрудника" placeholder="Имя, должность, подразделение или логин" value={query} onChange={e=>setQuery(e.target.value)}/>
+   <div className="filters"><select aria-label="Группа сотрудников" value={group} onChange={e=>setGroup(e.target.value)}>
+     <option value="work">Под контролем</option><option value="all">Вся компания</option>
+     {Object.entries(groupLabels).map(([id,label])=><option key={id} value={id}>{label}</option>)}
+    </select><input aria-label="Поиск сотрудника" placeholder="Имя, должность, подразделение или логин" value={query} onChange={e=>setQuery(e.target.value)}/>
     <select aria-label="Сортировка сотрудников" value={sort} onChange={e=>setSort(e.target.value)}>
      <option value="name">По имени</option><option value="ready">С входом сначала</option><option value="setup">Без входа сначала</option>
     </select>
    </div>
-   <div className="table-scroll"><table><thead><tr><th>Сотрудник и должность</th><th>Права в системе</th><th>Доступно задач</th><th>Вход в панель</th><th>Telegram</th><th>Просмотр</th></tr></thead><tbody>{people.map(({person:p,login})=><tr key={p.id}>
+   <div className="table-scroll"><table><thead><tr><th>Сотрудник и должность</th><th>Права в системе</th><th>Контроль сроков</th><th>Вход в панель</th><th>Telegram</th><th>Просмотр</th></tr></thead><tbody>{people.map(({person:p,login})=>{
+   const editable=mayManageStaffIdentity(actor,p);
+   return <tr key={p.id}>
     <td><strong>{p.name}</strong><br/><small>{[p.position,p.branch_id].filter(Boolean).join(' · ')}</small></td>
-    <td>{p.root_access?'Владелец':roles[p.role]}{!p.root_access&&<div><button className="text-button" aria-label={'Изменить доступ для '+p.name} onClick={()=>setProfile(p)}>Изменить</button></div>}</td><td>{p.visibleTasks}</td>
-    <td><small className="access-login-status" data-state={login.state}>{login.label}</small>{p.accounts.length?p.accounts.map(a=><div key={a.username}>
+    <td>{p.root_access?'Владелец':roles[p.role]}{editable&&<div><button className="text-button" aria-label={'Изменить доступ для '+p.name} onClick={()=>setProfile(p)}>Изменить</button></div>}</td>
+    <td><strong>{p.work_controlled?'Включён':'—'}</strong><br/><small>{(p.work_groups??[]).map(g=>groupLabels[g]).join(' · ')||' '}</small>
+     {rollout.value?.enabled&&p.work_groups&&<div><select className="staff-control-select" aria-label={'Участие в контроле сроков: '+p.name}
+      value={p.work_control_override===null?'auto':p.work_control_override?'on':'off'} disabled={busy||controlBusy}
+      onChange={e=>void changeControl(p.id,e.target.value)}>
+      <option value="auto">По должности и отделу</option><option value="on">Включить вручную</option><option value="off">Исключить</option>
+     </select></div>}
+    </td>
+    <td><small className="access-login-status" data-state={login.state}>{login.label}</small>{p.active_session&&<small className="muted"> · есть активная сессия</small>}{p.accounts.length?p.accounts.map(a=><div key={a.username}>
      {a.password_login===false?'Telegram / QR':a.username}{a.enabled?'':' · отключён'}
-     {!p.root_access&&p.id!==currentUserId&&<div className="notice-actions">
+     {editable&&p.id!==currentUserId&&<div className="notice-actions">
       <button className="text-button" disabled={accountBusy} onClick={()=>void changeAccount(p,a.username,a.enabled?'disable':'enable')}>{a.enabled?'Отключить вход':'Включить вход'}</button>
       {a.enabled&&(a.password_login===false
        ?<button className="text-button" onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setAccountError('');}}>Создать пароль</button>
        :<button className="text-button" disabled={accountBusy} onClick={()=>void changeAccount(p,a.username,'reset')}>Сбросить пароль</button>)}
      </div>}
-    </div>):<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
-    <td>{p.paired_at?<><span>Подключён · {moscowTimestamp(p.paired_at)}<br/>ID: {p.telegram_id}</span><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramConfirmed(false);setInviteError('');}}>Отключить</button></>:<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramId('');setTelegramConfirmed(false);setInviteError('');}}>Привязать по ID</button></>}</td>
-    <td>{!p.root_access&&<a className="text-button" href={viewAsLink(p.id)} target="_blank" rel="noopener" aria-label={`Открыть как ${p.name}`}>Открыть как сотрудник ↗</a>}</td>
-   </tr>)}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}
+    </div>):editable&&<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
+    <td>{p.paired_at?<><span>Подключён · {moscowTimestamp(p.paired_at)}</span>{editable&&<><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramConfirmed(false);setInviteError('');}}>Отключить</button></>}</>:editable?<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramId('');setTelegramConfirmed(false);setInviteError('');}}>Привязать по ID</button></>:<small>Подключает владелец</small>}</td>
+    <td>{!p.root_access&&<a className="text-button" href={viewAsLink(p.id)} target="_blank" rel="noopener" aria-label={`Открыть как ${p.name}`}>Открыть как сотрудник ↗</a>}<br/><small>{p.visibleTasks} задач</small></td>
+   </tr>;})}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}
  </section>;
 }

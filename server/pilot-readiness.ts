@@ -14,11 +14,13 @@ export async function pilotReadiness(){
   pool.query('SELECT * FROM bitrix_task_links'),pool.query('SELECT * FROM bitrix_live_config WHERE id=1'),pool.query('SELECT * FROM telegram_settings WHERE id=1'),
   pool.query('SELECT last_poll_at,error FROM telegram_runtime WHERE id=1'),pool.query('SELECT config FROM rule_versions ORDER BY version DESC LIMIT 1')
  ]);
+ const linkedExchange=cfg.rows[0]?.sync_linked_tasks===true;
  const managers=roster.rows.filter(p=>p.pilot_role==='manager'),leaders=roster.rows.filter(p=>p.pilot_role==='leader'),members=new Set(roster.rows.map(p=>p.user_id));
  add(process.env.DEMO_AUTH==='false','Демонстрационный вход должен быть выключен (DEMO_AUTH=false).');
  let https=false;try{https=new URL(process.env.PUBLIC_ORIGIN||'').protocol==='https:'}catch{}
  add(https,'Для ссылок и защищённых cookies нужен HTTPS PUBLIC_ORIGIN.');
- add(managers.length===2&&leaders.length>0,'Нужны два менеджера и хотя бы один руководитель в подтверждённом составе пилота.');
+ if(linkedExchange)add(links.rows.some(row=>row.live_enabled),'Обмен по активированным связям: нужна хотя бы одна связанная задача.');
+ else add(managers.length===2&&leaders.length>0,'Для ограниченного режима обмена нужны два менеджера и руководитель.');
  let secretReady=false;try{const file=process.env.BITRIX_WEBHOOK_FILE!;await access(file);const info=await stat(file);if(info.isFile()&&(info.mode&0o077)===0){await bitrixClient();secretReady=true;}}catch{}
  add(secretReady&&process.env.BITRIX_PORTAL==='thebest.bitrix24.ru','Нужны доступные закрытые файлы вебхука и выбранного транспорта портала thebest.bitrix24.ru (права 600).');
  const rest=(await pool.query('SELECT portal,last_success_at FROM bitrix_rest_gate WHERE id=1')).rows[0];
@@ -27,7 +29,7 @@ export async function pilotReadiness(){
  add(telegram.rows[0]?.enabled&&telegram.rows[0]?.delivery,'Для пилота должны быть включены бот и доставка.');
  add(runtime.rows[0]?.last_poll_at&&Date.now()-Date.parse(runtime.rows[0].last_poll_at)<120000&&!runtime.rows[0].error,'Нужен свежий heartbeat бота без ошибки.');
  const selectorRole={branchManager:'branch_manager',salesHead:'sales_head',director:'director'};
- for(const member of roster.rows){
+ for(const member of linkedExchange?[]:roster.rows){
   const person=people.rows.find(p=>p.id===member.user_id)!;
   add(member.pilot_role==='manager'?person.role==='employee':canManage(person),`${person.name}: роль соответствует участию в пилоте.`);
   add(accounts.rows.some(a=>a.user_id===person.id),`${person.name}: есть активный персональный веб-вход.`);

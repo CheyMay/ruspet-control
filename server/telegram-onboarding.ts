@@ -4,6 +4,7 @@ import {assert,AppError} from './domain.js';
 import {namesMatch,nameParts,normalPhone} from './staff-import.js';
 import {suggestedLogin} from './account-access.js';
 import type {User} from '../shared/types.js';
+import {mayManageStaffIdentity,protectedStaffRole} from '../shared/workspace-access.js';
 import type {BotScreen} from './bot.js';
 import {notify} from './service.js';
 const screen=(text:string,replyKeyboard:'contact'|'remove'='remove'):BotScreen=>({text,buttons:[],replyKeyboard});
@@ -35,6 +36,7 @@ async function finish(db:Db,request:any,staff:any,actor:User|null,selectedUserId
  assert(forceNew||users.length<=1,409,'Уточните, к какому существующему сотруднику привязать заявку.');
  let user:User|undefined=forceNew?undefined:users[0];assert(!selected||user,404,'Пользователь не найден.');
  if(user){
+  assert(actor?mayManageStaffIdentity(actor,user):!protectedStaffRole(user.role),403,'Для этой учётной записи нужно персональное приглашение владельца.');
   const accounts=(await db.query('SELECT enabled FROM login_accounts WHERE user_id=$1',[user.id])).rows;
   assert(!accounts.length||accounts.some(a=>a.enabled),403,'Вход сотрудника отключён. Сначала восстановите доступ отдельно.');
   const old=(await db.query('SELECT chat_id,user_id FROM telegram_binding WHERE user_id=$1 OR chat_id=$2',[user.id,request.chat_id])).rows;

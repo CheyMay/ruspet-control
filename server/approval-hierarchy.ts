@@ -4,6 +4,7 @@ import {branchCovers,canApproveBranch,unassignedBranch} from '../shared/branches
 import {lockDelegationChain} from './delegation-lock.js';
 import {event,notify} from './service.js';
 import {taskCode} from '../shared/queues.js';
+import {staffWorkIds} from './staff-rollout.js';
 import {isSelfTask} from '../shared/actions.js';
 import {priceBand} from '../shared/pricing.js';
 import type {Approval,ApprovalScope,Step,Task,User} from '../shared/types.js';
@@ -130,9 +131,11 @@ async function applyDirectScope(db:Db,actorId:string,hierarchy:Hierarchy,assigne
    approval.eligible?'Согласование назначено руководителю продаж':'Запрос выведен из управленческого согласования',
    {approvalId:approval.id,previousRoute:approval.previous_route,route:approval.eligible?directRoute(salesId):null});
  }
- await db.query("UPDATE outbox o SET withdrawn_at=now() FROM control_requests c WHERE o.dedupe_key='control:'||c.id AND NOT(c.assignee_id=ANY($1)) AND o.withdrawn_at IS NULL",[assignees]);
- await db.query("UPDATE control_requests SET state='resolved' WHERE state IN ('waiting','escalated') AND NOT(assignee_id=ANY($1))",[assignees]);
- await db.query("UPDATE findings f SET status='resolved' FROM tasks t WHERE t.id=f.task_id AND f.status='open' AND NOT(t.assignee_id=ANY($1))",[assignees]);
+ const scope=await staffWorkIds(db);
+ if(!scope)return;
+ await db.query("UPDATE outbox o SET withdrawn_at=now() FROM control_requests c WHERE o.dedupe_key='control:'||c.id AND NOT(c.assignee_id=ANY($1)) AND o.withdrawn_at IS NULL",[scope]);
+ await db.query("UPDATE control_requests SET state='resolved' WHERE state IN ('waiting','escalated') AND NOT(assignee_id=ANY($1))",[scope]);
+ await db.query("UPDATE findings f SET status='resolved' FROM tasks t WHERE t.id=f.task_id AND f.status='open' AND NOT(t.assignee_id=ANY($1))",[scope]);
 }
 
 export function configuredApprovalRoute(hierarchy:Hierarchy,task:Task,requesterId:string,type:Approval['type']):Step[]|null{

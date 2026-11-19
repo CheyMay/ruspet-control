@@ -381,7 +381,7 @@ export function App(){
   {page==='delegations'&&managed(data.user)&&<DelegationInbox open={openTask}/>}
   {page==='processes'&&<WorkspaceSection label="Загружаем бизнес-процессы…"><WorkDesign key={data.user.id} user={data.user} users={data.users} draft={processDraft} open={openTask}/></WorkspaceSection>}
   {page==='settings'&&<SettingsSections key={data.user.id+':'+(settingsTarget??'')} userId={data.user.id} initial={data.user.role==='admin'?'staff':'notices'} initialSelection={settingsTarget} items={[
-   ...(data.user.role==='admin'?[{id:'staff',label:'Сотрудники и права',content:<AccessDirectory roles={roles} currentUserId={data.user.id}/>},
+   ...(data.user.role==='admin'?[{id:'staff',label:'Сотрудники и права',content:<AccessDirectory roles={roles} actor={data.user}/>},
     {id:'registrations',label:'Заявки и подключение',content:<StaffOnboarding roles={roles}/>}]:[]),
    ...(managed(data.user)?[{id:'rules',label:'Правила и согласования',content:<>{data.user.role==='admin'&&<ApprovalHierarchySettings users={data.users}/>}<Settings key={data.rulesVersion} data={data} busy={busy} act={act}/></>}]:[]),
    {id:'notices',label:'Уведомления и Telegram',content:<><NotificationSettings userId={data.user.id}/><TelegramSettings key={data.user.id} user={data.user} users={data.users}/>{company&&<ManagementPreference/>}</>},

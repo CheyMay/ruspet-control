@@ -54,10 +54,13 @@ export async function systemStatus(actor:User){
 export async function accessDirectory(actor:User){
  assert(actor.role==='admin',403,'Доступы сотрудников видит администратор.');
  const [people,tasks]=await Promise.all([
-  pool.query(`SELECT u.*,b.paired_at,b.chat_id AS telegram_id,
+  pool.query(`SELECT u.*,b.paired_at,b.chat_id AS telegram_id,g.groups AS work_groups,
+   (scope.ids IS NULL AND g.user_id IS NOT NULL OR u.id=ANY(scope.ids)) IS TRUE AS work_controlled,
+   EXISTS(SELECT 1 FROM sessions a WHERE a.user_id=u.id AND a.expires_at>now()) AS active_session,
    (SELECT json_agg(json_build_object('username',a.username,'enabled',a.enabled,'password_login',a.password_login) ORDER BY a.username) FROM login_accounts a WHERE a.user_id=u.id) accounts,
    (SELECT max(p.expires_at) FROM telegram_pairings p WHERE p.user_id=u.id AND p.expires_at>now()) invitation_expires
    FROM users u LEFT JOIN telegram_binding b ON b.user_id=u.id
+   LEFT JOIN staff_work_groups g ON g.user_id=u.id CROSS JOIN (SELECT staff_work_ids() ids) scope
    WHERE NOT u.root_access OR u.id=$1 ORDER BY u.name,u.id`,[actor.id]),
   pool.query<Task>('SELECT * FROM tasks')
  ]);

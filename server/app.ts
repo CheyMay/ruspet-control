@@ -12,7 +12,8 @@ import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,prev
 import {taskInput,taskPriceInput} from './task-input.js';
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
 import {changeUserAccount,createUserAccount} from './account-access.js';
-import {updateEmployeeProfile} from './employee-profiles.js';
+import {createEmployeeProfile,linkStaffProfile,updateEmployeeProfile} from './employee-profiles.js';
+import {setStaffRollout,setStaffWorkOverride,staffRolloutStatus} from './staff-rollout.js';
 import {notificationPreference,personalNotifications,readNotifications,saveNotificationPreference} from './notifications.js';
 import {setOwnerBitrixExchange} from './owner-operations.js';
 import {taskIntegration} from './bitrix-fields.js';
@@ -213,6 +214,20 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/system/registrations',async(req,res)=>res.json(await listRegistrations(req.actor)));
  app.post('/api/system/registrations/:id',async(req,res)=>{const input=z.object({action:z.enum(['approve','reject']),staffId:z.uuid().optional(),userId:z.string().max(100).optional(),forceNew:z.boolean().optional(),confirmed:z.literal(true)}).parse(req.body);res.json(await reviewRegistration(req.actor,z.uuid().parse(req.params.id),input));});
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
+ app.post('/api/system/access',async(req,res)=>res.status(201).json(await createEmployeeProfile(req.actor,req.body)));
+ app.put('/api/system/staff-directory/:id/profile',async(req,res)=>{
+  const {userId}=z.object({userId:z.string().min(1).max(100)}).parse(req.body);
+  res.json(await linkStaffProfile(req.actor,z.uuid().parse(req.params.id),userId));
+ });
+ app.get('/api/system/staff-rollout',async(req,res)=>res.json(await staffRolloutStatus(req.actor)));
+ app.put('/api/system/staff-rollout',async(req,res)=>{
+  const {enabled}=z.object({enabled:z.boolean(),confirmed:z.literal(true)}).parse(req.body);
+  res.json(await setStaffRollout(req.actor,enabled));
+ });
+ app.put('/api/system/access/:id/work-control',async(req,res)=>{
+  const {enabled}=z.object({enabled:z.boolean().nullable()}).parse(req.body);
+  res.json(await setStaffWorkOverride(req.actor,String(req.params.id),enabled));
+ });
  app.patch('/api/system/access/:id',async(req,res)=>res.json(await updateEmployeeProfile(req.actor,String(req.params.id),req.body)));
  app.put('/api/system/access/:id/account/:username',async(req,res)=>{
   const {action}=z.object({action:z.enum(['enable','disable','reset']),confirmed:z.literal(true)}).parse(req.body);

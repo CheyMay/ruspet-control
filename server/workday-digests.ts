@@ -9,7 +9,7 @@ import type {User} from '../shared/types.js';
 export async function prepareWorkdayDigests(now:Date){
  const day=businessDay(now);
  const people=(await pool.query<User&{plan:boolean;creator:boolean}>(`WITH scope AS (
-  SELECT (SELECT direct_assignee_ids FROM approval_hierarchy WHERE id=1) ids
+  SELECT staff_work_ids() ids
  ), work AS (
   SELECT t.assignee_id,t.creator_id,t.status FROM tasks t CROSS JOIN scope s
   WHERE (s.ids IS NULL OR t.assignee_id=ANY(s.ids))

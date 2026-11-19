@@ -3,6 +3,7 @@ import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import {businessDay} from '../shared/queues.js';
 import {EmployeeProfileEditor} from './EmployeeProfileEditor.js';
+import {mayManageStaffIdentity} from '../shared/workspace-access.js';
 import {roleLabels} from './employee-roles.js';
 import type {User} from '../shared/types.js';
 
@@ -37,7 +38,7 @@ export function OrgWorkspace({currentUser}:{currentUser:User}){
  }
  return <>
   {error&&<p className="alert error" role="alert">{error}</p>}{notice&&<p role="status">{notice}</p>}
-  {canEdit&&profile&&<EmployeeProfileEditor person={profile} own={profile.id===currentUser.id} close={()=>setProfile(null)}
+  {canEdit&&profile&&<EmployeeProfileEditor person={profile} actor={currentUser} close={()=>setProfile(null)}
    saved={()=>{setNotice('Должность и доступ сохранены.');setReload(n=>n+1);}}/>}
   <section className="panel automation-settings"><h2>Оргструктура</h2>
    <p className="muted">Укажите прямого руководителя. Связь применяется при делегировании. Если руководитель ещё не настроил команду, используется прежняя выборка по роли и филиалу.</p>
@@ -45,7 +46,7 @@ export function OrgWorkspace({currentUser}:{currentUser:User}){
    {!data&&!error&&<p>Загружаем сотрудников…</p>}
    <div className="table-scroll"><table><thead><tr><th>Сотрудник</th><th>Должность</th><th>Подразделение</th><th>Права в системе</th><th>Прямой руководитель</th></tr></thead><tbody>
     {visible.map(p=><tr key={p.id}><td>{p.name}</td><td>{p.position||'—'}</td><td>{p.branch_id}</td>
-     <td>{roleLabels[p.role]}{canEdit&&<div><button className="text-button" aria-label={'Изменить доступ для '+p.name} onClick={()=>setProfile(p)}>Изменить</button></div>}</td>
+     <td>{roleLabels[p.role]}{mayManageStaffIdentity(currentUser,p)&&<div><button className="text-button" aria-label={'Изменить доступ для '+p.name} onClick={()=>setProfile(p)}>Изменить</button></div>}</td>
      <td><select aria-label={'Руководитель для '+p.name} value={p.manager_id??''} disabled={busy}
      onChange={e=>void save('/org/reporting/'+encodeURIComponent(p.id),'PUT',{managerId:e.target.value||null})}>
       <option value="">Не назначен</option>{people.filter(m=>m.id!==p.id).map(m=><option key={m.id} value={m.id}>{m.name}</option>)}

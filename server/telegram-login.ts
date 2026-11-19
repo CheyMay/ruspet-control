@@ -1,3 +1,4 @@
+import {mayManageStaffIdentity} from '../shared/workspace-access.js';
 import {createHash,randomBytes,randomInt,randomUUID} from 'node:crypto';
 import express from 'express';
 import QRCode from 'qrcode';
@@ -127,9 +128,9 @@ export async function setTelegramBinding(actor:User,userId:string,telegramId:str
  if(telegramId!==null)assert(/^[1-9][0-9]{0,15}$/.test(telegramId)&&BigInt(telegramId)<=4503599627370495n,400,'Нужен числовой Telegram ID личного аккаунта, без @.');
  await transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(431008)');
-  const target=(await db.query('SELECT root_access FROM users WHERE id=$1',[userId])).rows[0];
+  const target=(await db.query('SELECT id,role,root_access FROM users WHERE id=$1',[userId])).rows[0];
   assert(target,404,'Сотрудник не найден.');
-  assert(!target.root_access||(actor.id===userId&&telegramId===null),403,'Telegram владельца подключается из его личного планера.');
+  assert(mayManageStaffIdentity(actor,target)||(target.root_access&&actor.id===userId&&telegramId===null),403,'Подключение этого профиля настраивает владелец.');
   const old=(await db.query('SELECT * FROM telegram_binding WHERE user_id=$1',[userId])).rows[0];
   if(telegramId!==null){
    assert(!old||old.chat_id===telegramId,409,'Сначала отключите прежнюю привязку сотрудника.');

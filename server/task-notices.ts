@@ -1,6 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {canSee} from './domain.js';
+import {staffWorkIds} from './staff-rollout.js';
 import {button,htmlScreen} from './bot-ui.js';
 import {botDue} from './bot-presentation.js';
 import {businessDay} from '../shared/queues.js';
@@ -62,7 +63,7 @@ async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],chann
   if(!tasks.length)return null;
 
   const stamp=now.toISOString(),byId=new Map(tasks.filter(task=>task.status==='active').map(task=>[task.id,task]));
-  const scope=(await db.query<{direct_assignee_ids:string[]|null}>('SELECT direct_assignee_ids FROM approval_hierarchy WHERE id=1')).rows[0]?.direct_assignee_ids;
+  const scope=await staffWorkIds(db);
   const actionable=tasks.filter(task=>task.status==='active'&&!task.awaiting_decision);
   const {overdue,elapsedToday,today,todaySlots,checkpoint}=deadlinePlan(delivery.deadlines&&(!scope||scope.includes(user.id))?actionable:[],now,previous);
   const waiting=tasks.filter(task=>task.status==='review'||task.awaiting_decision).length;

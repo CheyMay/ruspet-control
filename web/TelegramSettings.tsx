@@ -1,5 +1,6 @@
 import {useEffect,useState} from 'react';
 import type {User} from '../shared/types.js';
+import {mayManageStaffIdentity} from '../shared/workspace-access.js';
 import {api} from './api.js';
 import {EmployeeFilter} from './SearchFilter.js';
 
@@ -64,7 +65,7 @@ export function TelegramSettings({user,users}:{user:User;users:User[]}){
     {admin&&<button type="button" className="button secondary" disabled={busy||!status.configured}
      onClick={()=>void change('enabled',!status.settings.enabled)}>{status.settings.enabled?'Выключить Telegram':'Включить Telegram'}</button>}
     {status.settings.enabled&&admin&&<EmployeeFilter label="Чей Telegram подключить" value={target} disabled={busy}
-     people={users.filter(person=>person.id!==user.id&&!person.root_access)} empty={{value:user.id,label:'Мой Telegram'}}
+     people={users.filter(person=>person.id!==user.id&&mayManageStaffIdentity(user,person))} empty={{value:user.id,label:'Мой Telegram'}}
      onChange={id=>{setTarget(id);setPairing(null);setCopied(false);}}/>}
     {status.settings.enabled&&(!own||!status.bound)&&<button type="button" className="button primary" disabled={busy||!status.configured}
      onClick={()=>void perform(async ()=>{
