@@ -2,7 +2,8 @@ import {button,htmlScreen,type Payload,type ListOrigin} from './bot-ui.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 import {botDue,botTaskStatus,sortBotTasks} from './bot-presentation.js';
 import {escapeHtml as h,workdayReports} from '../shared/report-links.js';
-import {actionItems,activeTaskApproval,canComplete,taskNextAction} from '../shared/actions.js';
+import {activeTaskApproval,canComplete,taskNextAction} from '../shared/actions.js';
+import {workCount,workLabels,workQueue,workQueueTitle,type WorkBucket} from '../shared/work-queue.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 import {businessDay,taskQueue} from '../shared/queues.js';
 import {moscowClock} from '../shared/personal-calendar.js';
@@ -39,7 +40,8 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
   ...(taskScope&&ch.startsWith('telegram:')?[[button('Я исполнитель','tasks',{filter:'mine'}),button('Я постановщик','tasks',{filter:'created'})]]:[]),
   ...choices,
   [...(page?[button('← Назад',p.op,{...list,page:page-1})]:[]),...(page+1<pages?[button('Дальше →',p.op,{...list,page:page+1})]:[])],
-  [...(p.op==='plan_tasks'?[button('К плану','reports',{id:p.target,filter:p.filter})]:p.op==='director_batch'?[]:[button('Фильтры','task_filters',{owner:p.owner})]),...(p.owner&&p.owner!==u.id?[button('К команде','team')]:[]),button('Меню','home')]
+  [...(p.op==='plan_tasks'?[button('К плану','reports',{id:p.target,filter:p.filter})]:p.op==='director_batch'?[]:
+   p.op==='inbox'?[button('К срокам и действиям','inbox')]:[button('Фильтры','task_filters',{owner:p.owner})]),...(p.owner&&p.owner!==u.id?[button('К команде','team')]:[]),button('Меню','home')]
  ],db);
  return {...result,taskScope};
 }
@@ -78,7 +80,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   const items=[...taskIds].flatMap(id=>tasks.has(id)?[{task:tasks.get(id)!}]:[]);
   return taskList(u,ch,p,items,'Задачи из плана',new Date(),id=>people.get(id)||id,db);
  }
- if(p.op==='notice_menu')return htmlScreen(u,ch,'Уведомления',[[button('Открыть уведомления','notices'),button('Нужно действие','inbox')]]);
+ if(p.op==='notice_menu')return htmlScreen(u,ch,'Уведомления',[[button('Открыть уведомления','notices'),button(workQueueTitle,'inbox')]]);
  if(p.op==='notices'){
   const groups=groupNotifications(await personalNotifications(u,true)).slice(0,5);
   const lines=groups.map(group=>{
@@ -92,7 +94,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    ...groups.flatMap(([item])=>item.management_notice?.kind==='director-approvals'?[[button('Открыть пакет','director_batch',{target:item.management_notice.batchId})]]:
     item.management_notice?.kind==='morning-report'?[[button('Открыть утренний отчёт','reports',{id:item.management_notice.reportId})]]:
     workdayReports(item.management_notice).map(report=>[button(report.label,'reports',{id:report.id,filter:report.view})])),
-   [...(taskNotices.some(notice=>notice?.hasDeadlines)?[button('Мои сроки','tasks',{filter:'my_due'})]:[]),
+   [...(taskNotices.some(notice=>notice?.hasDeadlines)?[button(workQueueTitle,'inbox')]:[]),
     ...(taskNotices.some(notice=>notice?.hasAssignments)?[button('Мои задачи','tasks',{filter:'mine'})]:[])],
    ...(groups.length?[[button('Отметить показанные прочитанными','notices_read',{noticeIds:groups.flat().map(item=>item.id)})]]:[]),
    [button('Меню','home')]
@@ -147,7 +149,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  const activeApprovals=new Map(data.approvals.filter(a=>a.state==='pending'&&!a.canceled_at).map(a=>[a.task_id,a]));
  const matches=(t:Task,filter:string)=>filter==='my_due'?['today','overdue'].includes(taskQueue(t,now))&&taskNextAction(t,activeApprovals.get(t.id),data.approvalScope)?.userId===owner:
   filter==='open'||filter==='mine'?t.status!=='completed':filter==='active'?t.status==='active':taskQueue(t,now)===filter;
- const myActions=actionItems(data).filter(a=>a.mine),actionTasks=new Set(myActions.map(a=>a.taskId));
+ const queue=workQueue(data);
  if(p.op==='task_filters'){
   const count=(filter:string)=>filter==='created'?placed.length:scoped.filter(t=>matches(t,filter)).length;
   const choice=(text:string,filter:string)=>button(`${text} · ${count(filter)}`,'tasks',{filter,owner});
@@ -162,9 +164,20 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  }
  if(['inbox','tasks','day'].includes(p.op)){
   if(p.op==='inbox'){
-   const grouped=new Map<string,string[]>();for(const action of myActions){const labels=grouped.get(action.taskId)||[];if(!labels.includes(action.label))labels.push(action.label);grouped.set(action.taskId,labels);}
-   const tasks=new Map(data.tasks.map(t=>[t.id,t]));
-   return taskList(u,ch,p,[...grouped].flatMap(([id,labels])=>tasks.has(id)?[{task:tasks.get(id)!,hint:labels[0]+(labels.length>1?' +'+(labels.length-1):'')}]:[]),'Нужно ваше действие',now,name);
+   if(p.filter&&Object.hasOwn(workLabels,p.filter)){
+    const key=p.filter as WorkBucket;
+    return taskList(u,ch,p,queue[key].map(item=>({
+     task:item.task,hint:item.label+(key==='waiting'&&item.ownerId?' · '+name(item.ownerId):''),
+     pending:item.pendingApproval||key==='waiting'||item.needsAcceptance||!!item.action
+    })),workLabels[key],now,name,db);
+   }
+   const earlier=queue.overdue.filter(item=>item.deadlineState==='earlier').length;
+   const expired=queue.overdue.length-earlier;
+   return htmlScreen(u,ch,`<b>${workQueueTitle}</b>\n\nПросрочено с прошлых дней · ${earlier}\nИстекло сегодня · ${expired}\nНа сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}\nЖдут решения других · ${queue.waiting.length}`,[
+    [button('Просрочено · '+queue.overdue.length,'inbox',{filter:'overdue'}),button('На сегодня · '+queue.today.length,'inbox',{filter:'today'})],
+    [button('Ответы и решения · '+queue.next.length,'inbox',{filter:'next'}),button('Ждут решения · '+queue.waiting.length,'inbox',{filter:'waiting'})],
+    [button('Меню','home')]
+   ],db);
   }
   const filter=p.op==='day'?'today':p.filter||'mine',labels:Record<string,string>={open:'Незавершённые',active:'В работе',today:'Срок сегодня',overdue:'Просрочены',review:'На приёмке',completed:'Завершены',no_deadline:'Без срока',mine:'Мои задачи',my_due:'Мои сроки',created:'Я постановщик'};
   const tasks=sortBotTasks(filter==='created'?placed:scoped.filter(t=>matches(t,filter)),now);
@@ -187,15 +200,13 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    [button('Поиск','search_prompt'),button('Как пользоваться','help')],[button('Меню','home')]
   ]);
  }
- if(p.op==='help')return htmlScreen(u,ch,'<b>Как пользоваться ботом</b>\n\n1. «Нужно действие» — ответы, приёмка и согласования лично для вас.\n2. «Мои сроки» — задачи на сегодня и просрочки, где ход за вами.\n3. В карточке сверху ближайшее действие, ниже описание и обсуждение.\n4. В «Ещё действиях» есть перенос срока, редактирование, напоминания и история.\n\nДля поиска просто напишите название, номер или имя исполнителя. Изменения выполняются после подтверждения.',[[button('Найти задачу','search_prompt')],[button('Меню','home')]]);
+ if(p.op==='help')return htmlScreen(u,ch,'<b>Как пользоваться ботом</b>\n\n1. «Сроки и действия» — начните с просрочек и сроков на сегодня. Там же новые назначения, ответы и решения.\n2. «Ждут решения» — по этим задачам сейчас ход за другим участником.\n3. В карточке сверху ближайшее действие, ниже описание и обсуждение.\n4. В «Ещё действиях» есть перенос срока, напоминания и история.\n\nДля поиска напишите название, номер или имя исполнителя. Изменения выполняются после подтверждения.',[[button('Найти задачу','search_prompt')],[button('Меню','home')]]);
  const s=summarize(own,now);
- const dueCount=own.filter(t=>matches(t,'my_due')).length;
  const company=hasCompanyOverview(u);
  const total=company?summarize(data.tasks,now):null;
  const overview=total?`\n\n<b>Вся компания</b>\nОткрыто: ${total.unfinished} · Просрочено: ${total.overdue} · Сегодня: ${total.today} · Приёмка: ${total.review}`:'';
- return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nСроки, по которым ход за вами · ${dueCount}\nРешения и ответы для вас · ${actionTasks.size}${overview}`,[
-  [button(`📥 Нужно действие · ${actionTasks.size}`,'inbox'),button(`Мои сроки · ${dueCount}`,'tasks',{filter:'my_due'})],
-  [button(`Сегодня · ${s.today}`,'day'),button(`Просрочены · ${s.overdue}`,'tasks',{filter:'overdue'})],
+ return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nПросрочено · ${queue.overdue.length} · На сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}${overview}`,[
+  [button(workQueueTitle+' · '+workCount(queue),'inbox')],
   [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)?[button('Задачи команды','team')]:[button('Поиск','search_prompt')])],
   ...(company?[[button('Сводка компании','brief',{filter:'company'}),button('Отчёты','reports')]]:
    canManage(u)?[[button('Мои отчёты','reports',{filter:'mine'}),button('Поиск','search_prompt')]]:[]),

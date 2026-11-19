@@ -6,6 +6,7 @@ import {botDue} from './bot-presentation.js';
 import {businessDay} from '../shared/queues.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 import {isSalesManager} from '../shared/personal-calendar.js';
+import {workQueueTitle} from '../shared/work-queue.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import type {Task,User} from '../shared/types.js';
 
@@ -137,7 +138,8 @@ export async function taskNoticeScreen(user:User,ch:string,notice:TaskNotice,now
  const buttons=taskIds.map(id=>button('#'+id,'task',{id}));
  return htmlScreen(user,ch,sections.map(s=>'<b>'+h(s.heading)+'</b>\n'+s.lines.map(h).join('\n')).join('\n\n'),[
   ...Array.from({length:Math.ceil(buttons.length/3)},(_,i)=>buttons.slice(i*3,i*3+3)),
-  [...(hasDeadlines?[button(notice.prepare?'Задачи к 15:00':'Мои сроки','tasks',{filter:'my_due'})]:[]),...(hasAssignments?[isSalesManager(user)?button('Принять новые задачи','personal_plan',{filter:'awaiting'}):button('Мои задачи','tasks',{filter:'mine'})]:[])]
+  [...(hasDeadlines?[notice.prepare?button('Задачи к 15:00','tasks',{filter:'my_due'}):button(workQueueTitle,'inbox')]:[]),
+   ...(hasAssignments?[isSalesManager(user)?button('Принять новые задачи','personal_plan',{filter:'awaiting'}):button('Мои задачи','tasks',{filter:'mine'})]:[])]
  ]);
 }
 

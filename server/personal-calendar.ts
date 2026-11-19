@@ -46,11 +46,12 @@ export async function requireTaskAcceptance(user:User,task:Task,db:Db){
  if(user.id===task.assignee_id&&isSalesManager(user))
   assert(!(await taskPersonalPlan(user,task,db))?.needsAcceptance,409,'Сначала примите задачу и укажите плановое время.');
 }
-export async function pendingAssignmentCount(user:User,taskIds:string[],db:Db){
- if(!isSalesManager(user)||!taskIds.length)return 0;
- return (await db.query<{count:number}>(`SELECT count(*)::int FROM personal_task_plans p
+export async function pendingAssignmentTasks(user:User,taskIds:string[],db:Db){
+ if(!isSalesManager(user)||!taskIds.length)return [];
+ return (await db.query<{id:string}>(`SELECT t.id FROM personal_task_plans p
   JOIN tasks t ON t.id=p.task_id AND t.assignment_epoch=p.assignment_epoch AND t.assignee_id=p.user_id
-  WHERE p.user_id=$1 AND t.id=ANY($2) AND t.status='active' AND p.requires_acceptance AND p.accepted_at IS NULL`,[user.id,taskIds])).rows[0].count;
+  WHERE p.user_id=$1 AND t.id=ANY($2) AND t.status='active' AND p.requires_acceptance AND p.accepted_at IS NULL ORDER BY t.id`,
+ [user.id,taskIds])).rows.map(row=>row.id);
 }
 
 export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof taskPlanInput>){

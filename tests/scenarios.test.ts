@@ -538,7 +538,11 @@ test('an assignee needs a version-specific edit permission in the API and bot',a
  assert.equal((await request('lead-msk',decision,{decision:'approve'})).status,403);
  assert.equal((await request(anna.id,decision,{decision:'approve'})).status,403);
  const inbox=await botView(director,channel,{op:'inbox'});
- assert.match(inbox.text,/Решить запрос на редактирование/);
+ assert.match(inbox.text,/Сроки и действия/);
+ const other=inbox.buttons.flat().find(button=>button.text.startsWith('Ответы и решения ·'));
+ assert(other);
+ const work=await botClick(director,channel,other.token);
+ assert.match(work.text,/Решить запрос на редактирование/);
  const screen=await botView(director,channel,{op:'task_edit_permission',id});
  const confirm=await botClick(director,channel,botButton(screen,'Разрешить'));
  await botClick(director,channel,botButton(confirm,'Подтвердить и отправить'));

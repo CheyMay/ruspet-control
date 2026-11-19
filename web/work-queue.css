@@ -1,0 +1,69 @@
+.work-queue { display: grid; gap: 12px; min-width: 0; }
+.work-toolbar, .work-results-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.work-search { flex: 1 1 250px; min-width: 0; }
+.work-filters { position: relative; margin-left: auto; }
+.work-filters > summary { list-style: none; cursor: pointer; }
+.work-filters > summary::-webkit-details-marker { display: none; }
+.work-filter-panel {
+  position: absolute;
+  top: calc(100% + 7px);
+  right: 0;
+  z-index: 6;
+  width: min(325px, calc(100vw - 40px));
+  display: grid;
+  gap: 10px;
+  padding: 14px;
+  background: var(--theme-surface);
+  box-shadow: 0 10px 26px var(--theme-shadow, #25372b30);
+}
+.work-filter-panel > label, .work-filter-dates label { display: grid; gap: 4px; font-size: 12px; }
+.work-filter-panel input[type="date"], .work-filter-panel select {
+  width: 100%; min-width: 0; min-height: 36px; padding: 5px 8px; color: inherit;
+  border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-surface); font: inherit;
+}
+.work-filter-dates { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
+.work-cards { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
+.work-card {
+  display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 4px 9px;
+  min-width: 0; padding: 12px 14px; text-align: left; border: 1px solid var(--theme-border);
+  border-radius: 8px; color: var(--theme-text); background: var(--theme-surface);
+}
+.work-card[aria-pressed="true"] { border-color: var(--theme-accent); background: var(--theme-surface-raised); }
+.work-card:hover { border-color: var(--theme-accent); }
+.work-card svg { grid-column: 2; grid-row: 1; margin-top: 4px; color: var(--theme-accent); }
+.work-card strong { grid-column: 1; grid-row: 1; font-size: 27px; line-height: 1.15; font-variant-numeric: tabular-nums; }
+.work-card > span, .work-card > small { grid-column: 1 / -1; overflow-wrap: anywhere; }
+.work-card > span { font-size: 13px; font-weight: 650; }
+.work-card > small { font-size: 11px; line-height: 1.4; color: var(--theme-text-secondary); }
+.work-card.overdue strong, .work-row-meta .urgent { color: var(--theme-danger, #aa433b); }
+.work-results-bar { justify-content: space-between; padding: 0 2px; font-size: 12px; color: var(--theme-text-secondary); }
+.work-group-heading, .work-empty { padding: 12px 15px; }
+.work-group-heading { display: flex; align-items: baseline; flex-wrap: wrap; gap: 6px 12px; }
+.work-group-heading h2, .work-empty h2 { margin: 0; font-size: 15px; }
+.work-group-heading h2 span { margin-left: 4px; font-variant-numeric: tabular-nums; color: var(--theme-accent); }
+.work-group-heading small, .work-empty p { color: var(--theme-text-secondary); font-size: 12px; }
+.work-group-heading small { margin-left: auto; }
+.work-empty p { margin: 5px 0 0; }
+.work-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 10px 16px;
+  margin: 0 15px; padding: 10px 0; border-top: 1px solid var(--theme-border);
+}
+.work-row-content { min-width: 0; }
+.work-row-meta, .work-row-people { display: flex; flex-wrap: wrap; gap: 3px 12px; font-size: 11px; color: var(--theme-text-secondary); }
+.work-row-meta > span:first-child { font-variant-numeric: tabular-nums; }
+.work-task-title { display: block; border: 0; background: none; padding: 3px 0; text-align: left; color: inherit; font: inherit; font-weight: 630; overflow-wrap: anywhere; }
+.work-task-title:hover { text-decoration: underline; }
+.work-step { margin: 4px 0 0; color: var(--theme-accent); font-size: 12px; }
+.work-row-action .button { white-space: nowrap; }
+.work-more { margin: 0 15px 10px; }
+.work-queue button:focus-visible, .work-filters summary:focus-visible { outline: 2px solid var(--theme-accent); outline-offset: 2px; }
+@media (max-width: 800px) {
+  .work-cards { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
+@media (max-width: 480px) {
+  .work-search { flex-basis: calc(100% - 104px); }
+  .work-filters > summary { padding-inline: 8px; }
+  .work-row { align-items: flex-start; flex-direction: column; gap: 6px; }
+  .work-group-heading small { margin-left: 0; }
+  .work-card { padding: 9px 10px; }
+}

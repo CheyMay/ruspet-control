@@ -44,7 +44,7 @@ export function NotificationCenter({items,readOnly,open,refresh}:{items:Notifica
      <div className="notice-actions">
       {latest.task_id&&<button className="text-button" onClick={()=>open(latest.task_id!)}>Открыть #{latest.task_id}</button>}
       {latest.task_notice?.taskIds.slice(0,3).map(id=><button key={id} className="text-button" onClick={()=>open(id)}>#{id}</button>)}
-      {latest.task_notice?.hasDeadlines&&<a className="text-button" href="/?view=tasks&scope=mine&filter=my_due">Мои сроки</a>}
+      {latest.task_notice?.hasDeadlines&&<a className="text-button" href="/?view=actions">Сроки и действия</a>}
       {latest.staff_review&&!readOnly&&<a className="text-button" href="/?view=registrations">Открыть заявки</a>}
       {latest.management_notice?.kind==='director-approvals'&&<a className="text-button" href={'/?view=approvals&batch='+latest.management_notice.batchId}>Открыть пакет</a>}
       {latest.management_notice?.kind==='approval-batch-ready'&&<a className="text-button" href="/?view=approvals">Открыть согласования</a>}

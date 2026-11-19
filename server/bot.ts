@@ -13,6 +13,7 @@ export type {BotScreen} from './bot-ui.js';
 import {lastUndo,undoLastAction} from './undo.js';
 import {saveTaskPlan} from './personal-calendar.js';
 import {moscowClock} from '../shared/personal-calendar.js';
+import {workQueueTitle} from '../shared/work-queue.js';
 import {formatPrice,priceBand,priceLabels,parsePrice,taskPrice} from '../shared/pricing.js';
 import {reportText,publicOrigin} from './report-content.js';
 import {linkedText,reportLink,escapeHtml,taskLink} from '../shared/report-links.js';
@@ -286,7 +287,7 @@ export async function botClickError(u:User,ch:string,token:string,error:unknown)
  if(error instanceof AppError&&[403,409].includes(error.status)){
   const task=(await pool.query<Task>(`SELECT t.* FROM bot_buttons b JOIN tasks t ON t.id=b.payload->>'id'
    WHERE b.token=$1 AND b.actor_id=$2 AND b.channel=$3`,[token,u.id,ch])).rows[0];
-  if(task&&canSee(u,task))return screen(u,ch,message,[[button('Открыть актуальную задачу','task',{id:task.id}),button('Нужно действие','inbox')]]);
+  if(task&&canSee(u,task))return screen(u,ch,message,[[button('Открыть актуальную задачу','task',{id:task.id}),button(workQueueTitle,'inbox')]]);
  }
  return {text:message,buttons:(await botView(u,ch)).buttons};
 }
@@ -409,7 +410,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   const undo=await lastUndo(u,undefined,db);
   if(p.id&&(await db.query("SELECT 1 FROM bitrix_operations WHERE task_id=$1 AND payload->>'actorId'=$2 AND created_at>=transaction_timestamp() AND state='pending' LIMIT 1",[p.id,u.id])).rowCount)result+='\n\nДействие сохранено в РУСПЭТ. Обмен с Битрикс24 выполняется по очереди; состояние видно в карточке задачи.';
   if(resultTask&&p.kind==='delegate')result+='\nПоручение создано локально: автоматическое создание задач в Битрикс24 пока не включено.';
-  const response=await screen(u,ch,result,[...nextActions,...(resultTask?[[button(p.kind==='create_task'?'Открыть задачу':'Открыть поручение','task',{id:resultTask})]]:[]),[...(p.id?[button('К задаче','task',{id:p.id,list:p.list})]:[]),button('Нужно действие','inbox')],...(undo?[[button('Отменить последнее действие','undo_prepare',{id:undo.task_id,target:undo.id})]]:[])],db);
+  const response=await screen(u,ch,result,[...nextActions,...(resultTask?[[button(p.kind==='create_task'?'Открыть задачу':'Открыть поручение','task',{id:resultTask})]]:[]),[...(p.id?[button('К задаче','task',{id:p.id,list:p.list})]:[]),button(workQueueTitle,'inbox')],...(undo?[[button('Отменить последнее действие','undo_prepare',{id:undo.task_id,target:undo.id})]]:[])],db);
   await db.query('UPDATE bot_buttons SET receipt=$2 WHERE token=$1',[token,JSON.stringify(response)]);
   const context=resultTask||p.id;
   if(context)await saveDialog(db,u,ch,{payload:{op:'context',id:context},fields:[],index:0,values:{}},15);
