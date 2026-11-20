@@ -1,11 +1,11 @@
-import {activeTaskApproval,canSetApprovedDeadline} from '../shared/actions.js';
+import {activeTaskApproval,canReview,canSetApprovedDeadline,completionApprovalRoute} from '../shared/actions.js';
 import {loadDeadlineHistories,queueDeadlineHistories} from './deadline-history.js';
 import {taskPrice} from '../shared/pricing.js';
 import {keepTaskApprovals} from './approval-updates.js';
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
-import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,hierarchyRoute,requiresTaskApproval} from './approval-hierarchy.js';
+import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,hierarchyRoute,requiresDeadlineApproval} from './approval-hierarchy.js';
 import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
@@ -254,22 +254,24 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   if(input.type==='completion')assert(plan.length>=min,400,`Результат: минимум ${min} символов.`);
   if(input.type==='deadline') { assert(input.proposedDeadline&&new Date(input.proposedDeadline)>new Date(),400,'Новый срок должен быть в будущем.'); assert(new Date(input.proposedDeadline).getTime()!==new Date(task.deadline||0).getTime(),400,'Новый срок совпадает с текущим.'); }
   const hierarchy=await approvalHierarchy(db,true);
-  if(!requiresTaskApproval(hierarchy,task,input.type,user.id)){
-   assert(input.type==='deadline',422,'Передайте результат на приёмку в карточке задачи.');
+  if(input.type==='deadline'&&!requiresDeadlineApproval(hierarchy,task,user.id)){
    const next=(await db.query<Task>('UPDATE tasks SET deadline=$2,transfer_count=transfer_count+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.proposedDeadline])).rows[0];
    await adapters.tasks.applyApprovedChange(db,next,task.version);
    await event(db,id,user.id,'deadline_changed','Изменён крайний срок',{before:task,after:next,reason:input.reason});
    await refreshTaskFindings(db,next,user);
    return {id,applied:true};
   }
-  const route=hierarchy?await hierarchyRoute(db,hierarchy,task,user.id,input.type):await routeFor(db,task,cfg.config.routes[input.type]);
-  assert(route.length>0,422,'Маршрут не настроен.'); assert(!route.some(s=>s.userId===user.id),422,'Согласовать собственный запрос нельзя.');
+  const route=input.type==='completion'?completionApprovalRoute(task):
+   hierarchy?await hierarchyRoute(db,hierarchy,task,user.id):await routeFor(db,task,cfg.config.routes.deadline);
+  assert(route.length>0,422,input.type==='completion'?'Завершите свою задачу напрямую.':'Маршрут не настроен.');
+  if(input.type==='deadline')assert(!route.some(s=>s.userId===user.id),422,'Согласовать собственный запрос нельзя.');
   const approvalId=randomUUID();
   await db.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,proposed_deadline,task_version,state,route,route_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10)",[approvalId,id,user.id,input.type,input.reason,plan,input.proposedDeadline||null,task.version,JSON.stringify(route),cfg.version]);
   await db.query("UPDATE outbox SET withdrawn_at=now() WHERE task_id=$1 AND read_at IS NULL AND withdrawn_at IS NULL AND (dedupe_key LIKE 'control:%' OR dedupe_key LIKE 'remind:%')",[id]);
   await event(db,id,user.id,'approval_requested',input.type==='deadline'?'Запрошен перенос срока':'Запрошено закрытие задачи',{approvalId,oldDeadline:task.deadline,newDeadline:input.proposedDeadline,version:task.version,reason:input.reason,...(plan?{plan}:{}),route});
   await queueDeadlineHistories(db,[id]);
-  if(route[0].userId!==hierarchy?.sales_head_id)await notify(db,id,route[0].userId,`Требуется решение по задаче #${id}: ${input.reason}`,`approval:${approvalId}:0`);
+  if(route[0].userId!==user.id&&(input.type==='completion'||route[0].userId!==hierarchy?.sales_head_id))
+   await notify(db,id,route[0].userId,`Требуется решение по задаче #${id}: ${input.reason}`,`approval:${approvalId}:0`);
   await adapters.telegram.dispatch(db);
   return {id:approvalId};
  });
@@ -284,8 +286,9 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
   assert(a.state==='pending',409,a.state==='stale'?'Запрос устарел из-за изменения задачи. В актуальной карточке можно посмотреть текущий статус и срок.':'Этот запрос уже обработан. Откройте актуальную задачу, чтобы посмотреть решение.');
   assert(!a.task_change?.routeIssue,409,'Нужен другой согласующий. Проверьте участников и маршрут задачи.');
   const hierarchy=await approvalHierarchy(db);
-  assert(a.requester_id!==user.id&&(a.type!=='completion'||task.assignee_id!==user.id),403,'Нельзя согласовать собственный запрос или принять свою работу.');
-  assert(a.route[a.current_step].userId===user.id,403,'Сейчас решение принимает другой согласующий.');
+  if(a.type==='completion')assert(canReview(user,task),403,'Результат принимает постановщик задачи.');
+  else assert(a.requester_id!==user.id,403,'Нельзя согласовать собственный запрос.');
+  assert(a.route[a.current_step]?.userId===user.id,403,'Сейчас решение принимает другой согласующий.');
   assert(!a.clarification_requested_at||a.clarification_answered_at,409,'Сначала дождитесь ответа на уточнение.');
   if(a.task_version!==task.version) {
    await db.query("UPDATE approvals SET state='stale' WHERE id=$1",[id]); await event(db,task.id,user.id,'approval_stale','Согласование остановлено: задача изменилась',{approvalId:id});
@@ -297,7 +300,7 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
    }),403,'Для этого запроса итоговый крайний срок изменить нельзя.');
    assert(Date.parse(input.approvedDeadline)>Date.now(),400,'Итоговый крайний срок должен быть в будущем.');
   }
-  if(input.decision==='reject'||input.decision==='clarify'||input.decision==='approve'&&a.type==='completion'&&task.status!=='review')
+  if(input.decision==='reject'||input.decision==='clarify')
    assert(input.comment.trim().length>=5,400,'Комментарий к решению обязателен, минимум 5 символов.');
   if(input.decision==='clarify') {
    await db.query(`UPDATE approvals SET clarification_question=$2,clarification_answer=NULL,clarification_requested_at=now(),
@@ -308,6 +311,8 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
    await adapters.telegram.dispatch(db);return {state:'pending',clarification:'requested'};
   }
   await db.query('INSERT INTO decisions(id,approval_id,actor_id,step_index,decision,comment) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),id,user.id,a.current_step,input.decision,input.comment]);
+  if(a.type==='completion'&&input.comment.trim()&&(input.decision==='approve'||input.decision==='reject'))
+   await db.query("INSERT INTO comments(id,task_id,author_id,body,kind,approval_id) VALUES($1,$2,$3,$4,'review',$5)",[randomUUID(),task.id,user.id,input.comment,id]);
   if(input.decision==='later') {
    const cfg=await config(db); await db.query("UPDATE approvals SET deferred_until=now()+($2 * interval '1 minute') WHERE id=$1",[id,input.remindMinutes||cfg.config.reminderMinutes]);
    await event(db,task.id,user.id,'approval_later','Согласующий вернётся к решению позже',{approvalId:id,comment:input.comment}); return {state:'pending'};
@@ -339,7 +344,7 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
     (await db.query('UPDATE tasks SET deadline=$2,transfer_count=transfer_count+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[task.id,approvedDeadline])).rows[0]:
     (await db.query("UPDATE tasks SET status='completed',completed_at=now(),version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[task.id])).rows[0];
    if(!deadlineAlreadySet)await adapters.tasks.applyApprovedChange(db,next,task.version);
-   if(a.type==='completion')await db.query("UPDATE task_submissions SET state='accepted',reviewer_id=$2,remark=$3,decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[task.id,user.id,input.comment||'Результат принят по маршруту согласования.']);
+   if(a.type==='completion')await db.query("UPDATE task_submissions SET state='accepted',reviewer_id=$2,remark=$3,decided_at=now() WHERE task_id=$1 AND state='review' AND withdrawn_at IS NULL",[task.id,user.id,input.comment||null]);
    await db.query("UPDATE approvals SET state='approved',approved_deadline=$2,deferred_until=NULL WHERE id=$1",[id,approvedDeadline]);
    await event(db,task.id,user.id,deadlineAlreadySet?'deadline_confirmed':a.type==='deadline'?'deadline_changed':'task_completed',deadlineAlreadySet?'Перенос согласован. Предложенный крайний срок уже установлен.':a.type==='deadline'?'Перенос согласован, крайний срок изменён':'Закрытие согласовано, задача завершена',{approvalId:id,before:task,after:next,comment:input.comment,reason:a.reason,...(a.type==='deadline'?{proposedDeadline:a.proposed_deadline,approvedDeadline}:{plan:a.plan})});
    if(a.type==='completion'&&task.assignee_id!==a.requester_id)await notify(db,task.id,task.assignee_id,'Результат по задаче #'+task.id+' принят.','review-accepted:'+id);

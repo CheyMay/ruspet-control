@@ -187,11 +187,11 @@ async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string){
 }
 async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Date):Promise<BotScreen>{
  let response:BotScreen;
- const {payload,title,approvalType,taskStatus}=await prepareVoiceAction(u,intent,db);
+ const {payload,title}=await prepareVoiceAction(u,intent,db);
  const kind=payload.kind as typeof intent.kind|'complete';
  if(intent.values.dueDay)payload.values={dueDay:intent.values.dueDay};
  const fields:Field[]=kind==='complete'&&intent.values.comment?[{key:'comment',label:'Результат',min:1,max:4000}]:
-  !intent.values.comment&&(kind==='accept'||kind==='approve'&&(approvalType==='deadline'||taskStatus==='review'))?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
+  !intent.values.comment&&(kind==='accept'||kind==='approve')?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
  const values:Record<string,string>={};
  if(kind==='create_task'){
   if(!intent.values.deadline)values.deadline='none';

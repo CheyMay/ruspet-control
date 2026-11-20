@@ -16,7 +16,7 @@ export async function managementNotice(db:Db,recipient:string,body:string,key:st
   VALUES($1,$2,$3,$4,$5,$6) ON CONFLICT(dedupe_key) DO NOTHING`,[randomUUID(),recipient,body,key,JSON.stringify(details),now.toISOString()]);
 }
 
-const ready=`a.state='pending' AND a.canceled_at IS NULL AND a.route->a.current_step->>'userId'=$1
+const ready=`a.type='deadline' AND a.state='pending' AND a.canceled_at IS NULL AND a.route->a.current_step->>'userId'=$1
  AND (a.task_change->>'routeIssue') IS DISTINCT FROM 'true'
  AND (a.clarification_requested_at IS NULL OR a.clarification_answered_at IS NOT NULL)
  AND (a.deferred_until IS NULL OR a.deferred_until<=now()) AND a.task_version=t.version
@@ -56,7 +56,7 @@ export async function directorBatchStatus(actor:User){
     count(*) FILTER(WHERE EXISTS(SELECT 1 FROM decisions d WHERE d.approval_id=a.id AND a.route->d.step_index->>'label' IN ('Руководитель филиала','Постановщик')
      AND d.decision='approve' AND d.created_at >= $3
      AND NOT EXISTS(SELECT 1 FROM decision_retractions r WHERE r.decision_id=d.id)))::int AS approved
-   FROM approvals a JOIN tasks t ON t.id=a.task_id GROUP BY t.assignee_id
+   FROM approvals a JOIN tasks t ON t.id=a.task_id WHERE a.type='deadline' GROUP BY t.assignee_id
   ) SELECT u.id,u.name,coalesce(w.n,0)::int AS processed,coalesce(a.waiting,0)::int AS waiting,
    coalesce(a.approved,0)::int AS approved,coalesce(a.ready,0)::int AS ready
   FROM users u LEFT JOIN work w ON w.actor_id=u.id LEFT JOIN approvals_by_employee a ON a.assignee_id=u.id
@@ -96,7 +96,7 @@ export async function directorBatchTasks(actor:User,id:string){
  assert(access,404,'Пакет согласований недоступен.');
  return (await pool.query<Pick<BatchCandidate,'id'|'task_id'>>(`SELECT a.id,a.task_id FROM director_approval_batch_items i JOIN approvals a ON a.id=i.approval_id
   JOIN tasks t ON t.id=a.task_id
-  WHERE i.batch_id=$1 AND a.state='pending' AND a.current_step=i.step AND a.action_revision=i.revision AND a.task_version=t.version
+  WHERE i.batch_id=$1 AND a.type='deadline' AND a.state='pending' AND a.current_step=i.step AND a.action_revision=i.revision AND a.task_version=t.version
   AND a.route->a.current_step->>'userId'=$2 ORDER BY a.created_at,a.id`,[id,actor.id])).rows;
 }
 

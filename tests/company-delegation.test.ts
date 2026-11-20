@@ -187,11 +187,13 @@ test('undo refuses to revert a source after later activity or external publicati
  }
 });
 
-test('undo handles an earlier contributor accepted by another reviewer and deferred completion',async()=>{
+test('undo handles an earlier accepted contributor and deferred completion',async()=>{
  const id=await source(),a=await workflow.delegateTask(lead,id,{assigneeId:anna.id,expectedVersion:1}),b=await workflow.delegateTask(lead,id,{assigneeId:ivan.id,expectedVersion:1});
  await submit(a.id,anna);await submit(b.id,ivan);await accept(a.id);
  const undo=await import('../server/undo.js'),action=await undo.lastUndo(lead,a.id);assert(action);
- await workflow.reviewTask(director,b.id,'accept','',(await row(b.id)).version);assert.equal((await row(id)).status,'completed');
+ const version=(await row(b.id)).version;
+ await assert.rejects(()=>workflow.reviewTask(director,b.id,'accept','',version),/постановщик/);
+ await accept(b.id);assert.equal((await row(id)).status,'completed');
  await undo.undoLastAction(lead,action.id);assert.equal((await row(a.id)).status,'review');assert.equal((await row(b.id)).status,'completed');assert.equal((await row(id)).status,'active');
  // A pending route makes the next acceptance produce its automatic effect later.
  await db.pool.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version) SELECT $1,$2,$3,'completion','Фикстура','Проверить',3,'pending',$4,max(version) FROM rule_versions",[randomUUID(),id,lead.id,JSON.stringify([{userId:director.id,label:'Директор'}])]);

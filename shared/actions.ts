@@ -1,25 +1,14 @@
-import type {Approval,ApprovalScope,Bootstrap,Task,User} from './types.js';
-import {branchCovers} from './branches.js';
+import type {Approval,ApprovalScope,Bootstrap,Step,Task,User} from './types.js';
 import {priceBand} from './pricing.js';
 export type ActionItem={key:string;kind:'answer'|'decision'|'review'|'rework'|'clarification'|'edit_permission';taskId:string;title:string;label:string;ownerId:string;since:string|null;due:string|null;mine:boolean;targetId:string};
 export const isSelfTask=(task:Task)=>task.assignee_id===task.creator_id;
 export const usesCreatorApproval=(task:Task,scope?:ApprovalScope|null)=>
  scope?.creatorApproverId===task.creator_id&&!(scope.onlySelfDirect&&isSelfTask(task));
-function reviewOwner(task:Task,scope?:ApprovalScope|null){
- if(usesCreatorApproval(task,scope))return task.creator_id===task.assignee_id?scope!.approverId:task.creator_id;
- if(scope?.onlySelfDirect&&!isSelfTask(task))return task.assignee_id===scope.approverId?task.creator_id:scope.approverId;
- return scope?.assigneeIds.includes(task.assignee_id)&&!scope.onlySelfDirect?scope.approverId:task.creator_id;
-}
-export function canReview(u:User,t:Task,scope?:ApprovalScope|null){
- if(u.id===t.assignee_id)return false;
- if(scope?.onlySelfDirect||usesCreatorApproval(t,scope))return reviewOwner(t,scope)===u.id;
- if(scope?.assigneeIds.includes(t.assignee_id))return u.id===scope.approverId;
- if(scope&&!scope.legacyRouting)return u.id===t.creator_id||u.role==='admin';
- return u.id===t.creator_id||['admin','director','sales_head'].includes(u.role)||u.role==='branch_manager'&&(!!u.company_branch_access||branchCovers(u.branch_id,t.branch_id));
-}
+export const completionApprovalRoute=(task:Task):Step[]=>isSelfTask(task)?[]:[{userId:task.creator_id,label:'Постановщик'}];
+export const canReview=(u:User,t:Task,_scope?:ApprovalScope|null)=>u.id===t.creator_id&&!isSelfTask(t);
 export function canComplete(u:User,t:Task,scope?:ApprovalScope|null){
- return t.status!=='completed'&&u.id===t.creator_id&&(scope?.onlySelfDirect?isSelfTask(t):
-  !usesCreatorApproval(t,scope)&&!scope?.assigneeIds.includes(t.assignee_id));
+ return t.status!=='completed'&&u.id===t.creator_id&&(isSelfTask(t)||
+  !scope?.onlySelfDirect&&!usesCreatorApproval(t,scope)&&!scope?.assigneeIds.includes(t.assignee_id));
 }
 export function activeTaskApproval(task:Task,approval:Approval){
  return task.status!=='completed'&&approval.task_id===task.id&&approval.state==='pending'&&!approval.canceled_at&&approval.task_version===task.version;
@@ -35,12 +24,12 @@ export function canSetApprovedDeadline(userId:string,a:Approval,task:Task|undefi
  if(userId===policy.deadlineApproverId)return true;
  return !!task&&a.route.length===1&&userId===policy.creatorApproverId&&task.creator_id===userId&&priceBand(task)==='low';
 }
-export function taskNextAction(task:Task,approval?:Approval,scope?:ApprovalScope|null){
+export function taskNextAction(task:Task,approval?:Approval,_scope?:ApprovalScope|null){
  if(approval&&activeTaskApproval(task,approval)){
   const {clarification,userId}=approvalTurn(approval);
   return {userId,label:clarification?'Ответить на уточнение':approval.type==='deadline'?'Решить вопрос о переносе':'Принять результат'};
  }
- if(task.status==='review')return {userId:reviewOwner(task,scope),label:'Принять результат'};
+ if(task.status==='review')return {userId:task.creator_id,label:'Принять результат'};
  if(task.status==='active')return {userId:task.assignee_id,label:'Выполнить задачу'};
  return null;
 }
@@ -63,7 +52,7 @@ export function actionItems(data:Bootstrap):ActionItem[]{
  for(const c of data.controls){const t=tasks.get(c.task_id);if(!t||pending.has(t.id)||t.status!=='active'||t.assignee_id!==c.assignee_id||!['waiting','escalated'].includes(c.state))continue;result.push({key:'answer:'+c.id,kind:'answer',taskId:t.id,title:t.title,label:'Дать объяснение',ownerId:c.assignee_id,since:c.created_at,due:c.due_at,mine:c.assignee_id===data.user.id,targetId:c.id})}
  for(const a of activeApprovals){const t=tasks.get(a.task_id)!;const clarification=!!a.clarification_requested_at&&!a.clarification_answered_at;const ownerId=clarification?a.requester_id:a.route[a.current_step]?.userId;if(!ownerId)continue;result.push({key:'decision:'+a.id,kind:clarification?'clarification':'decision',taskId:t.id,title:t.title,label:clarification?'Ответить на уточнение':a.type==='deadline'?'Решить перенос срока':'Проверить закрытие',ownerId,since:clarification?a.clarification_requested_at:a.clarification_answered_at||a.created_at,due:a.deferred_until,mine:ownerId===data.user.id,targetId:a.id})}
  for(const t of data.tasks){if(t.status==='review'&&!pending.has(t.id)){
-  const sub=review.get(t.id),ownerId=reviewOwner(t,data.approvalScope);
+  const sub=review.get(t.id),ownerId=t.creator_id;
   result.push({key:'review:'+t.id,kind:'review',taskId:t.id,title:t.title,label:'Принять результат',ownerId,since:sub?.submitted_at||null,due:null,mine:data.user.id===ownerId,targetId:t.id});}
  if(t.status==='active'){const last=latest.get(t.id);if(last?.state==='returned')result.push({key:'rework:'+t.id,kind:'rework',taskId:t.id,title:t.title,label:'Исправить замечания',ownerId:t.assignee_id,since:last.decided_at,due:t.deadline,mine:t.assignee_id===data.user.id,targetId:t.id})}}
  return result.sort((a,b)=>Number(b.mine)-Number(a.mine)||(a.since||'9999').localeCompare(b.since||'9999'));

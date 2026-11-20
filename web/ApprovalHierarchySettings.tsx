@@ -33,9 +33,9 @@ export function ApprovalHierarchySettings({users}:{users:User[]}){
  const options=(choose:(person:User)=>boolean)=>users.filter(person=>!person.root_access&&choose(person))
   .map(person=><option key={person.id} value={person.id}>{person.name}</option>);
  return <form className="panel automation-settings" onSubmit={event=>{event.preventDefault();void save();}}>
-  <h2>Маршрут согласования задач</h2>
+  <h2>Маршрут согласования переносов срока</h2>
   <label className="check"><input type="checkbox" checked={direct} onChange={e=>setDirect(e.target.checked)}/> Один согласующий для выбранных сотрудников</label>
-  <p className="muted">{direct?'Этот список задаёт маршрут согласования. Контроль сроков настраивается в разделе «Сотрудники и права».':'Первый этап обычного маршрута определяется филиалом задачи.'}</p>
+  <p className="muted">{direct?'Контроль сроков настраивается в разделе «Сотрудники и права».':'Первый этап обычного маршрута определяется филиалом задачи.'} Результат работы принимает постановщик задачи.</p>
   <div className="editor-grid">
    {(!direct||!branch)&&<label>Приоритет в своём подразделении<select required value={branch} onChange={e=>setBranch(e.target.value)}><option value="">Выберите руководителя подразделения</option>{options(canApproveBranch)}</select></label>}
    <label>{direct?'Согласующий':'Второй этап'}<select required value={sales} onChange={e=>setSales(e.target.value)}><option value="">Руководитель продаж или директор</option>{options(person=>person.role==='sales_head'||person.role==='director')}</select></label>
@@ -46,7 +46,7 @@ export function ApprovalHierarchySettings({users}:{users:User[]}){
     {users.filter(person=>person.role==='employee'&&(assignees.includes(person.id)||person.name.toLocaleLowerCase('ru-RU').includes(query.trim().toLocaleLowerCase('ru-RU'))))
      .map(person=><label key={person.id} className="check"><input type="checkbox" checked={assignees.includes(person.id)} onChange={e=>setAssignees(ids=>e.target.checked?[...ids,person.id]:ids.filter(id=>id!==person.id))}/> {person.name}</label>)}
    </div>
-  </details>:<label className="check"><input type="checkbox" checked={approveAll} onChange={e=>setApproveAll(e.target.checked)}/> Согласовывать все запросы у руководителя продаж</label>}
+  </details>:<label className="check"><input type="checkbox" checked={approveAll} onChange={e=>setApproveAll(e.target.checked)}/> Согласовывать все переносы у руководителя продаж</label>}
   <label className="check"><input type="checkbox" checked={onlySelfDirect} onChange={e=>setOnlySelfDirect(e.target.checked)}/> Сразу применять только переносы и закрытие задач, поставленных себе</label>
   <details className="source-banner">
    <summary>Маршрут по постановщику и цене</summary>

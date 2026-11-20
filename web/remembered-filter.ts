@@ -1,5 +1,18 @@
 import {useMemo,useState} from 'react';
 
+export function readFilterSelection(value:string):string[]{
+ if(!value||value==='all')return [];
+ if(!value.startsWith('['))return [value];
+ try{
+  const entries:unknown=JSON.parse(value);
+  return Array.isArray(entries)?[...new Set(entries.filter((id):id is string=>typeof id==='string'&&!!id))]:[];
+ }catch{return [];}
+}
+
+export function writeFilterSelection(values:string[]){
+ return values.length>1?JSON.stringify(values):values[0]??'all';
+}
+
 export function useRememberedFilter(userId:string|undefined,field:string,initial:string) {
  const key=userId?'ruspet.filters.'+userId+'.'+field:null;
  const stored=useMemo(()=>{

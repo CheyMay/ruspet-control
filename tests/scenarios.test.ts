@@ -177,12 +177,14 @@ test('explanations validate all fields, survive repeat checks, reject duplicate 
  await service.runChecks(users[0]);assert.equal((await db.pool.query('SELECT state FROM control_requests WHERE id=$1',[c.id])).rows[0].state,'answered');
  assert.equal((await request('anna',`/controls/${c.id}/answer`,input)).status,409);
 });
-test('completion requires every route step',async()=>{
- const a=await request('anna','/tasks/2413/approvals',{type:'completion',reason:'Все действия по задаче выполнены полностью',plan:'Результат передан заказчику и проверен менеджером',expectedVersion:1});assert.equal(a.status,201);
- assert.equal((await request('lead-msk',`/approvals/${a.data.id}/decision`,{decision:'approve',comment:'Согласовано после проверки результата'})).status,200);
- assert.notEqual((await db.pool.query("SELECT status FROM tasks WHERE id='2413'")).rows[0].status,'completed');
- assert.equal((await request('director',`/approvals/${a.data.id}/decision`,{decision:'approve',comment:'Согласовано после проверки результата'})).data.state,'approved');
- assert.equal((await db.pool.query("SELECT status FROM tasks WHERE id='2413'")).rows[0].status,'completed');
+test('completion requests are accepted only by the task creator',async()=>{
+ const id=(await request('admin','/tasks',taskInput)).data.id;
+ const a=await request('anna',`/tasks/${id}/approvals`,{type:'completion',reason:'Все действия по задаче выполнены полностью',plan:'Результат передан заказчику и проверен менеджером',expectedVersion:1});assert.equal(a.status,201);
+ const path=`/approvals/${a.data.id}/decision`;
+ assert.equal((await request('director',path,{decision:'approve'})).status,403);
+ assert.equal((await request('anna',path,{decision:'approve'})).status,403);
+ assert.equal((await request('admin',path,{decision:'approve'})).data.state,'approved');
+ assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[id])).rows[0].status,'completed');
 });
 test('report snapshot is immutable and same-day generation is idempotent',async()=>{
  const a=await service.makeReport(users[0]);const b=await service.makeReport(users[0]);assert.equal(a.id,b.id);assert(a.rows.length>0);assert(a.rows.every(t=>t.status!=='completed'||a.summary?.activity.closedIds.includes(t.id)));
@@ -208,10 +210,11 @@ test('local task edit protects deadline and version; review supports return and 
  assert.equal((await request('admin',`/tasks/${id}`,{...taskInput,reason:'Попытка изменения старой версии',expectedVersion:1},'PUT')).status,409);
  assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Готовый результат приложен в описание',expectedVersion:2})).status,200);
  assert.equal((await request('anna',`/tasks/${id}/review`,{action:'accept',comment:'Свою работу принять нельзя',expectedVersion:3})).status,403);
- assert.equal((await request('director',`/tasks/${id}/review`,{action:'return',comment:'Исправьте расчёт суммы в результате',expectedVersion:3})).status,200);
+ assert.equal((await request('director',`/tasks/${id}/review`,{action:'return',comment:'Исправьте расчёт суммы в результате',expectedVersion:3})).status,403);
+ assert.equal((await request('admin',`/tasks/${id}/review`,{action:'return',comment:'Исправьте расчёт суммы в результате',expectedVersion:3})).status,200);
  assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Расчёт исправлен, результат обновлён',expectedVersion:4})).status,200);
- assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'Результат проверен, замечаний нет',expectedVersion:5})).status,200);
- assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'Повторное нажатие',expectedVersion:5})).status,409);
+ assert.equal((await request('admin',`/tasks/${id}/review`,{action:'accept',comment:'Результат проверен, замечаний нет',expectedVersion:5})).status,200);
+ assert.equal((await request('admin',`/tasks/${id}/review`,{action:'accept',comment:'Повторное нажатие',expectedVersion:5})).status,409);
  const d=(await request('anna',`/tasks/${id}`)).data;assert.equal(d.task.status,'completed');assert.equal(d.task.transfer_count,0);assert.equal(d.comments.length,4);assert.equal(d.events.filter((e:any)=>e.kind==='review_returned')[0].data.comment,'Исправьте расчёт суммы в результате');assert.equal(d.events.filter((e:any)=>e.kind==='task_completed').length,1);
 });
 test('task hierarchy rejects cycles and invalid dates',async()=>{
@@ -348,7 +351,7 @@ test('an overdue explanation preserves the deadline and offers a separate prefil
 });
 test('bot result → return → resubmission → acceptance shares panel history and ignores repeated confirmation',async()=>{
  const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,director=users.find(u=>u.id==='director')!;
- const id=(await request('admin','/tasks',taskInput)).data.id;
+ const id=(await request('director','/tasks',taskInput)).data.id;
  async function enter(user:typeof anna,label:string,text:string){
   let v=await bot.botView(user,'preview',{op:'task',id});
   if(user.id===director.id)v=await bot.botClick(user,'preview',botButton(v,'Проверить результат'));
@@ -486,8 +489,8 @@ test('clarification is a discussion on the same approval stage and requires a fr
 test('task review accepts a positive result without comment but requires reason for return',async()=>{
  const id=(await request('admin','/tasks',taskInput)).data.id;
  assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Готовый результат передан',expectedVersion:1})).status,200);
- assert.equal((await request('director',`/tasks/${id}/review`,{action:'return',comment:'',expectedVersion:2})).status,400);
- assert.equal((await request('director',`/tasks/${id}/review`,{action:'accept',comment:'',expectedVersion:2})).status,200);
+ assert.equal((await request('admin',`/tasks/${id}/review`,{action:'return',comment:'',expectedVersion:2})).status,400);
+ assert.equal((await request('admin',`/tasks/${id}/review`,{action:'accept',comment:'',expectedVersion:2})).status,200);
 });
 test('bot search finds a visible task by number or title and keeps access scope',async()=>{
  const {botView,botClick,botText}=await import('../server/bot.js');const anna=users.find(u=>u.id==='anna')!;
@@ -530,7 +533,7 @@ test('director may submit and request a deadline for a visible employee task wit
 });
 test('bot supports optional positive review comment and applies acceptance only after confirmation',async()=>{
  const {botView,botClick,botText}=await import('../server/bot.js');const director=users.find(u=>u.id==='director')!;
- const id=(await request('admin','/tasks',taskInput)).data.id;
+ const id=(await request('director','/tasks',taskInput)).data.id;
  assert.equal((await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Результат работы передан',expectedVersion:1})).status,200);
  const card=await botView(director,'preview',{op:'task',id});
  const view=await botClick(director,'preview',botButton(card,'Проверить результат'));assert(view.buttons.flat().some(b=>b.text.includes('без комментария')));
@@ -698,14 +701,14 @@ test('launch routing uses the task branch and adds the sales head selectively or
   assert.equal((await request(assignee,task(result)+'/review',{action:'submit',comment:'Проверили готовый результат',expectedVersion:1})).status,200);
   assert.equal((await request(assignee,task(result))).data.approvalProgress.type,'completion');
   const first=(await request(assignee,task(result))).data.approvals[0].id;
-  assert.equal((await decide(branch,first,'approve','')).data.state,'pending');
-  assert.equal((await decide(sales,first,'reject','Уточните результат')).data.state,'rejected');
+  assert.equal((await decide(branch,first,'approve','')).status,403);
+  assert.equal((await decide(sales,first,'reject','Уточните результат')).status,403);
+  assert.equal((await decide('admin',first,'reject','Уточните результат')).data.state,'rejected');
   const returned=(await request(assignee,task(result))).data;
   assert.equal(returned.task.status,'active');assert.equal(returned.submissions[0].state,'returned');
   assert.equal((await request(assignee,task(result)+'/review',{action:'submit',comment:'Обновлённый результат готов',expectedVersion:returned.task.version})).status,200);
   const second=(await request(assignee,task(result))).data.approvals[0].id;
-  assert.equal((await decide(branch,second,'approve','')).data.state,'pending');
-  assert.equal((await decide(sales,second,'approve','')).data.state,'approved');
+  assert.equal((await decide('admin',second,'approve','')).data.state,'approved');
   assert.equal((await request(assignee,task(result))).data.task.status,'completed');
   const manager=(await db.pool.query('SELECT * FROM users WHERE id=$1',[branch])).rows[0];
   const profile={name:manager.name,position:manager.position,branchId:manager.branch_id,expectedVersion:manager.version,role:'admin'};
@@ -735,29 +738,19 @@ test('launch routing uses the task branch and adds the sales head selectively or
   assert.equal((await decide(sales,ordinaryApproval.data.id,'approve','Подтверждаю перенос')).data.state,'approved');
   const ordinaryResult=await make('РЗМ* Обычная приёмка');
   assert.equal((await request(assignee,task(ordinaryResult)+'/review',{action:'submit',comment:'Работа готова к приёмке',expectedVersion:1})).status,200);
-  assert.deepEqual(await routeUsers(ordinaryResult),[branch,sales]);
+  assert.deepEqual(await routeUsers(ordinaryResult),['admin']);
   assert.equal((await enableAll(false)).data.sales_head_approves_all,false);
-  assert.deepEqual(await routeUsers(ordinaryResult),[branch,sales]);
+  assert.deepEqual(await routeUsers(ordinaryResult),['admin']);
   const direct=await request('admin','/approval-hierarchy',{branchId:otherBranch,salesId:sales,directAssigneeIds:[assignee]},'PUT');
   assert.equal(direct.status,200,JSON.stringify(direct.data));
   const moved=(await request(assignee,task(ordinaryResult))).data;
   assert.equal(moved.approvalProgress.total,1);
-  assert.deepEqual(await routeUsers(ordinaryResult),[sales]);
+  assert.deepEqual(await routeUsers(ordinaryResult),['admin']);
   const movedApproval=moved.approvals[0];
-  const directorUser=users.find(person=>person.id===sales)!;
-  const {screen,button}=await import('../server/bot-ui.js');
-  const bot=await import('../server/bot.js');
-  const old=await screen(directorUser,'preview','Старое согласование',[[button('Принять','confirm',{
-   kind:'approve',id:ordinaryResult,target:movedApproval.id,step:1,revision:1,values:{comment:''}
-  })]]);
-  const token=old.buttons[0][0].token;
-  const fresh=await bot.botClick(directorUser,'preview',token).catch(error=>bot.botClickError(directorUser,'preview',token,error));
-  assert.match(fresh.text,/Версия согласования изменилась/);
-  const reopened=await bot.botClick(directorUser,'preview',botButton(fresh,'Открыть актуальную задачу'));
-  assert.match(reopened.text,/Решение за вами/);
   const decision={decision:'approve',comment:'',expectedRevision:movedApproval.action_revision,expectedStep:0};
   assert.equal((await request(branch,'/approvals/'+movedApproval.id+'/decision',decision)).status,403);
-  assert.equal((await request(sales,'/approvals/'+movedApproval.id+'/decision',decision)).data.state,'approved');
+  assert.equal((await request(sales,'/approvals/'+movedApproval.id+'/decision',decision)).status,403);
+  assert.equal((await request('admin','/approvals/'+movedApproval.id+'/decision',decision)).data.state,'approved');
   const directTask=await make('РЗМ* Один согласующий');
   assert.equal((await request('admin',task(directTask)+'/review',{action:'complete',comment:'',expectedVersion:1})).status,403);
   assert.equal((await propose(directTask)).status,201);
@@ -992,7 +985,7 @@ test('undo restores edited task with a new version and preserves immutable histo
  assert.equal((await db.pool.query('SELECT state FROM task_sync_queue WHERE task_id=$1 AND task_version=2',[id])).rows[0].state,'canceled');
 });
 test('undo review retains original acceptance and restores a linked open submission',async()=>{
- const id=(await request('admin','/tasks',taskInput)).data.id;
+ const id=(await request('director','/tasks',taskInput)).data.id;
  await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Результат передан на проверку',expectedVersion:1});
  await request('director',`/tasks/${id}/review`,{action:'accept',comment:'Результат принят руководителем',expectedVersion:2});
  const action=(await request('director','/undo/last')).data;
@@ -1126,7 +1119,7 @@ test('playful nudge is opt-in, scoped to bound recipients, confirmed and rate li
 
 test('positive bot review may omit comment but still requires confirmation',async()=>{
  const bot=await import('../server/bot.js'),director=users.find(u=>u.id==='director')!;
- const id=(await request('admin','/tasks',taskInput)).data.id;await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Готовая работа передана',expectedVersion:1});
+ const id=(await request('director','/tasks',taskInput)).data.id;await request('anna',`/tasks/${id}/review`,{action:'submit',comment:'Готовая работа передана',expectedVersion:1});
  const card=await bot.botView(director,'preview',{op:'task',id}),view=await bot.botClick(director,'preview',botButton(card,'Проверить результат'));
  const prompt=await bot.botClick(director,'preview',botButton(view,'Принять без комментария'));
  assert.equal((await request('director',`/tasks/${id}`)).data.task.status,'review');await bot.botClick(director,'preview',botButton(prompt,'Да, принять результат'));

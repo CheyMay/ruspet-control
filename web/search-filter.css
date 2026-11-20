@@ -27,6 +27,13 @@
 .search-filter-menu li { display:grid; gap:2px; padding:7px 9px; border-radius:4px; cursor:pointer; font-size:12px; }
 .search-filter-menu li:hover,.search-filter-menu li.highlighted { background:var(--theme-surface-soft); }
 .search-filter-menu li[aria-selected=true] > span { font-weight:650; }
+.search-filter-menu li > span > small { display:block; margin-top:2px; font-weight:400; }
+.search-filter-menu li.search-filter-multi-option { grid-template-columns:auto minmax(0,1fr); align-items:start; gap:8px; }
+.search-filter-check {
+ display:grid; place-items:center; width:16px; height:16px; border:1px solid var(--line); border-radius:4px;
+ margin-top:1px; color:var(--theme-on-accent,#fff);
+}
+.search-filter-multi-option[aria-selected=true] .search-filter-check { background:var(--green); border-color:var(--green); }
 .search-filter-menu small,.search-filter-empty { color:var(--muted); font-size:11px; }
 .search-filter-empty { margin:0; padding:8px 10px 12px; }
 .access-filter-tabs { margin:0 0 12px; }

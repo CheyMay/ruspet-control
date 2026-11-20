@@ -140,10 +140,12 @@ export async function prepareVoiceAction(actor:User,intent:VoiceIntent,db:Db){
  let kind:string=intent.kind;
  const scope=approvalScope(await approvalHierarchy(db));
  const reviewer=task.status==='review'&&canReview(actor,task,scope);
- if(kind==='submit'&&canComplete(actor,task,scope))kind='complete';
- else if(kind==='submit'&&reviewer)kind='accept';
- const payload:Payload={op:'form',id:task.id,kind,version:task.version};
+ if(kind==='submit'&&reviewer)kind='accept';
+ else if(kind==='submit'&&canComplete(actor,task,scope))kind='complete';
  const pending=(await db.query<Approval>("SELECT * FROM approvals WHERE task_id=$1 AND state='pending' ORDER BY created_at DESC LIMIT 1",[task.id])).rows[0];
+ if((kind==='accept'||kind==='return')&&pending?.type==='completion'&&reviewer)
+  kind=kind==='accept'?'approve':'reject';
+ const payload:Payload={op:'form',id:task.id,kind,version:task.version};
  if(kind==='submit'||kind==='deadline'||kind==='complete'){
   assert(canRequest(actor,task)&&(task.status==='active'||kind==='complete'&&task.status==='review'),409,'Действие доступно по незавершённой задаче.');
   assert(!pending,409,'Сначала завершите активное согласование.');

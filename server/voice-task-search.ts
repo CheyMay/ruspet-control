@@ -41,9 +41,12 @@ function companyScore(name:string,query:string[]){
  return joined.length>=4&&tokens.join('').includes(joined)?65:0;
 }
 function applicable(actor:User,task:Task,kind:VoiceKind,scope:ApprovalScope|null,pending?:Approval){
+ const canAccept=task.status==='review'&&canReview(actor,task,scope)&&(!pending||
+  pending.type==='completion'&&!pending.task_change?.routeIssue&&pending.route[pending.current_step]?.userId===actor.id&&
+  (!pending.clarification_requested_at||!!pending.clarification_answered_at));
  if(kind==='deadline')return !pending&&task.status==='active'&&canRequest(actor,task);
- if(kind==='submit')return !pending&&(task.status==='active'&&canRequest(actor,task)||task.status==='review'&&(canReview(actor,task,scope)||canComplete(actor,task,scope)));
- if(kind==='accept'||kind==='return')return !pending&&task.status==='review'&&canReview(actor,task,scope);
+ if(kind==='submit')return canAccept||!pending&&(task.status==='active'&&canRequest(actor,task)||task.status==='review'&&canComplete(actor,task,scope));
+ if(kind==='accept'||kind==='return')return canAccept;
  if(kind==='clarification')return !!pending?.clarification_requested_at&&!pending.clarification_answered_at&&pending.requester_id===actor.id;
  if(kind==='approve'||kind==='reject'||kind==='clarify')return !!pending&&
   (!pending.clarification_requested_at||!!pending.clarification_answered_at)&&pending.route[pending.current_step]?.userId===actor.id;

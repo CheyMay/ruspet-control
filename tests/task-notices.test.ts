@@ -242,10 +242,13 @@ test('director gets one batch for current requests and the admin cannot send it 
  const branch=(await db.pool.query<User>("SELECT * FROM users WHERE id='branch-fixture'")).rows[0];
  await db.pool.query("INSERT INTO org_reporting(employee_id,manager_id) VALUES($1,$2),($2,$3)",[worker.id,branch.id,director.id]);
  const id=await makeTask('РВМ* Работа для проверки руководителями',null);
- const first=await workflow.reviewTask(worker,id,'submit','Подготовили результат',1);
- assert.equal(first.state,'review');
- const a=(await db.pool.query('SELECT id FROM approvals WHERE task_id=$1',[id])).rows[0];
+ const a=await service.requestApproval(worker,id,{type:'deadline',reason:'Уточнение нового срока задачи',
+  proposedDeadline:at('2035-01-10','16:00').toISOString(),expectedVersion:1});
  await service.decide(branch,a.id,{decision:'approve',comment:''});
+ const result=await makeTask('Отдельная приёмка у постановщика',null);
+ assert.equal((await workflow.reviewTask(worker,result,'submit','Подготовили результат',1)).state,'review');
+ const {rows:[completion]}=await db.pool.query("SELECT route FROM approvals WHERE task_id=$1 AND type='completion'",[result]);
+ assert.deepEqual(completion.route,[{userId:director.id,label:'Постановщик'}]);
  assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE recipient_id=$1 AND dedupe_key LIKE $2",[director.id,'approval:'+a.id+':%'])).rows[0].n,0);
  assert.equal((await management.directorBatchStatus(adminUser))?.total,1);
  await db.pool.query("INSERT INTO login_accounts(user_id,username,password_hash,enabled) VALUES($1,'fixture-admin','fixture',true)",[adminUser.id]);
@@ -346,7 +349,7 @@ test('Friday evening sends one private digest with the Monday plan and creator r
  }
 });
 
-test('only self-assigned changes bypass approvals and creator pricing controls both review routes',async()=>{
+test('pricing controls deadline approvals and only the creator accepts completion',async()=>{
  const hierarchy=await import('../server/approval-hierarchy.js'),service=await import('../server/service.js');
  const adminUser=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
  const liza=(await db.pool.query<User>("SELECT * FROM users WHERE id='anna'")).rows[0];
@@ -442,33 +445,52 @@ test('only self-assigned changes bypass approvals and creator pricing controls b
  assert.match(lowNotice,/22\.01\.2035, 17:00 МСК.*23\.01\.2035, 12:00 МСК/);
 
  const work=await create(liza,other,5000);
- await assert.rejects(()=>workflow.reviewTask(liza,work,'complete','',1),/согласующего/);
+ await assert.rejects(()=>workflow.reviewTask(liza,work,'complete','',1),/приёмке/);
  assert.equal((await workflow.reviewTask(other,work,'submit','Результат подготовлен',1)).state,'review');
- assert.deepEqual(await route(work),[liza.id,director.id]);
- assert.equal((await allow(work,liza)).state,'pending');
+ assert.deepEqual(await route(work),[liza.id]);
+ await assert.rejects(()=>allow(work,director),/постановщик/);
  const beforeEdit=await approval(work);
  await login(liza);await login(other);
  assert.equal((await api(other,'/tasks/'+work+'/price','PATCH',{price:7800,expectedVersion:2})).status,403);
  assert.equal((await api(liza,'/tasks/'+work+'/price','PATCH',{price:7800,expectedVersion:2})).status,200);
  const changed=await approval(work);
  assert.equal(changed.id,beforeEdit.id);
- assert.equal(changed.task_version,3);assert.equal(changed.current_step,1);
+ assert.equal(changed.task_version,3);assert.equal(changed.current_step,0);
  assert.equal(changed.action_revision,beforeEdit.action_revision+1);
  assert.deepEqual(changed.task_change.fields,[{field:'price',before:5000,after:7800}]);
  const {lastUndo,undoLastAction}=await import('../server/undo.js');
  const last=await lastUndo(liza,work);assert(last);
  await undoLastAction(liza,last.id);
  assert.equal((await approval(work)).task_change,null);
- assert.equal((await approval(work)).current_step,1);
+ assert.equal((await approval(work)).current_step,0);
  assert.equal((await api(liza,'/tasks/'+work+'/price','PATCH',{price:4999.99,expectedVersion:4})).status,200);
  assert.deepEqual(await route(work),[liza.id]);assert.equal((await approval(work)).current_step,0);
- assert.equal((await approval(work)).task_change.routeChanged,true);
+ assert.equal((await approval(work)).task_change.routeChanged,false);
+ const {prepareVoiceAction}=await import('../server/bot-voice-actions.js');
+ const voice=await prepareVoiceAction(liza,{kind:'accept',id:work,values:{}},db.pool);
+ assert.equal(voice.payload.kind,'approve');assert.equal(voice.payload.target,(await approval(work)).id);
  assert.equal((await allow(work,liza)).state,'approved');
  const existing=await create(liza,other,5000);
  await setStatus(existing,'review');
- assert.equal((await workflow.reviewTask(liza,existing,'accept','',1)).state,'review');
- assert.equal((await approval(existing)).current_step,1);
- assert.equal((await allow(existing,director)).state,'approved');
+ await assert.rejects(()=>workflow.reviewTask(director,existing,'accept','',1),/постановщик/);
+ assert.equal((await workflow.reviewTask(liza,existing,'accept','',1)).state,'completed');
+ assert.equal(await approval(existing),undefined);
+ const submittedForWorker=await create(liza,other,7000);
+ assert.equal((await workflow.reviewTask(liza,submittedForWorker,'submit','Результат сотрудника передан',1)).state,'review');
+ assert.deepEqual(await route(submittedForWorker),[liza.id]);
+ const legacy=await approval(submittedForWorker);
+ await db.pool.query("UPDATE approvals SET current_step=1,route=$2 WHERE id=$1",
+  [legacy.id,JSON.stringify([{userId:liza.id,label:'Постановщик'},{userId:director.id,label:'Руководитель продаж'}])]);
+ const previousDecision=randomUUID();
+ await db.pool.query("INSERT INTO decisions(id,approval_id,actor_id,step_index,decision,comment) VALUES($1,$2,$3,0,'approve','Ранее проверенный результат')",
+  [previousDecision,legacy.id,liza.id]);
+ await db.pool.query(await readFile(new URL('../server/migrations/051_creator_accepts_completion.sql',import.meta.url),'utf8'));
+ assert.deepEqual(await route(submittedForWorker),[liza.id]);
+ assert.equal((await approval(submittedForWorker)).action_revision,legacy.action_revision+1);
+ assert.equal((await db.pool.query('SELECT actor_id FROM decisions WHERE id=$1',[previousDecision])).rows[0].actor_id,liza.id);
+ await assert.rejects(()=>service.decide(director,legacy.id,{decision:'approve',comment:'',expectedRevision:legacy.action_revision,expectedStep:1}),/Версия согласования изменилась/);
+ await assert.rejects(()=>allow(submittedForWorker,director),/постановщик/);
+ assert.equal((await workflow.reviewTask(liza,submittedForWorker,'accept','',2)).state,'completed');
 });
 
 test('mobile Tasks switches between assigned and created without changing who can see them',async()=>{

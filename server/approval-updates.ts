@@ -3,6 +3,7 @@ import {approvalHierarchy,configuredApprovalRoute} from './approval-hierarchy.js
 import type {Db} from './db.js';
 import {event,notify} from './service.js';
 import {taskPrice} from '../shared/pricing.js';
+import {completionApprovalRoute,isSelfTask} from '../shared/actions.js';
 import type {Approval,ApprovalTaskChange,Task} from '../shared/types.js';
 
 const editableFields=['title','description','assignee_id','branch_id','planned_start','planned_end',
@@ -34,8 +35,8 @@ export async function keepTaskApprovals(db:Db,before:Task,after:Task,fields:read
   return {field,before:value(before),after:value(after)};
  });
  for(const approval of rows){
-  if(after.status==='completed'||approval.type==='completion'&&before.status==='review'&&after.status==='active'){
-   const reason=after.status==='completed'?'Задача уже завершена':'Результат уже возвращён в работу';
+  if(after.status==='completed'||approval.type==='completion'&&(isSelfTask(after)||before.status==='review'&&after.status==='active')){
+   const reason=after.status==='completed'?'Задача уже завершена':isSelfTask(after)?'Постановщик может завершить свою задачу':'Результат уже возвращён в работу';
    await db.query("UPDATE approvals SET state='stale',canceled_at=now(),deferred_until=NULL,action_revision=action_revision+1 WHERE id=$1",[approval.id]);
    await db.query("UPDATE outbox SET withdrawn_at=now() WHERE dedupe_key LIKE $1 AND withdrawn_at IS NULL",['approval:'+approval.id+':%']);
    await event(db,after.id,actorId,'approval_canceled',reason,{approvalId:approval.id,source,fields});
@@ -46,10 +47,11 @@ export async function keepTaskApprovals(db:Db,before:Task,after:Task,fields:read
    continue;
   }
   const recheck=fields.some(field=>['price','assignee_id','creator_id','branch_id'].includes(field));
-  const calculated=hierarchy&&recheck?configuredApprovalRoute(hierarchy,after,approval.requester_id,approval.type):null;
+  const calculated=approval.type==='completion'?completionApprovalRoute(after):
+   hierarchy&&recheck?configuredApprovalRoute(hierarchy,after,approval.requester_id):null;
   const route=calculated?.length?calculated:approval.route;
-  const routeIssue=recheck?(calculated?.length===0||route.some(step=>step.userId===approval.requester_id||
-   approval.type==='completion'&&step.userId===after.assignee_id)):!!approval.task_change?.routeIssue;
+  const routeIssue=approval.type==='completion'?false:recheck?
+   calculated?.length===0||route.some(step=>step.userId===approval.requester_id):!!approval.task_change?.routeIssue;
   const routeChanged=route.length!==approval.route.length||route.some((step,i)=>step.userId!==approval.route[i].userId);
   const change:ApprovalTaskChange={source,at:new Date().toISOString(),fields:changes,routeChanged,routeIssue};
   const revision=approval.action_revision+1;
@@ -65,7 +67,7 @@ export async function keepTaskApprovals(db:Db,before:Task,after:Task,fields:read
    await db.query("UPDATE outbox SET withdrawn_at=now() WHERE dedupe_key LIKE $1 AND withdrawn_at IS NULL",['approval:'+approval.id+':%']);
   }
   if(!routeChanged&&!routeIssue)await carryApprovalBatch(db,approval.id,approval.current_step,approval.action_revision,revision);
-  if(routeChanged&&!routeIssue&&route[0].userId!==hierarchy?.sales_head_id&&route[0].userId!==actorId)
+  if(routeChanged&&!routeIssue&&(approval.type==='completion'||route[0].userId!==hierarchy?.sales_head_id)&&route[0].userId!==actorId)
    await notify(db,after.id,route[0].userId,'Маршрут согласования изменился. Проверьте задачу #'+after.id,
     `approval:${approval.id}:route:${revision}`);
   await event(db,after.id,actorId,'approval_task_changed',source==='bitrix'?'Задача обновлена в Битрикс24 во время согласования':'Задача изменена в РУСПЭТ во время согласования',

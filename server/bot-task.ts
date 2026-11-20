@@ -50,9 +50,10 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
     ...(canSetApprovedDeadline(u.id,pending,t,{deadlineApproverId:d.deadlineApproverId,creatorApproverId:d.approvalScope?.creatorApproverId})?[form('Выбрать другой срок','approve_with_deadline',pending.id,pending.current_step)]:[])
    ]);
    if(deadline)approvalRows.push([form('Согласовать с комментарием','approve',pending.id,pending.current_step)]);
-   approvalRows.push([...(deadline?[]:resultReview?[button('Принять без комментария','approval_accept_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision})]:
-    [form('Согласовать','approve',pending.id,pending.current_step)]),form(resultReview?'Вернуть с замечаниями':'Отклонить','reject',pending.id,pending.current_step)],
+   approvalRows.push([...(deadline?[]:[button('Принять без комментария','approval_accept_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision})]),
+    form(resultReview?'Вернуть с замечаниями':'Отклонить','reject',pending.id,pending.current_step)],
     [form('Уточнить','clarify',pending.id,pending.current_step),button('Напомнить через час','confirm',{...extra,kind:'later',target:pending.id,step:pending.current_step,revision:pending.action_revision,minutes:60,values:{}})]);
+   if(!deadline)approvalRows.push([form('Принять с комментарием','approve',pending.id,pending.current_step)]);
   }
  }
  const reviewRows=t.status==='review'&&!pending&&canReview(u,t,d.approvalScope)?[

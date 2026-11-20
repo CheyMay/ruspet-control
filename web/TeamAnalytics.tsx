@@ -10,23 +10,32 @@ const dateShort=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'n
 const clock=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'});
 const dayDate=(iso:string)=>new Date(iso+'T12:00:00+03:00');
 
-function Summary({title,total,children,caption,positive=false}:{
- title:string;total:number;children:React.ReactNode;caption?:string;positive?:boolean;
+function Summary({title,total,children,caption,bar,positive=false}:{
+ title:string;total:number;children:React.ReactNode;caption?:string;bar?:React.ReactNode;positive?:boolean;
 }){
  return <section className={'panel bi-summary'+(positive?' bi-positive':'')}>
   <div className="bi-summary-title"><h2>{title}</h2><strong>{total}</strong>{caption&&<p>{caption}</p>}</div>
+  {bar}
   <dl>{children}</dl>
  </section>;
 }
 
-function Measure({label,value,urgent=false}:{label:string;value:number;urgent?:boolean}){
- return <div className={urgent&&value?'bi-urgent':undefined}><dt>{label}</dt><dd>{value}</dd></div>;
+const deadlineParts=['overdue','today','nextWorkday'] as const;
+type DeadlinePart=typeof deadlineParts[number];
+
+function DeadlineBar({work}:{work:RemainingWork}){
+ return <div className="bi-deadline-bar" aria-hidden="true">
+  {deadlineParts.filter(part=>work[part]>0).map(part=><span key={part} data-tone={part} style={{flexGrow:work[part]}}/>)}
+ </div>;
+}
+function Measure({label,value,urgent=false,tone}:{label:string;value:number;urgent?:boolean;tone?:DeadlinePart}){
+ return <div className={urgent&&value?'bi-urgent':undefined}><dt>{tone&&<i className="bi-deadline-dot" data-tone={tone} aria-hidden="true"/>}{label}</dt><dd>{value}</dd></div>;
 }
 function Remaining({work,nextLabel,horizon}:{work:RemainingWork;nextLabel:string;horizon:string}){
- return <Summary title="Осталось к выполнению" total={work.total} caption={horizon}>
-  <Measure label="Просрочено" value={work.overdue} urgent/>
-  <Measure label="Крайний срок сегодня" value={work.today}/>
-  <Measure label={nextLabel} value={work.nextWorkday}/>
+ return <Summary title="Осталось к выполнению" total={work.total} caption={horizon} bar={<DeadlineBar work={work}/>}>
+  <Measure label="Просрочено" value={work.overdue} tone="overdue" urgent/>
+  <Measure label="Крайний срок сегодня" value={work.today} tone="today"/>
+  <Measure label={nextLabel} value={work.nextWorkday} tone="nextWorkday"/>
  </Summary>;
 }
 function Completed({work,period,nextLabel}:{work:CompletedWork;period:Period;nextLabel:string}){
@@ -68,7 +77,9 @@ function Teams({rows,period,nextLabel,onGroup}:{rows:AnalyticsRow[];period:Perio
      <th scope="row"><button type="button" className="bi-team-name" onClick={()=>onGroup(row.key)}>
       <span>{row.label}{row.caption&&<small>{row.caption}</small>}</span><ChevronRight size={16} aria-hidden="true"/>
      </button></th>
-     {values.map((value,index)=><td key={columns[index]} className={index===1&&value?'bi-urgent':undefined}>{value}</td>)}
+     {values.map((value,index)=><td key={columns[index]} className={index===1&&value?'bi-urgent':undefined}>
+      {value}{index===0&&<DeadlineBar work={remaining}/>}
+     </td>)}
     </tr>;
    })}</tbody>
   </table></div>

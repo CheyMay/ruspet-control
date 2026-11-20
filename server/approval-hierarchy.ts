@@ -20,9 +20,9 @@ export const approvalScope=(hierarchy:Hierarchy|null):ApprovalScope|null=>hierar
  hierarchy.direct_assignee_ids||hierarchy.creator_approver_id||hierarchy.only_self_direct)?
  {assigneeIds:hierarchy.direct_assignee_ids??[],approverId:hierarchy.sales_head_id,creatorApproverId:hierarchy.creator_approver_id,
   legacyRouting:!hierarchy.direct_assignee_ids,onlySelfDirect:hierarchy.only_self_direct}:null;
-export function requiresTaskApproval(hierarchy:Hierarchy|null,task:Task,type:Approval['type'],requesterId:string){
+export function requiresDeadlineApproval(hierarchy:Hierarchy|null,task:Task,requesterId:string){
  if(hierarchy?.only_self_direct)return !(isSelfTask(task)&&requesterId===task.creator_id);
- return !!(hierarchy&&configuredApprovalRoute(hierarchy,task,requesterId,type))||inControlScope(hierarchy,task.assignee_id);
+ return !!(hierarchy&&configuredApprovalRoute(hierarchy,task,requesterId))||inControlScope(hierarchy,task.assignee_id);
 }
 const codeRequiresReview=(task:Task)=>taskCode(task.title).code.replace(/[*#]$/u,'').includes('В');
 async function hasWatch(db:Db,taskId:string,directorId:string){
@@ -91,8 +91,7 @@ export async function setApprovalHierarchy(actor:User,branchId:string,salesId:st
    const updated=await db.query<{id:string;task_id:string}>(`UPDATE approvals a SET route=a.route || $2::jsonb
     FROM tasks t WHERE a.task_id=t.id AND a.task_version=t.version AND t.status<>'completed'
     AND a.state='pending' AND a.canceled_at IS NULL AND a.requester_id<>$1
-    AND (a.type<>'completion' OR t.assignee_id<>$1)
-    AND t.creator_id IS DISTINCT FROM $3 AND NOT (a.type='deadline' AND t.assignee_id=ANY($4))
+    AND a.type='deadline' AND t.creator_id IS DISTINCT FROM $3 AND NOT (t.assignee_id=ANY($4))
     AND NOT EXISTS (SELECT 1 FROM jsonb_array_elements(a.route) step WHERE step->>'userId'=$1)
     RETURNING a.id,a.task_id`,[salesId,JSON.stringify([{userId:salesId,label:'Руководитель продаж'}]),creator,deadlineIds]);
    for(const approval of updated.rows)await event(db,approval.task_id,actor.id,'approval_route_extended',
@@ -109,11 +108,10 @@ async function applyDirectScope(db:Db,actorId:string,hierarchy:Hierarchy,assigne
  const salesId=hierarchy.sales_head_id;
  const route=JSON.stringify(directRoute(salesId));
  const {rows}=await db.query<{id:string;task_id:string;eligible:boolean;previous_route:unknown}>(`WITH candidates AS (
-   SELECT a.id,a.route AS previous_route,t.assignee_id=ANY($1) AND a.requester_id<>$2
-    AND (a.type<>'completion' OR t.assignee_id<>$2) AS eligible
+   SELECT a.id,a.route AS previous_route,t.assignee_id=ANY($1) AND a.requester_id<>$2 AS eligible
    FROM approvals a JOIN tasks t ON t.id=a.task_id
-   WHERE a.state='pending' AND a.canceled_at IS NULL AND a.task_version=t.version AND t.status<>'completed'
-   AND NOT $4 AND t.creator_id IS DISTINCT FROM $5 AND NOT(a.type='deadline' AND t.assignee_id=ANY($6))
+   WHERE a.type='deadline' AND a.state='pending' AND a.canceled_at IS NULL AND a.task_version=t.version AND t.status<>'completed'
+   AND NOT $4 AND t.creator_id IS DISTINCT FROM $5 AND NOT(t.assignee_id=ANY($6))
    AND (NOT (t.assignee_id=ANY($1)) OR a.route<>$3::jsonb OR a.requester_id=$2)
    FOR UPDATE OF a
   )
@@ -138,14 +136,14 @@ async function applyDirectScope(db:Db,actorId:string,hierarchy:Hierarchy,assigne
  await db.query("UPDATE findings f SET status='resolved' FROM tasks t WHERE t.id=f.task_id AND f.status='open' AND NOT(t.assignee_id=ANY($1))",[scope]);
 }
 
-export function configuredApprovalRoute(hierarchy:Hierarchy,task:Task,requesterId:string,type:Approval['type']):Step[]|null{
+export function configuredApprovalRoute(hierarchy:Hierarchy,task:Task,requesterId:string):Step[]|null{
  const self=isSelfTask(task);
  if(hierarchy.only_self_direct&&self&&requesterId===task.creator_id)return null;
  const creatorRule=task.creator_id===hierarchy.creator_approver_id;
- const forceHead=type==='deadline'&&hierarchy.extra_deadline_assignee_ids.includes(task.assignee_id);
+ const forceHead=hierarchy.extra_deadline_assignee_ids.includes(task.assignee_id);
  if(!creatorRule&&!forceHead&&!hierarchy.only_self_direct)return null;
  const head=hierarchy.sales_head_id;
- const eligible=(id:string)=>id!==requesterId&&(type!=='completion'||id!==task.assignee_id);
+ const eligible=(id:string)=>id!==requesterId;
  const creatorStep={userId:task.creator_id,label:'Постановщик'};
  const route=creatorRule&&eligible(task.creator_id)?[creatorStep]:[];
  const needsHead=!route.length||forceHead||priceBand(task)!=='low';
@@ -156,11 +154,11 @@ export function configuredApprovalRoute(hierarchy:Hierarchy,task:Task,requesterI
 
 async function alignPolicyRequests(db:Db,actorId:string,hierarchy:Hierarchy){
  const {rows}=await db.query<Approval&{task:Task}>(`SELECT a.*,row_to_json(t) AS task FROM approvals a JOIN tasks t ON t.id=a.task_id
-  WHERE a.state='pending' AND a.canceled_at IS NULL AND a.task_version=t.version AND t.status<>'completed'
-   AND ($1 OR t.creator_id=$2 OR a.type='deadline' AND t.assignee_id=ANY($3))
+  WHERE a.type='deadline' AND a.state='pending' AND a.canceled_at IS NULL AND a.task_version=t.version AND t.status<>'completed'
+   AND ($1 OR t.creator_id=$2 OR t.assignee_id=ANY($3))
   ORDER BY a.id FOR UPDATE OF a`,[hierarchy.only_self_direct,hierarchy.creator_approver_id,hierarchy.extra_deadline_assignee_ids]);
  for(const approval of rows){
-  const route=configuredApprovalRoute(hierarchy,approval.task,approval.requester_id,approval.type);
+  const route=configuredApprovalRoute(hierarchy,approval.task,approval.requester_id);
   if(!route||route.length===approval.route.length&&route.every((step,i)=>step.userId===approval.route[i].userId))continue;
   await db.query(`UPDATE approvals SET route=$2,current_step=0,state=$3,action_revision=action_revision+1,deferred_until=NULL,
    canceled_at=CASE WHEN $3='stale' THEN now() ELSE NULL END,
@@ -177,17 +175,17 @@ async function alignPolicyRequests(db:Db,actorId:string,hierarchy:Hierarchy){
  }
 }
 
-export async function hierarchyRoute(db:Db,hierarchy:Hierarchy,task:Task,requesterId:string,type:'deadline'|'completion'){
+export async function hierarchyRoute(db:Db,hierarchy:Hierarchy,task:Task,requesterId:string){
  const people=(await db.query<User>(`SELECT * FROM users WHERE NOT root_access
   AND (role IN ('branch_manager','admin') OR id=$1 OR id=$2)`,[hierarchy.sales_head_id,task.creator_id])).rows;
  const head=people.find(person=>person.id===hierarchy.sales_head_id);
  assert(head&&(head.role==='director'||head.role==='sales_head'),422,'Назначьте руководителя продаж для согласования.');
- const special=configuredApprovalRoute(hierarchy,task,requesterId,type);
+ const special=configuredApprovalRoute(hierarchy,task,requesterId);
  if(special){
   assert(special.length,422,'Запрос должен отправить другой участник. Согласовать собственный запрос нельзя.');
   return special;
  }
- const eligible=(person:User)=>person.id!==requesterId&&(type!=='completion'||person.id!==task.assignee_id);
+ const eligible=(person:User)=>person.id!==requesterId;
  if(hierarchy.direct_assignee_ids){
   assert(inControlScope(hierarchy,task.assignee_id),422,'Управленческое согласование для этой задачи не требуется.');
   assert(eligible(head),422,'Согласовать собственный запрос нельзя.');

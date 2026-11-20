@@ -9,6 +9,7 @@ import {assert,canSee} from './domain.js';
 import {event,notify,notifyTaskAssignment,refreshTaskFindings} from './service.js';
 import {MockTaskProvider} from './providers.js';
 import {canRestoreLinkedFields} from './bitrix-live.js';
+import {completionApprovalRoute} from '../shared/actions.js';
 import type {User,Task} from '../shared/types.js';
 import {businessDay} from '../shared/queues.js';
 
@@ -125,13 +126,20 @@ async function undoAction(u:User,id:string,reason?:string){return transaction(as
  const beforeApprovals=new Set(before.approvals.map(a=>a.id));
  for(const a of after.approvals)if(!beforeApprovals.has(a.id))await db.query("UPDATE approvals SET state='stale',canceled_at=now(),deferred_until=NULL WHERE id=$1",[a.id]);
  const mutableApproval=['state','current_step','deferred_until','clarification_question','clarification_answer','clarification_requested_at','clarification_answered_at','canceled_at','route','task_change','approved_deadline'];
- for(const a of before.approvals){
-  const active=a.state==='pending'&&a.task_version===before.task.version;
+ for(const entry of before.approvals){
+  const active=entry.state==='pending'&&entry.task_version===before.task.version;
+  let a=entry;
+  if(active&&entry.type==='completion'){
+   const route=completionApprovalRoute({...before.task,creator_id:current.creator_id});
+   if(!route.length)a={...entry,state:'stale',canceled_at:new Date(now).toISOString(),deferred_until:null};
+   else if(entry.current_step!==0||!isDeepStrictEqual(entry.route,route))a={...entry,route,current_step:0,deferred_until:null,
+    task_change:entry.task_change?{...entry.task_change,routeIssue:false}:null};
+  }
   const values=mutableApproval.map(k=>a[k]==null?null:['route','task_change'].includes(k)?JSON.stringify(a[k]):a[k]);
   const {rows:[next]}=await db.query(`UPDATE approvals SET ${mutableApproval.map((k,i)=>`${k}=$${i+2}`).join(',')},
    action_revision=action_revision+1,task_version=$${mutableApproval.length+2} WHERE id=$1 RETURNING action_revision`,
    [a.id,...values,active?current.version+1:a.task_version]);
-  if(active)await carryApprovalBatch(db,a.id,a.current_step,a.action_revision,next.action_revision);
+  if(active&&a.type==='deadline')await carryApprovalBatch(db,a.id,a.current_step,a.action_revision,next.action_revision);
  }
  const oldDecisions=new Set(before.decisions.map(d=>d.id));for(const d of after.decisions)if(!oldDecisions.has(d.id))await db.query('INSERT INTO decision_retractions(decision_id,undo_id) VALUES($1,$2)',[d.id,id]);
  // Keep the original submission and its outcome. A restored review is a new,

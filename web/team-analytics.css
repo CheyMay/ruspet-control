@@ -31,6 +31,14 @@
 .bi-summary dl > div {border-top:1px solid var(--bi-border);padding:8px 0}
 .bi-summary dl > div:last-child {padding-bottom:0}
 .bi-summary dd,.bi-waiting dd {font-weight:650;font-variant-numeric:tabular-nums;margin:0}
+.bi-deadline-bar {display:flex;height:9px;margin-top:12px;border-radius:6px;overflow:hidden;background:var(--bi-soft)}
+.bi-deadline-bar span {flex-basis:0}
+.bi-deadline-bar span + span {box-shadow:inset 1px 0 var(--theme-surface,#fff)}
+.bi-deadline-dot {display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:1px}
+.bi-workspace [data-tone=overdue] {background:var(--theme-danger,#af4740)}
+.bi-workspace [data-tone=today] {background:var(--theme-warning,#a5792e)}
+.bi-workspace [data-tone=nextWorkday] {background:var(--bi-accent)}
+.bi-table .bi-deadline-bar {height:5px;margin:4px 0 0 auto;width:min(100%,9rem);min-width:55px}
 .bi-workspace .bi-urgent {color:var(--theme-danger,#af4740)}
 .bi-waiting {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;padding:12px 18px;margin:0}
 .bi-table-wrap {overflow:auto;margin-top:8px}
