@@ -1317,6 +1317,34 @@ test('separate OKB database stores companies and triggers only active BPM rules 
   const make=await request('director','/tasks',task);
   assert.equal(make.status,201);
   const taskPath='/tasks/'+make.data.id;
+  const detail=(await request('anna',taskPath)).data.task;
+  const {rows:[savedTask]}=await db.pool.query('SELECT created_at FROM tasks WHERE id=$1',[make.data.id]);
+  assert.equal(detail.created_at,savedTask.created_at);
+  assert.deepEqual(detail.client_names,['Тестовая компания']);
+  const taskFromCrm=runs[0].task_id,portal='task-client-fixture.example',externalId=90000123,companyRef='CO_8877';
+  const {rows:[gate]}=await db.pool.query('SELECT portal FROM bitrix_rest_gate WHERE id=1');
+  try{
+   await db.pool.query('UPDATE bitrix_rest_gate SET portal=$1 WHERE id=1',[portal]);
+   await okb.okbPool().query('UPDATE companies SET bitrix_portal=$1,bitrix_id=8877 WHERE id=$2',[portal,companyId]);
+   await db.pool.query("UPDATE tasks SET company_id=NULL,source_fields=$2 WHERE id=$1",[taskFromCrm,JSON.stringify({'Компания':'Клиент из выгрузки'})]);
+   await db.pool.query("INSERT INTO bitrix_task_snapshots(external_id,snapshot,raw) VALUES($1,'{}',$2)",
+    [externalId,JSON.stringify({ufCrmTask:[companyRef,'L_997',companyRef]})]);
+   await db.pool.query("INSERT INTO bitrix_task_links(task_id,external_id,baseline,linked_version) VALUES($1,$2,'{}',1)",[taskFromCrm,externalId]);
+   const compact=(await request('anna','/bootstrap?view=workspace')).data.tasks.find((row:any)=>row.id===taskFromCrm);
+   assert.deepEqual(compact.client_names,['Тестовая компания']);
+   assert.equal(compact.source_fields,undefined);
+   const {botView}=await import('../server/bot.js');
+   const bot=await botView(users.find(person=>person.id==='anna')!,'preview',{op:'task',id:taskFromCrm});
+   assert.match(bot.text,/Создана:/);
+   assert.match(bot.text,/Клиент: Тестовая компания/);
+   await db.pool.query("UPDATE bitrix_task_snapshots SET raw='{\"ufCrmTask\":[\"CO_9999\"]}' WHERE external_id=$1",[externalId]);
+   assert.deepEqual((await request('anna','/tasks/'+taskFromCrm)).data.task.client_names,['Клиент из выгрузки']);
+  }finally{
+   await db.pool.query('DELETE FROM bitrix_task_links WHERE task_id=$1',[taskFromCrm]);
+   await db.pool.query('DELETE FROM bitrix_task_snapshots WHERE external_id=$1',[externalId]);
+   await db.pool.query('UPDATE bitrix_rest_gate SET portal=$1 WHERE id=1',[gate.portal]);
+   await db.pool.query("UPDATE tasks SET company_id=$2,source_fields='{}' WHERE id=$1",[taskFromCrm,companyId]);
+  }
   const template={name:'Сохранённый шаблон',shared:true,content:{...task,customFields:[{label:'Объём',value:''}]}};
   assert.equal((await request('anna','/task-templates',template)).status,403);
   const saved=await request('director','/task-templates',template);assert.equal(saved.status,201);

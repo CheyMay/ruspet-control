@@ -26,6 +26,7 @@ import { assert, canAccess, canSee, canRequest, canManage, globalAccess, evaluat
 import { providers } from './providers.js';
 import {pendingAssignmentTasks,registerTaskAcceptance,requireTaskAcceptance,taskAssignmentReceipt,taskPersonalPlan,visiblePlanNotice} from './personal-calendar.js';
 import {analyticsAccess} from './analytics-scope.js';
+import {withTaskClients} from './task-clients.js';
 const adapters=providers();
 const planningFindings=new Set(['planned_overdue','missing_plan_start','missing_plan_end','negative_plan','long_plan','plan_after_deadline','plan_before_creation','child_plan','parent_unavailable','child_deadline','children_unavailable']);
 export async function event(db:Db,taskId:string|null,actor:string|null,kind:string,message:string,data:object={}) {
@@ -67,7 +68,7 @@ async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
 export async function bootstrap(user:User,light=false,compactWorkspace=false,includePrivate=true) {
  return transaction(async db=>{
  await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
- const tasks=await visibleTasks(user,db), ids=tasks.map(t=>t.id), cfg=await config(db);
+ const tasks=await withTaskClients(await visibleTasks(user,db),db), ids=tasks.map(t=>t.id), cfg=await config(db);
  const hierarchy=await approvalHierarchy(db),scope=approvalScope(hierarchy);
  const approvals=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const editRequests=(await db.query(`SELECT p.id,p.task_id,t.creator_id,p.created_at FROM task_edit_permissions p JOIN tasks t ON t.id=p.task_id
@@ -105,7 +106,7 @@ export async function queueApprovalHistories(user:User){
 }
 
 export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHistory=false,includePrivate=true) {
- const task=await taskFor(db,id,user);
+ const [task]=await withTaskClients([await taskFor(db,id,user)],db);
  const approvals=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows;
  const current=task.status==='completed'?undefined:approvals.find(a=>a.state==='pending'&&!a.canceled_at&&a.task_version===task.version&&a.route[a.current_step]);
  let approvalProgress:TaskApprovalProgress|null=null;

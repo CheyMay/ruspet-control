@@ -24,6 +24,8 @@ export function deadlineProposalButton(task:Task,list:Payload['list'],explanatio
 
 export async function renderBotTask(u:User,ch:string,p:Payload){
  const d=await detail(u,p.id!,pool,p.op==='task_approval'),t=d.task,now=new Date();
+ const taskFacts=['Создана: '+date(t.created_at)+' МСК',
+  ...(t.client_names?.length?['Клиент: '+botExcerpt(t.client_names.join(' · '),240)]:[])];
  const pending=d.approvals.find(a=>activeTaskApproval(t,a)),last=d.submissions[0];
  const next=taskNextAction(t,pending,d.approvalScope);
  const {canEdit,canRequest:canRequestEdit,canDecide,request}=d.editAccess;
@@ -76,7 +78,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  if(p.op==='task_fields'){
   const showPlanning=(await config(pool)).config.showPlanning;
   const integration=await taskIntegration(u,t.id,false);
-  const lines=['Исполнитель: '+name(t.assignee_id),'Постановщик: '+name(t.creator_id),'Крайний срок: '+date(t.deadline)+(t.deadline?' МСК':''),
+  const lines=['Исполнитель: '+name(t.assignee_id),'Постановщик: '+name(t.creator_id),'Крайний срок: '+date(t.deadline)+(t.deadline?' МСК':''),...taskFacts,
    'Цена: '+formatPrice(t)+' · '+priceLabels[priceBand(t)],'Переносов срока: '+t.transfer_count,
    integrationLabels[integration.state],...(integration.error?[integration.error]:[]),
    ...(showPlanning?['Плановое начало: '+date(t.planned_start??null),'Плановое окончание: '+date(t.planned_end)]:[]),
@@ -103,7 +105,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   ...(change.routeChanged?['Маршрут пересчитан. Запрос снова на первом этапе.']:[]),
   ...(change.routeIssue?['Нужен другой согласующий.']:[])
  ].join('\n')+'\n\n':'';
- if(p.op==='task_approval')return paged('Согласование',pending?
+ if(p.op==='task_approval')return paged('Согласование',pending?taskFacts.join('\n')+'\n\n'+
   `Запрос: ${pending.type==='deadline'?'перенос срока':'закрытие задачи'}\nЦена задачи: ${formatPrice(t)}\nЭтап ${pending.current_step+1} из ${pending.route.length}\nАвтор: ${name(pending.requester_id)}\n${waiting?'Ждём уточнения от: '+name(pending.requester_id):(pending.clarification_answered_at?'Ответ получен. Решение за: ':'Решение за: ')+name(approver?.userId??'')}\nТекущий крайний срок: ${date(t.deadline)}${pending.proposed_deadline?'\nПредложенный крайний срок: '+date(pending.proposed_deadline):''}\n\n${changeText}Причина:\n${pending.reason}${pending.type==='completion'?'\n\nРезультат работы:\n'+pending.plan:''}${pending.clarification_question?'\n\nВопрос:\n'+pending.clarification_question:''}${pending.clarification_answer?'\n\nОтвет:\n'+pending.clarification_answer:''}${d.deadlineHistory.length?'\n\nПрошлые переносы:\n'+d.deadlineHistory.map(item=>[date(item.from)+' → '+date(item.to)+' МСК · '+item.author,
    ...(item.reason?['Причина: '+item.reason]:[]),...(item.comments??[]).map(note=>(note.source==='result'?'Результат работы · ':'')+note.author+': '+note.text)].join('\n')).join('\n'):''}`:'Текущих согласований нет.',approvalRows);
  if(p.op==='discussion'){
@@ -178,6 +180,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const status=botTaskStatus(t,now,!!pending),facts:string[]=[];
  if(t.status==='completed'&&t.completed_at)facts.push('Закрыта '+date(t.completed_at)+' МСК');
  if(t.status!=='completed')facts.push(t.deadline?'Крайний срок '+date(t.deadline)+' МСК':'Без крайнего срока');
+ facts.push(...taskFacts);
  if(!plan&&d.assignmentReceipt)facts.push(d.assignmentReceipt.state==='accepted'?'Исполнитель принял задачу':'Исполнитель ещё не принял задачу');
  if(plan?.plannedAt)facts.push('Мой план '+date(plan.plannedAt)+' МСК');
  if(t.status==='review'&&!pending&&canComplete(u,t,d.approvalScope))rows.push([form('Завершить задачу','complete')]);

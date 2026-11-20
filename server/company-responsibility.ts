@@ -5,6 +5,7 @@ import {okbPool,okbConfigured,requireOkbAccess,getCompany} from './okb.js';
 import {assert} from './domain.js';
 import {fieldValue} from './bitrix-fields.js';
 import {bitrixId} from './bitrix-sync.js';
+import {bitrixCompanyIds,importedTaskClient} from './task-clients.js';
 import type {BitrixRequest} from './bitrix-rest.js';
 import type {User,Task} from '../shared/types.js';
 import type {ResponsibilityHint} from '../shared/company-responsibility.js';
@@ -15,10 +16,6 @@ type WorkingClient={company_id:string|null;assignee_id:string;client:string|null
 type PeopleEvidence={people:Pick<User,'id'|'name'>[];work:WorkingClient[];bitrix:Map<string,string>};
 const normalize=(name:unknown)=>typeof name==='string'?name.toLocaleLowerCase('ru-RU').replaceAll('ё','е').trim().replace(/\s+/gu,' '):'';
 const normalizePerson=(name:unknown)=>normalize(name).match(/[\p{L}-]+/gu)?.sort().join(' ')||'';
-function clientName(value:unknown){
- const name=normalize(value);
- return typeof value==='string'&&name.length>=2&&!/^(?:[-–—]+|не указана?|без компании|нет)$/u.test(name)?value.trim():'';
-}
 const companyNameSql="regexp_replace(btrim(replace(replace(lower(translate(name,'АБВГДЕЁЖЗИЙКЛМНОПРСТУФХЦЧШЩЪЫЬЭЮЯё','абвгдеежзийклмнопрстуфхцчшщъыьэюяе')),chr(160),' '),chr(8239),' ')), '[[:space:]]+', ' ', 'g')";
 
 async function companyByName(name:string){
@@ -69,7 +66,7 @@ export async function resolveCompanyResponsibility(task:Task,available:User[],db
  assert(!selectedCompanyId||okbConfigured(),503,'ОКБ недоступна. Выберите исполнителя или попробуйте позже.');
  try{
   let company:Company|null=null;
-  const name=clientName(task.source_fields?.['Компания']),explicitId=selectedCompanyId||task.company_id;
+  const name=importedTaskClient(task.source_fields?.['Компания']),explicitId=selectedCompanyId||task.company_id;
   if(explicitId&&okbConfigured()){
    company=(await okbPool().query<Company>('SELECT * FROM companies WHERE id=$1',[explicitId])).rows[0]??null;
    if(selectedCompanyId)assert(company,404,'Компания не найдена в ОКБ.');
@@ -77,8 +74,7 @@ export async function resolveCompanyResponsibility(task:Task,available:User[],db
   if(!explicitId){
    const snapshot=(await db.query('SELECT s.raw,g.portal FROM bitrix_task_links l JOIN bitrix_task_snapshots s ON s.external_id=l.external_id CROSS JOIN bitrix_rest_gate g WHERE l.task_id=$1 AND g.id=1',[task.id])).rows[0];
    const references=snapshot?.raw?fieldValue(snapshot.raw,'UF_CRM_TASK'):null;
-   const values=Array.isArray(references)?references:typeof references==='string'?[references]:[];
-   const companies=[...new Set(values.map(String).filter(v=>/^CO_[1-9]\d*$/.test(v)).map(v=>v.slice(3)))];
+   const companies=bitrixCompanyIds(references);
    if(companies.length>1)return empty('В задаче несколько компаний. Выберите нужного клиента.');
    if(companies.length===1){
     if(okbConfigured())company=(await okbPool().query<Company>('SELECT * FROM companies WHERE bitrix_portal=$1 AND bitrix_id=$2',[snapshot.portal||process.env.BITRIX_PORTAL,companies[0]])).rows[0]??null;

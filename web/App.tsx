@@ -51,6 +51,7 @@ import {canEditTaskPrice} from '../shared/task-edit.js';
 import {approvalChangeLines} from '../shared/approval-changes.js';
 import { CompleteTaskDialog,ReviewActions,TaskEditor,TaskPriceEditor } from './TaskWorkflow.js';
 import {TaskPeople} from './TaskPeople.js';
+import {TaskMeta} from './TaskMeta.js';
 import {activeTaskApproval,approvalTurn,canComplete,canSetApprovedDeadline,taskNextAction} from '../shared/actions.js';
 import { History as TaskHistory } from './History.js';
 import { Operations } from './Operations.js';
@@ -286,7 +287,7 @@ export function App(){
     const approval=data!.approvals.find(a=>activeTaskApproval(t,a));
     const next=taskNextAction(t,approval,data!.approvalScope);
     return <tr key={t.id}>
-    <td><button className="task-link" onClick={()=>void openTask(t.id)}><span className="task-id">#{t.id} <span>{t.code}</span></span><strong>{t.title}</strong></button></td>
+    <td><button className="task-link" onClick={()=>void openTask(t.id)}><span className="task-id">#{t.id} <span>{t.code}</span></span><strong>{t.title}</strong></button><TaskMeta task={t}/></td>
     <td><TaskPeople task={t} users={data!.users}/><small>{t.branch_id}</small></td>
     <td><strong>{formatPrice(t)}</strong><small>{priceLabels[priceBand(t)]}</small></td>
     <td className={overdue(t)?'late-date':''}>{date(t.deadline,true)}
@@ -433,6 +434,7 @@ export function App(){
      <Badge state={taskState(detail.task)}>{taskState(detail.task)==='overdue'?'Просрочена':undefined}</Badge>
      <h2>{detail.task.title}</h2>
      <p>{[detail.task.branch_id,detail.task.code].filter(Boolean).join(' · ')}</p>
+     <TaskMeta task={detail.task}/>
     </div>
     {detail.approvalProgress&&drawerTab!=='approvals'&&<section className="task-approval-progress" aria-label="Текущий этап согласования">
      <GitPullRequest size={18} aria-hidden="true"/>
@@ -592,6 +594,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
    {task&&<TaskPeople task={task} users={data.users}/>}
    <p>Цена задачи <strong>{task?formatPrice(task):'—'}</strong></p>
   </div>
+  {task&&!inDrawer&&<div className="approval-task-facts"><TaskMeta task={task}/></div>}
   <div className="approval-body"><div className="approval-main">
   {isDeadline&&<div className="deadline-change"><div><span>Текущий крайний срок</span><strong>{date(task?.deadline||null,true)}</strong></div><ArrowRight size={20}/><div><span>Предложенный крайний срок</span><strong>{date(a.proposed_deadline,true)}</strong></div><small>МСК</small></div>}
   {editDeadlineInline&&<div className="approval-deadline-editor">

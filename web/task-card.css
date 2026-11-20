@@ -137,6 +137,15 @@
 .approval-task-meta { display:flex; align-items:center; flex-wrap:wrap; gap:6px 18px; margin:8px 0 12px; }
 .approval-task-meta p { margin:0; color:var(--muted); }
 .approval-task-meta strong { margin-inline-start:4px; color:var(--theme-text,#29342f); }
+.task-meta-facts { display:flex; flex-wrap:wrap; gap:5px; margin-top:7px; min-width:0; }
+.task-meta-facts > span {
+ display:inline-block; max-width:100%; padding:2px 7px; border:1px solid var(--line);
+ border-radius:5px; background:var(--theme-surface-soft,#f7f8f7);
+ color:var(--theme-text-secondary,#66726a); font-size:11px; line-height:1.5; overflow-wrap:anywhere;
+}
+.task-meta-facts :is(time,b) { color:var(--theme-text,#29342f); font-weight:600; }
+.task-meta-facts time { white-space:nowrap; }
+.approval-task-facts { margin-bottom:12px; }
 .approval-body { display:grid; grid-template-columns:minmax(0,1fr) minmax(196px,28%); gap:20px; align-items:start; }
 .approval-context.single { grid-template-columns:1fr; }
 .approval-deadline-history { padding:14px; border:1px solid var(--line); border-radius:8px; background:var(--theme-surface-soft,#f7f8f7); }

@@ -26,7 +26,7 @@ const taskResource='task_inbound',newTaskResource='task_inbound_new',commentsRes
 const missingDiscussionLink='Сначала нужно подтвердить связь задачи с Битрикс24.';
 const outsideRoster='Исполнитель вне подтверждённого состава обмена.';
 const readFields=['ID','TITLE','DESCRIPTION','STATUS','RESPONSIBLE_ID','CREATED_BY','DEADLINE','START_DATE_PLAN',
- 'END_DATE_PLAN','CLOSED_DATE','CHAT_ID','CREATED_DATE','CHANGED_DATE'];
+ 'END_DATE_PLAN','CLOSED_DATE','CHAT_ID','CREATED_DATE','CHANGED_DATE','UF_CRM_TASK'];
 const selection=()=>[...readFields,...(process.env.BITRIX_INBOUND_PRICE_FIELD?[process.env.BITRIX_INBOUND_PRICE_FIELD]:[])];
 
 function localValues(task:Task):Values{
