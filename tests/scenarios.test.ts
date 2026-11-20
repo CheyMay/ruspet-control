@@ -466,6 +466,20 @@ test('clarification is a discussion on the same approval stage and requires a fr
  assert.equal(advanced.decisions.length,1);
  assert.equal(advanced.decisions[0].decision,'approve');
  assert.equal(advanced.comments.filter(c=>c.approval_id===a.id).length,2);
+
+ const cleanup=await readFile('server/migrations/050_detach_historical_clarification.sql','utf8');
+ await db.transaction(async tx=>{
+  await tx.query(`UPDATE approvals SET clarification_question=$2,clarification_answer=$3,
+   clarification_requested_at='2026-01-01T12:00:00.123Z',clarification_answered_at='2026-01-01T12:01:00Z' WHERE id=$1`,[a.id,question,answer]);
+  await tx.query(`INSERT INTO decisions(id,approval_id,actor_id,step_index,decision,comment,created_at)
+   VALUES($1,$2,$3,0,'clarify',$4,'2026-01-01T12:00:00.123456Z')`,[randomUUID(),a.id,lead.id,question]);
+  await tx.query(cleanup);
+ });
+ const repaired=await service.detail(anna,id);
+ assert.equal(repaired.approvals[0].current_step,1);
+ assert.equal(repaired.approvals[0].clarification_answered_at,null);
+ assert.equal(repaired.decisions.filter(d=>d.decision==='approve').length,1);
+ assert.equal(repaired.comments.filter(c=>c.approval_id===a.id).length,2);
 });
 test('task review accepts a positive result without comment but requires reason for return',async()=>{
  const id=(await request('admin','/tasks',taskInput)).data.id;
