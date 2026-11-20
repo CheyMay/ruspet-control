@@ -9,6 +9,7 @@ import {assert,canSee,canManageTaskReminders} from './domain.js';
 import {event,visibleTasks} from './service.js';
 import {validPlanAlert} from './personal-calendar.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
+import {hasPendingTaskApproval,pendingTaskWorkIds} from './pending-task-work.js';
 import {businessDay,taskQueue,elapsedToday} from '../shared/queues.js';
 import type {User,Task} from '../shared/types.js';
 
@@ -106,7 +107,9 @@ export async function tickTaskReminders(now=new Date()){
    const scope=await staffWorkIds(db);
    for(const u of people){
     if(scope&&!scope.includes(u.id))continue;
-    const tasks=(await visibleTasks(u,db)).filter(t=>t.assignee_id===u.id&&t.status!=='completed'&&controlsTask(t,scope));
+    const visible=(await visibleTasks(u,db)).filter(t=>t.assignee_id===u.id&&t.status==='active'&&controlsTask(t,scope));
+    const paused=await pendingTaskWorkIds(db,visible.map(t=>t.id));
+    const tasks=visible.filter(t=>!paused.has(t.id));
     const remaining=tasks.filter(t=>taskQueue(t,now)==='overdue'||elapsedToday(t,now));
     const sendReport=async(kind:string,key:string,alertKind:string,due:Date,until:Date)=>{const r=await makeReport(u,kind,key,now,{view:'mine'},true);const content=reportText(r);await add(db,u.id,key,alertKind,content.text,due,until,null,null,r.id,content.links);};
     if(tasks.length&&hhmm>='09:00'&&hhmm<'12:00'&&Date.parse(u.paired_at)<=at(day,'09:00').getTime())await sendReport('snapshot',`morning:${u.id}:${day}`,'morning',at(day,'09:00'),at(day,'12:00'));
@@ -125,6 +128,11 @@ export async function pendingAlerts(u:User,now=new Date(),limit:number|null=5,al
   AND (a.kind NOT IN ('morning','noon') OR scope.ids IS NULL OR a.recipient_id=ANY(scope.ids))
   AND canceled_at IS NULL AND due_at<=$2 AND expires_at>$2 AND (task_id IS NULL OR task_id=ANY($3))
   AND (report_id IS NULL OR EXISTS(SELECT 1 FROM reports r WHERE r.id=a.report_id AND r.scope=ANY($4)))
+  AND (a.kind NOT IN ('morning','noon') OR NOT EXISTS(
+   SELECT 1 FROM reports r CROSS JOIN LATERAL jsonb_array_elements(r.rows) x(task)
+   JOIN tasks t ON t.id=x.task->>'id'
+   WHERE r.id=a.report_id AND t.status<>'completed' AND ${hasPendingTaskApproval}
+  ))
   AND (a.personal_plan_epoch IS NULL OR ${validPlanAlert})
   AND ($6 OR a.personal_plan_epoch IS NOT NULL OR a.dedupe_key LIKE 'task-once:%' OR EXISTS(SELECT 1 FROM task_reminders r WHERE r.id=a.reminder_id AND r.enabled AND r.personal_delivery))
   AND (a.kind='task' OR COALESCE((SELECT p.telegram_digest FROM notification_preferences p WHERE p.user_id=$1),true))

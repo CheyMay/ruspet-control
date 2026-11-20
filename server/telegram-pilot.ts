@@ -8,6 +8,7 @@ import {getReport} from './service.js';
 import {publicOrigin} from './report-content.js';
 import {escapeHtml,workdayReports} from '../shared/report-links.js';
 import {businessDay} from '../shared/queues.js';
+import {visibleControlNotice} from './pending-task-work.js';
 import {groupNotifications} from '../shared/notifications.js';
 import {tickTaskReminders,pendingAlerts} from './reminders.js';
 import {claimTelegramTaskNotice,taskNoticeScreen} from './task-notices.js';
@@ -183,7 +184,7 @@ export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:str
  const included=(await visibleTasks(user)).map(t=>t.id);
  return (await pool.query<{id:string;task_id:string|null;created_at:string;body:string}>(`SELECT o.* FROM outbox o
   WHERE o.withdrawn_at IS NULL AND o.read_at IS NULL AND NOT o.task_assignment AND o.task_notice IS NULL AND o.management_notice IS NULL AND o.dedupe_key NOT LIKE 'staff-review:%' AND o.personal_plan_alert_id IS NULL
-   AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[]))
+   AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[])) AND ${visibleControlNotice}
    AND o.created_at BETWEEN greatest($2::timestamptz,$3::timestamptz,$6::timestamptz-interval '2 days') AND $6
    AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text)
   ORDER BY o.created_at LIMIT $5`,[user.id,enabledAt,pairedAt,included,limit,now.toISOString()])).rows;

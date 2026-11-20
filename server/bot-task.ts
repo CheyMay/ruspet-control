@@ -155,7 +155,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   rows.push([button(plan.needsAcceptance?'Принять задачу':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
    {...extra,kind:plan.needsAcceptance?'accept_assignment':'edit_personal_plan',version:plan.epoch,revision:plan.revision})]);
  }
- const control=d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));
+ const control=!pending&&d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));
  const overdue=taskQueue(t,now)==='overdue'||elapsedToday(t,now);
  const explained=!control?d.controls.find(c=>c.state==='answered'&&c.assignee_id===t.assignee_id):undefined;
  if(pending){

@@ -18,9 +18,11 @@ test('bot leadership brief enforces role and uses only the managers visible task
  const employeeMenu=await botView(employee,'preview');assert(!employeeMenu.buttons.flat().some(b=>b.text.includes('Сводка команды')));
  const visible=await service.bootstrap(lead),brief=await botView(lead,'preview',{op:'brief'});
  const {summarize}=await import('../shared/analytics.js');
- const s=summarize(visible.tasks.filter(task=>visible.teamIds.includes(task.assignee_id)),new Date(visible.serverTime));
+ const {activeTaskApproval}=await import('../shared/actions.js');
+ const pending=new Set(visible.tasks.filter(task=>visible.approvals.some(a=>activeTaskApproval(task,a))).map(task=>task.id));
+ const s=summarize(visible.tasks.filter(task=>visible.teamIds.includes(task.assignee_id)),new Date(visible.serverTime),pending);
  assert(brief.text.includes('Открыто: '+s.unfinished));
- assert(brief.text.includes('Просрочено: '+s.overdue+' ·'));
+ assert(brief.text.includes('Просрочено: '+(s.overdue+s.elapsedToday)+' ·'));
  const foreign=users.find(u=>u.role==='employee'&&u.branch_id!==lead.branch_id)!;
  assert(!brief.text.includes(foreign.name));
  assert(brief.buttons.flat().some(b=>b.text==='Отчёты'));
@@ -952,20 +954,28 @@ test('day reports freeze morning work, track closures by time and manager, filte
  await assert.rejects(()=>service.makeReport(admin,'snapshot','new-workday-am',morningAt,{...p,priceBand:'low'}),/другими параметрами/);
 });
 
-test('19:01 personal summary recommends tomorrow and Telegram sends a real PDF document on request',async()=>{
- const reminders=await import('../server/reminders.js'),pilot=await import('../server/telegram-pilot.js'),bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!;
+test('evening workday digest links the next plan and Telegram sends a PDF on request',async()=>{
+ const {prepareWorkdayDigests}=await import('../server/workday-digests.js');
+ const pilot=await import('../server/telegram-pilot.js'),bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!;
  await db.pool.query('UPDATE telegram_settings SET enabled=true,delivery=true');
+ await db.pool.query("INSERT INTO telegram_binding(chat_id,user_id) VALUES('300','anna') ON CONFLICT(user_id) DO NOTHING");
+ const {rows:[binding]}=await db.pool.query("SELECT chat_id FROM telegram_binding WHERE user_id='anna'");
  const original=globalThis.fetch,previous=process.env.TELEGRAM_BOT_TOKEN,documents:any[]=[];process.env.TELEGRAM_BOT_TOKEN='TEST_TOKEN';
  globalThis.fetch=(async(url:any,options:any)=>{
   if(String(url).includes('sendDocument')){assert(options.body instanceof FormData);const file=options.body.get('document') as Blob;assert(file);const bytes=Buffer.from(await file.arrayBuffer());assert.equal(bytes.subarray(0,5).toString(),'%PDF-');documents.push({chat:options.body.get('chat_id'),type:file.type});}
   return new Response(JSON.stringify({ok:true,result:{message_id:3100}}));
  }) as typeof fetch;
  try{
-  await reminders.tickTaskReminders(new Date('2035-01-08T19:00:00+03:00'));assert.equal((await db.pool.query("SELECT count(*)::int n FROM task_alerts WHERE recipient_id='anna' AND kind='evening' AND dedupe_key LIKE '%2035-01-08'")).rows[0].n,0);
-  await reminders.tickTaskReminders(new Date('2035-01-08T19:01:00+03:00'));await reminders.tickTaskReminders(new Date('2035-01-08T19:02:00+03:00'));
-  const alerts=(await db.pool.query("SELECT * FROM task_alerts WHERE recipient_id='anna' AND kind='evening' AND dedupe_key LIKE '%2035-01-08'")).rows;assert.equal(alerts.length,1);const report=await service.getReport(anna,alerts[0].report_id);assert.equal(report.summary.tomorrow.day,'2035-01-09');assert(report.rows.every((t:any)=>t.assignee_id==='anna'));assert(alerts[0].links.some((l:any)=>new URL(l.url).searchParams.get('subset')==='tomorrow'));
-  const view=await bot.botView(anna,'telegram:300',{op:'reports',id:report.id});assert.equal(view.format,'HTML');assert(view.text.includes('<a href='));assert.equal((view.text.match(/Обработано:/g)||[]).length,1);assert(!view.text.includes('Состав отчёта'));
-  await pilot.handlePilotUpdate({update_id:4000,callback_query:{id:'pdf-callback',data:botButton(view,'PDF отчёта'),message:{message_id:3000,chat:{id:300,type:'private'}}}});assert.deepEqual(documents,[{chat:'300',type:'application/pdf'}]);
+  const now=new Date('2035-01-08T19:01:00+03:00');
+  await prepareWorkdayDigests(now);await prepareWorkdayDigests(now);
+  const {rows:[scheduled]}=await db.pool.query("SELECT management_notice FROM outbox WHERE recipient_id='anna' AND dedupe_key='workday:2035-01-08:anna'");
+  assert(scheduled?.management_notice.planReportId);
+  const report=await service.getReport(anna,scheduled.management_notice.planReportId);
+  assert.equal(report.summary.tomorrow.day,'2035-01-09');
+  assert(report.rows.every((t:any)=>t.assignee_id==='anna'));
+  const view=await bot.botView(anna,'telegram:'+binding.chat_id,{op:'reports',id:report.id});assert.equal(view.format,'HTML');
+  await pilot.handlePilotUpdate({update_id:4000,callback_query:{id:'pdf-callback',data:botButton(view,'PDF отчёта'),message:{message_id:3000,chat:{id:Number(binding.chat_id),type:'private'}}}});
+  assert.deepEqual(documents,[{chat:binding.chat_id,type:'application/pdf'}]);
  }finally{globalThis.fetch=original;if(previous===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=previous;await db.pool.query('UPDATE telegram_settings SET enabled=false,delivery=false');}
 });
 

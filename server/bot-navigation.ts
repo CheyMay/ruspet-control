@@ -5,7 +5,7 @@ import {escapeHtml as h,workdayReports} from '../shared/report-links.js';
 import {activeTaskApproval,canComplete,taskNextAction} from '../shared/actions.js';
 import {workCount,workLabels,workQueue,workQueueTitle,type WorkBucket} from '../shared/work-queue.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
-import {businessDay,taskQueue} from '../shared/queues.js';
+import {businessDay,elapsedToday,taskQueue} from '../shared/queues.js';
 import {moscowClock} from '../shared/personal-calendar.js';
 import {summarize} from '../shared/analytics.js';
 import {bootstrap,getReport,visibleTasks} from './service.js';
@@ -117,6 +117,9 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   return taskList(u,ch,p,list.map(task=>({task,pending:pending.has(task.id)})),`Поиск · ${p.query}`,now,name,db);
  }
  const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(x=>x.id===id)?.name||id;
+ const taskIndex=new Map(data.tasks.map(task=>[task.id,task]));
+ const activeApprovals=new Map(data.approvals.filter(a=>activeTaskApproval(taskIndex.get(a.task_id)!,a)).map(a=>[a.task_id,a]));
+ const pausedTasks=new Set(activeApprovals.keys());
  if(p.op==='director_batch'){
   const batch=await directorBatchTasks(u,p.target!);
   const tasks=new Map(data.tasks.map(task=>[task.id,task]));
@@ -131,7 +134,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    const assigned=owners.get(task.assignee_id)??[];
    assigned.push(task);owners.set(task.assignee_id,assigned);
   }
-  const people=[...owners].map(([id,tasks])=>({id,name:name(id),open:tasks.filter(t=>t.status!=='completed').length,...summarize(tasks,now)}))
+  const people=[...owners].map(([id,tasks])=>({id,name:name(id),open:tasks.filter(t=>t.status!=='completed').length,...summarize(tasks,now,pausedTasks)}))
    .sort((a,b)=>b.overdue-a.overdue||b.today-a.today||b.open-a.open||a.name.localeCompare(b.name,'ru'));
   const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/6)-1));
   const shown=people.slice(page*6,page*6+6);
@@ -146,9 +149,17 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  const scoped=data.tasks.filter(task=>task.assignee_id===owner);
  const placed=data.tasks.filter(task=>task.creator_id===u.id);
  if(p.owner&&owner!==u.id)assert(canManage(u)&&scoped.length&&(teamIds.has(owner)||hasCompanyOverview(u)),404,'Сотрудник вне доступной команды.');
- const activeApprovals=new Map(data.approvals.filter(a=>a.state==='pending'&&!a.canceled_at).map(a=>[a.task_id,a]));
- const matches=(t:Task,filter:string)=>filter==='my_due'?['today','overdue'].includes(taskQueue(t,now))&&taskNextAction(t,activeApprovals.get(t.id),data.approvalScope)?.userId===owner:
-  filter==='open'||filter==='mine'?t.status!=='completed':filter==='active'?t.status==='active':taskQueue(t,now)===filter;
+ const matches=(t:Task,filter:string)=>{
+  if(filter==='open'||filter==='mine')return t.status!=='completed';
+  if(filter==='active')return t.status==='active';
+  if(filter==='review'||filter==='completed')return t.status===filter;
+  if(pausedTasks.has(t.id))return false;
+  const deadline=taskQueue(t,now),expired=elapsedToday(t,now);
+  if(filter==='my_due')return ['today','overdue'].includes(deadline);
+  if(filter==='overdue')return deadline==='overdue'||expired;
+  if(filter==='today')return deadline==='today'&&!expired;
+  return deadline===filter;
+ };
  const queue=workQueue(data);
  if(p.op==='task_filters'){
   const count=(filter:string)=>filter==='created'?placed.length:scoped.filter(t=>matches(t,filter)).length;
@@ -201,7 +212,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   ]);
  }
  if(p.op==='help')return htmlScreen(u,ch,'<b>Как пользоваться ботом</b>\n\n1. «Сроки и действия» — начните с просрочек и сроков на сегодня. Там же новые назначения, ответы и решения.\n2. «Ждут решения» — по этим задачам сейчас ход за другим участником.\n3. В карточке сверху ближайшее действие, ниже описание и обсуждение.\n4. В «Ещё действиях» есть перенос срока, напоминания и история.\n\nДля поиска напишите название, номер или имя исполнителя. Изменения выполняются после подтверждения.',[[button('Найти задачу','search_prompt')],[button('Меню','home')]]);
- const s=summarize(own,now);
+ const s=summarize(own,now,pausedTasks);
  const company=hasCompanyOverview(u);
 
  return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nПросрочено · ${queue.overdue.length} · На сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}`,[

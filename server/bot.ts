@@ -24,7 +24,8 @@ import {assert,AppError,canRequest,canSee} from './domain.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
 import {canEditTaskPrice} from '../shared/task-edit.js';
 import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,editTaskPrice,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
-import {taskQueue} from '../shared/queues.js';
+import {elapsedToday,taskQueue} from '../shared/queues.js';
+import {activeTaskApproval} from '../shared/actions.js';
 import {summarize} from '../shared/analytics.js';
 import {defaultReportView,reportViews,reportViewLabels,type ReportView} from '../shared/report-parameters.js';
 import type {Task,User} from '../shared/types.js';
@@ -114,13 +115,15 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(person=>person.id===id)?.name||id;
   const team=new Set(data.teamIds);
   const tasks=data.tasks.filter(task=>view==='company'||(view==='mine'?task.assignee_id===u.id:team.has(task.assignee_id)));
-  const ids=new Set(tasks.map(task=>task.id)),s=summarize(tasks,now);
-  const pending=data.approvals.filter(a=>a.state==='pending'&&ids.has(a.task_id)).length;
-  const urgent=tasks.filter(t=>taskQueue(t,now)==='overdue').sort((a,b)=>Number(!!b.customer_risk)-Number(!!a.customer_risk)||(a.deadline||'').localeCompare(b.deadline||'')).slice(0,3);
-  const breakdown=data.users.map(person=>({person,...summarize(tasks.filter(task=>task.assignee_id===person.id),now)}))
+  const byId=new Map(tasks.map(task=>[task.id,task]));
+  const paused=new Set(data.approvals.flatMap(a=>{const task=byId.get(a.task_id);return task&&activeTaskApproval(task,a)?[task.id]:[];}));
+  const totals=(subset:Task[])=>{const value=summarize(subset,now,paused);return {...value,overdue:value.overdue+value.elapsedToday,today:value.today-value.elapsedToday};};
+  const s=totals(tasks);
+  const urgent=tasks.filter(t=>!paused.has(t.id)&&(taskQueue(t,now)==='overdue'||elapsedToday(t,now))).sort((a,b)=>Number(!!b.customer_risk)-Number(!!a.customer_risk)||(a.deadline||'').localeCompare(b.deadline||'')).slice(0,3);
+  const breakdown=data.users.map(person=>({person,...totals(tasks.filter(task=>task.assignee_id===person.id))}))
    .filter(row=>row.unfinished).sort((a,b)=>b.overdue-a.overdue||b.today-a.today);
   const lines=breakdown.slice(0,6).map(row=>row.person.name+': '+row.overdue+' просрочено · '+row.today+' сегодня · '+row.unfinished+' открыто');
-  const summary=`Открыто: ${s.unfinished} · Завершено: ${s.completed}\nПросрочено: ${s.overdue} · Срок сегодня: ${s.today}\nНа приёмке: ${s.review} · Без срока: ${s.no_deadline}\nСогласований: ${pending}`;
+  const summary=`Открыто: ${s.unfinished} · Завершено: ${s.completed}\nПросрочено: ${s.overdue} · Срок сегодня: ${s.today}\nНа приёмке: ${s.review} · Без срока: ${s.no_deadline}\nСогласований: ${paused.size}`;
   const priority=urgent.map(t=>`#${t.id} · ${compactTaskTitle(t.title,105)}\n${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n\n');
   const result=await screen(u,ch,[reportViewLabels[view]+' · '+date(data.serverTime)+' МСК',summary,lines.join('\n'),
    breakdown.length>6?'Ещё исполнителей: '+(breakdown.length-6):'',priority].filter(Boolean).join('\n\n'),[

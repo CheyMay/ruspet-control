@@ -62,3 +62,16 @@ test('team work requires explicit scope and respects the manager team and curren
  assert.equal(team.waiting[0].tab,'approvals');
  assert.equal(workCount(workQueue({...fixture,user:user('worker')},'team')),0);
 });
+
+test('clarification shows as a question instead of overdue work or a control request',()=>{
+ const worker=user('worker'),item=task('paused','worker','2026-11-19T16:00:00+03:00');
+ const result=workQueue(data(worker,{
+  tasks:[item],approvals:[approval('request',item.id,'director',{clarification_requested_at:now})],
+  controls:[{id:'old-check',task_id:item.id,assignee_id:worker.id,state:'waiting',due_at:today,
+   created_at:now,reminders:0,reason:null,progress:null,plan:null}]
+ }));
+ assert.equal(result.overdue.length,0);
+ assert.equal(result.next.length,1);
+ assert.equal(result.next[0].action?.kind,'clarification');
+ assert.equal(result.next[0].deadlineState,null);
+});

@@ -169,7 +169,27 @@ test('checkpoints combine deadlines and leave pending transfers with their curre
  await setStatus(due,'completed');
  assert.equal(await tick('15:00'),null);
  await db.pool.query('UPDATE approvals SET clarification_requested_at=$2 WHERE id=$1',[approval,at(day,'15:00').toISOString()]);
- assert.deepEqual((await tick('15:01'))?.overdue.map(t=>t.id),[pending]);
+ assert.equal(await tick('15:01'),null);
+ const control=randomUUID(),pressing=randomUUID(),summary=randomUUID();
+ await db.pool.query("INSERT INTO control_requests(id,task_id,assignee_id,state,due_at) VALUES($1,$2,$3,'waiting',$4)",
+  [control,pending,worker.id,at(day,'14:00').toISOString()]);
+ await db.pool.query("INSERT INTO outbox(id,task_id,recipient_id,body,dedupe_key,created_at) VALUES($1,$2,$3,'Запрос объяснений',$4,$5)",
+  [pressing,pending,worker.id,'control:'+control,at(day,'14:10').toISOString()]);
+ await db.pool.query("INSERT INTO outbox(id,recipient_id,body,dedupe_key,task_notice) VALUES($1::uuid,$2,'Старая сводка',($1::uuid)::text,$3)",
+  [summary,worker.id,JSON.stringify({hasDeadlines:true,deadlineTaskIds:[pending],taskIds:[pending]})]);
+ const {pendingOutbox}=await import('../server/telegram-pilot.js');
+ const eligible=await pendingOutbox(worker,at(day,'09:00').toISOString(),at(day,'09:00').toISOString(),null,at(day,'15:01'));
+ assert(!eligible.some(row=>row.id===pressing));
+ const overview=(await api(worker,'/bootstrap')).body;
+ assert(!overview.controls.some((row:{id:string})=>row.id===control));
+ assert(!overview.notifications.some((row:{id:string})=>row.id===summary));
+ const {remind}=await import('../server/service.js');
+ await remind(director,at(day,'15:01'));
+ assert.equal((await db.pool.query('SELECT reminders FROM control_requests WHERE id=$1',[control])).rows[0].reminders,0);
+ await db.pool.query("UPDATE approvals SET state='rejected' WHERE id=$1",[approval]);
+ assert.deepEqual((await tick('15:02'))?.overdue.map(t=>t.id),[pending]);
+ await db.pool.query("UPDATE control_requests SET state='resolved' WHERE id=$1",[control]);
+ await db.pool.query('UPDATE outbox SET withdrawn_at=now() WHERE id=ANY($1::uuid[])',[[pressing,summary]]);
  await setStatus(pending,'completed');
  await db.pool.query('UPDATE telegram_settings SET task_delivery=true WHERE id=1');
 });

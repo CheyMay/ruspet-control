@@ -1,10 +1,11 @@
 import {businessDay,taskQueue,elapsedToday} from './queues.js';
 import type {Task} from './types.js';
 export const queueLabels={overdue:'Просрочены ранее',today:'Сегодня последний день',upcoming:'Срок впереди',no_deadline:'Без срока',review:'Ожидают приёмки',completed:'Завершены'};
-export function summarize(tasks:Task[],now=new Date()){
+export function summarize(tasks:Task[],now=new Date(),paused?:ReadonlySet<string>){
  const counts={overdue:0,today:0,upcoming:0,no_deadline:0,review:0,completed:0};
- for(const t of tasks)counts[taskQueue(t,now)]++;
- return {...counts,total:tasks.length,unfinished:tasks.length-counts.completed,elapsedToday:tasks.filter(t=>elapsedToday(t,now)).length};
+ const execution=paused?tasks.filter(t=>!paused.has(t.id)):tasks;
+ for(const t of execution)counts[taskQueue(t,now)]++;
+ return {...counts,total:tasks.length,unfinished:tasks.length-counts.completed,elapsedToday:execution.filter(t=>elapsedToday(t,now)).length};
 }
 export function sourceTime(raw:unknown):string|null{
  if(!raw)return null;const value=String(raw).replace(' ','T');const date=new Date(/[zZ]|[+-]\d\d:\d\d$/.test(value)?value:value+'+03:00');return isNaN(date.getTime())?null:date.toISOString();

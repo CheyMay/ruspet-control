@@ -1,5 +1,5 @@
 import {taskPrice} from '../shared/pricing.js';
-import {isSelfTask} from '../shared/actions.js';
+import {activeTaskApproval,isSelfTask} from '../shared/actions.js';
 import {branchCovers} from '../shared/branches.js';
 import type { Task, User, Rules, Metrics, Approval, ControlRequest } from '../shared/types.js';
 import {exclusionReason} from '../shared/task-selection.js';
@@ -43,6 +43,9 @@ export function evaluate(task: Task, rules: Rules, now = new Date(), allTasks:Ta
 }
 export function metrics(tasks:Task[],approvals:Approval[],controls:ControlRequest[],now=new Date()):Metrics {
  const active=tasks.filter(t=>t.status!=='completed');
- return {total:tasks.length,active:active.length,overdue:active.filter(t=>taskQueue(t,now)==='overdue').length,today:active.filter(t=>taskQueue(t,now)==='today').length,review:tasks.filter(t=>t.status==='review').length,completed:tasks.filter(t=>t.status==='completed').length,pending:approvals.filter(a=>a.state==='pending').length,waiting:controls.filter(c=>['waiting','escalated'].includes(c.state)).length,transfers:tasks.reduce((sum,t)=>sum+t.transfer_count,0)};
+ const byId=new Map(active.map(task=>[task.id,task]));
+ const pending=new Set(approvals.flatMap(a=>{const t=byId.get(a.task_id);return t&&activeTaskApproval(t,a)?[t.id]:[];}));
+ const execution=active.filter(t=>!pending.has(t.id));
+ return {total:tasks.length,active:active.length,overdue:execution.filter(t=>taskQueue(t,now)==='overdue').length,today:execution.filter(t=>taskQueue(t,now)==='today').length,review:execution.filter(t=>t.status==='review').length,completed:tasks.filter(t=>t.status==='completed').length,pending:pending.size,waiting:controls.filter(c=>!pending.has(c.task_id)&&['waiting','escalated'].includes(c.state)).length,transfers:tasks.reduce((sum,t)=>sum+t.transfer_count,0)};
 }
 export const defaultRules:Rules={overdue:true,missingDeadline:true,plannedOverdue:true,requiredFields:true,code:false,responseMinLength:12,reminderMinutes:30,maxReminders:2,routes:{deadline:['branchManager','salesHead'],completion:['branchManager','director']}};

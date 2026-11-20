@@ -52,10 +52,10 @@ export function workQueue(data:Bootstrap,scope:WorkScope='mine'):WorkQueue{
   const related=pendingApproval&&candidate?.kind==='rework'||!allowedReview&&candidate?.kind==='review'?null:candidate??null;
   if(scope==='mine'&&!own&&!related)continue;
   const stage=pendingApproval||task.status==='review';
-  const deadline=deadlineState(task,now,today);
+  const deadline=pendingApproval?null:deadlineState(task,now,today);
   const needsAcceptance=own&&task.status==='active'&&awaiting.has(task.id);
   const waiting=stage&&(scope==='team'||turn?.userId!==user.id)&&(!related||scope==='team');
-  const execution=task.status==='active'&&(scope==='team'?!pendingApproval:own&&turn?.userId===user.id);
+  const execution=task.status==='active'&&!pendingApproval&&(scope==='team'||own&&turn?.userId===user.id);
   let bucket:WorkBucket;
   if(waiting)bucket='waiting';
   else if(execution&&deadline)bucket=deadline==='today'?'today':'overdue';

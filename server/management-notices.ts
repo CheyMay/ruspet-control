@@ -5,7 +5,8 @@ import {approvalHierarchy} from './approval-hierarchy.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
 import {teamMemberIds} from './org.js';
 import {event,visibleTasks} from './service.js';
-import {businessDay,taskQueue} from '../shared/queues.js';
+import {businessDay,elapsedToday,taskQueue} from '../shared/queues.js';
+import {pendingTaskWorkIds} from './pending-task-work.js';
 import {branchCovers,canApproveBranch,unassignedBranch} from '../shared/branches.js';
 import {workKinds} from '../shared/report-summary.js';
 import type {ManagementNotice,Task,User} from '../shared/types.js';
@@ -133,6 +134,7 @@ async function inactiveTeam(db:Db,branch:User,day:string,now:Date,scope:string[]
   if(!team.length)return [];
   const teamIds=new Set(team);
   const tasks=(await visibleTasks(branch,db)).filter(task=>teamIds.has(task.assignee_id)&&controlsTask(task,null)&&(central||branch.company_branch_access||branchCovers(branch.branch_id,task.branch_id)));
+  const paused=await pendingTaskWorkIds(db,tasks.map(task=>task.id));
   const people=(await db.query<User>("SELECT * FROM users WHERE id=ANY($1)",[team])).rows;
   const byId=new Map<string,Task>(tasks.map(task=>[task.id,task]));
   const actions=(await db.query<{actor_id:string;task_id:string;assignee:string|null}>(`SELECT e.actor_id,e.task_id,
@@ -142,7 +144,7 @@ async function inactiveTeam(db:Db,branch:User,day:string,now:Date,scope:string[]
   [day+'T00:00:00+03:00',now.toISOString(),[...workKinds,'created','task_delegated'],tasks.map(task=>task.id)])).rows;
   const worked=new Set(actions.filter(e=>(e.assignee??byId.get(e.task_id)?.assignee_id)===e.actor_id).map(e=>e.actor_id));
   return people.filter(person=>!worked.has(person.id)).flatMap(person=>{
-   const ids=tasks.filter(task=>task.assignee_id===person.id&&taskQueue(task,now)==='overdue').map(task=>task.id);
+   const ids=tasks.filter(task=>task.assignee_id===person.id&&!paused.has(task.id)&&(taskQueue(task,now)==='overdue'||elapsedToday(task,now))).map(task=>task.id);
    return ids.length?[{id:person.id,name:person.name,ids}]:[];
   }).sort((a,b)=>b.ids.length-a.ids.length||a.name.localeCompare(b.name,'ru'));
 }

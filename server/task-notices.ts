@@ -10,6 +10,7 @@ import {isSalesManager} from '../shared/personal-calendar.js';
 import {workQueueTitle} from '../shared/work-queue.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import type {Task,User} from '../shared/types.js';
+import {hasPendingTaskApproval} from './pending-task-work.js';
 
 const minute=60_000,repeatEvery=30*minute,assignmentWindow=10*minute;
 type TodaySlot='morning'|'afternoon'|'last_hour'|'prepare'|'last_call';
@@ -55,14 +56,11 @@ function readyAssignments(rows:Assignment[],now:Date){
 }
 
 async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],channel:'web'|'telegram',delivery:Delivery){
-  const tasks=(await db.query<Task&{awaiting_decision:boolean}>(`SELECT t.*,EXISTS(
-   SELECT 1 FROM approvals a WHERE a.task_id=t.id AND a.state='pending' AND a.canceled_at IS NULL AND a.task_version=t.version
-   AND (CASE WHEN a.clarification_requested_at IS NOT NULL AND a.clarification_answered_at IS NULL
-    THEN a.requester_id ELSE a.route->a.current_step->>'userId' END) IS DISTINCT FROM $1) AS awaiting_decision
+  const tasks=(await db.query<Task&{awaiting_decision:boolean}>(`SELECT t.*,${hasPendingTaskApproval} AS awaiting_decision
    FROM tasks t WHERE t.assignee_id=$1 AND t.status IN ('active','review')`,[user.id])).rows.filter(task=>canSee(user,task));
   if(!tasks.length)return null;
 
-  const stamp=now.toISOString(),byId=new Map(tasks.filter(task=>task.status==='active').map(task=>[task.id,task]));
+  const stamp=now.toISOString(),byId=new Map(tasks.filter(task=>task.status==='active'&&!task.awaiting_decision).map(task=>[task.id,task]));
   const scope=await staffWorkIds(db);
   const controlled=delivery.deadlines?tasks.filter(task=>controlsTask(task,scope)):[];
   const actionable=controlled.filter(task=>task.status==='active'&&!task.awaiting_decision);
@@ -132,7 +130,7 @@ function noticeContent(notice:TaskNotice,now:Date){
  add('Новые задачи',onlyNew,notice.assignments.length,notice.assignments.length-onlyNew.length);
 
  const taskIds=[...new Set([...notice.assignments.slice(0,3),...topDeadlines].map(task=>task.id))].slice(0,5);
- return {sections,taskIds,hasDeadlines:!!deadlines.length||!!notice.prepare,hasAssignments:!!assigned.size};
+ return {sections,taskIds,deadlineTaskIds:deadlines.map(t=>t.id),hasDeadlines:!!deadlines.length||!!notice.prepare,hasAssignments:!!assigned.size};
 }
 
 export async function taskNoticeScreen(user:User,ch:string,notice:TaskNotice,now:Date){
@@ -158,9 +156,9 @@ export async function generateWebTaskNotices(now=new Date()){
    WHERE recipient_id=$1 AND task_notice IS NOT NULL AND withdrawn_at IS NULL AND created_at BETWEEN $2 AND $3`,[user.id,dayStart,stamp])).rows;
   const plan=await planNotice(db,user,now,previous,'web',{deadlines:true,assignments:true,since:null});
   if(!plan)return;
-  const id=randomUUID(),{sections,taskIds,hasDeadlines,hasAssignments}=noticeContent(plan.notice,now);
+  const id=randomUUID(),{sections,taskIds,deadlineTaskIds,hasDeadlines,hasAssignments}=noticeContent(plan.notice,now);
   const body=sections.map(section=>[section.heading,...section.lines].join('\n')).join('\n\n');
-  const metadata={overdue:plan.overdue,today:plan.today,assignmentIds:plan.assignmentIds,taskIds,hasDeadlines,hasAssignments};
+  const metadata={overdue:plan.overdue,today:plan.today,assignmentIds:plan.assignmentIds,taskIds,deadlineTaskIds,hasDeadlines,hasAssignments};
   await db.query('INSERT INTO outbox(id,recipient_id,body,dedupe_key,created_at,task_notice) VALUES($1,$2,$3,$4,$5,$6)',
    [id,user.id,body,'web-task-notice:'+id,stamp,JSON.stringify(metadata)]);
  });

@@ -10,6 +10,7 @@ const now=new Date('2026-11-20T12:00:00+03:00');
 const today=(time:string)=>'2026-11-20T'+time+':00+03:00';
 const yesterday=(time:string)=>'2026-11-19T'+time+':00+03:00';
 const tomorrow=(time:string)=>'2026-11-21T'+time+':00+03:00';
+const monday=(time:string)=>'2026-11-23T'+time+':00+03:00';
 let connection:pg.Client,db:typeof import('../server/db.js'),analytics:typeof import('../server/team-analytics.js');
 const people=new Map<string,User>();
 
@@ -59,13 +60,26 @@ before(async()=>{
  await task('due','rep-crimea','Крым',today('15:00'));
  const closed=await task('closed','rep-crimea','Крым',today('11:00'),'completed',today('10:20'));
  await change('bitrix_change',{...closed,status:'active',completed_at:null},closed,today('10:25'));
+ await db.pool.query("UPDATE tasks SET deadline='2026-11-25T09:00:00+03:00' WHERE id='closed'");
+ await task('done-expired','rep-crimea','Крым',today('09:00'),'completed',today('11:00'));
+ await task('done-monday','rep-crimea','Крым',monday('09:00'),'completed',today('11:01'));
+ await task('done-later','rep-crimea','Крым','2026-11-24T09:00:00+03:00','completed',today('11:02'));
+ await task('done-undated','rep-crimea','Крым',null,'completed',today('11:03'));
  const moved=await task('moved','rep-crimea','Крым',tomorrow('12:00'));
  await change('deadline_changed',{...moved,deadline:today('10:00')},moved,today('08:40'));
  await task('await','rep-crimea','Крым',yesterday('11:00'));
+ await task('await-later','rep-crimea','Крым','2026-11-24T18:00:00+03:00');
+ await task('ready-monday','rep-crimea','Крым',monday('16:00'));
+ await task('ready-later','rep-crimea','Крым','2026-11-24T18:00:00+03:00');
+ await task('ready-undated','rep-crimea','Крым',null);
+ await task('await-review','rep-crimea','Крым',yesterday('16:00'),'review');
  const approval=randomUUID();
  await db.pool.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,proposed_deadline,task_version,state,route,route_version,created_at)
   VALUES($1,'await','rep-crimea','deadline','Согласование','Подготовка',$2,1,'pending',$3,$4,$5)`,
  [approval,tomorrow('14:00'),JSON.stringify([{label:'Согласующий',userId:'director'}]),version.version,today('08:00')]);
+ await db.pool.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,proposed_deadline,task_version,state,route,route_version,created_at)
+  VALUES($1,'await-later','rep-crimea','deadline','Согласование','Подготовка',$2,1,'pending',$3,$4,$5)`,
+ [randomUUID(),monday('14:00'),JSON.stringify([{label:'Согласующий',userId:'director'}]),version.version,today('08:00')]);
  const previous=await task('last-day','rep-crimea','Крым',yesterday('09:00'),'completed',yesterday('12:00'));
  await change('task_completed',{...previous,status:'active',completed_at:null},previous,yesterday('12:00'));
  await task('aquas','rep-aquas','AQUAS',today('16:00'));
@@ -82,52 +96,43 @@ after(async()=>{
 });
 
 const person=(id:string)=>people.get(id)!;
-test('live front and week use task history, distinguish elapsed deadlines and retain actionable drilldown',async()=>{
+test('analytics totals reconcile by deadline, show Monday on Friday and count approvals separately',async()=>{
  const group=['branch:Крым','person:rep-crimea'];
  const today=await analytics.analyticsOverview(person('deputy'),group,'day',now);
- assert.equal(today.numbers.front.length,6);
- assert.deepEqual(today.numbers.closed,['closed']);
- assert.deepEqual(today.numbers.moved,['moved']);
- assert.deepEqual(today.numbers.earlier,['old','await']);
- assert.deepEqual(today.numbers.expired,['expired']);
- assert.deepEqual(today.numbers.due,['due']);
- assert.deepEqual(today.numbers.waiting,['await']);
- assert.deepEqual(today.numbers.stuck,['await']);
- assert(!today.numbers.idle.includes('await'));
- assert(today.attention.some(row=>row.id==='await'&&row.person==='Директор'));
- assert.equal(today.numbers.front.length,today.numbers.closed.length+today.numbers.remaining.length+today.numbers.moved.length);
+ assert.equal(today.nextWorkday,'2026-11-23');
+ assert.deepEqual(today.numbers.remaining,{total:5,overdue:2,today:1,nextWorkday:2});
+ assert.deepEqual(today.numbers.completed,{total:5,overdue:1,today:1,nextWorkday:1,later:1,withoutDeadline:1});
+ assert.equal(today.numbers.approvals,2);
+ assert.equal(today.numbers.review,1);
+ assert.equal(today.rows.length,0);
 
  const week=await analytics.analyticsOverview(person('deputy'),group,'week',now);
  const thursday=week.days.find(day=>day.date==='2026-11-19')!;
  const friday=week.days.find(day=>day.date==='2026-11-20')!;
- assert.deepEqual(thursday.numbers.late,['last-day']);
- assert(!thursday.numbers.overdue.includes('last-day'));
- assert.deepEqual(friday.numbers.onTime,['closed']);
- assert(!friday.numbers.overdue.includes('moved'));
- const drill=await analytics.analyticsTasks(person('deputy'),[...today.numbers.waiting,'buyer','excluded']);
- assert.equal(drill.length,1);assert.equal(drill[0].nextPerson,'Директор');assert.equal(drill[0].id,'await');
+ assert.equal(thursday.completed,1);
+ assert.equal(friday.completed,5);
+ assert.equal(week.numbers.completed.total,6);
+ assert.equal(week.days.reduce((sum,day)=>sum+day.completed,0),week.numbers.completed.total);
+ assert.deepEqual(week.numbers.remaining,today.numbers.remaining);
 });
 
 test('director sees company, authorized deputy sees sales, org leader keeps employee role and cross-branch tasks follow task branch',async()=>{
  const company=await analytics.analyticsOverview(person('director'),[],'day',now);
- assert(company.numbers.overdue.includes('buyer'));
+ assert.equal(company.rows.find(row=>row.label==='Закупки')?.numbers.remaining.overdue,1);
  assert(company.rows.some(row=>row.label==='Продажи'));
  const sales=await analytics.analyticsOverview(person('deputy'),[],'day',now);
- assert(!sales.numbers.overdue.includes('buyer'));
- assert(sales.rows.some(row=>row.label==='На сверку'&&row.numbers.front.includes('cross-unassigned')));
+ assert.equal(company.numbers.remaining.overdue,sales.numbers.remaining.overdue+1);
+ assert(sales.rows.some(row=>row.label==='На сверку'&&row.numbers.remaining.today===1));
  const lead=await analytics.analyticsOverview(person('head-crimea'),[],'day',now);
  assert.equal(person('head-crimea').role,'employee');
- assert(lead.numbers.front.includes('aquas'));assert(lead.numbers.front.includes('cross-k'));
- assert(!lead.numbers.front.includes('cross-r'));assert(!lead.numbers.front.includes('cross-unassigned'));
- const byTeam=await analytics.analyticsTasks(person('head-crimea'),['aquas','cross-k','cross-r','buyer']);
- assert.deepEqual(byTeam.map(task=>task.id),['aquas','cross-k']);
- assert(byTeam.every(task=>!task.nativeCard));
- await assert.rejects(()=>analytics.analyticsTasks(person('tech-admin'),['buyer']),{status:403});
+ assert.equal(lead.numbers.remaining.today,3);
+ assert.equal((await analytics.analyticsOverview(person('head-crimea'),['person:multibranch'],'day',now)).numbers.remaining.today,1);
+ await assert.rejects(()=>analytics.analyticsOverview(person('tech-admin'),[],'day',now),{status:403});
  await assert.rejects(()=>analytics.analyticsOverview(person('rep-crimea'),[],'day',now),{status:403});
  await assert.rejects(()=>analytics.analyticsOverview(person('deputy'),['department:Закупки'],'day',now),{status:404});
 });
 
-test('analytics API checks company and team scopes for both dashboard and requested task IDs',async t=>{
+test('analytics API enforces scopes and returns aggregate figures without task details',async t=>{
  process.env.DEMO_AUTH='true';
  const {createApp}=await import('../server/app.js');
  const server=createApp().listen(0,'127.0.0.1');
@@ -143,13 +148,16 @@ test('analytics API checks company and team scopes for both dashboard and reques
  const overview=async(cookie:string,search='')=>fetch(base+'/analytics/overview'+search,{headers:{Cookie:cookie}});
  const drill=async(cookie:string)=>fetch(base+'/analytics/tasks',{method:'POST',headers:{Cookie:cookie,'Content-Type':'application/json'},body:JSON.stringify({ids:['cross-k','buyer']})});
  assert.equal((await overview(employee)).status,403);
- assert.equal((await drill(administrator)).status,403);
+ assert.equal((await overview(administrator)).status,403);
+ assert.equal((await drill(director)).status,404);
  assert.equal((await overview(deputy,'?'+new URLSearchParams({group:'department:Закупки'}))).status,404);
  const query=new URLSearchParams([['period','week'],['group','department:Продажи'],['group','branch:Крым']]);
  const department=await overview(director,'?'+query);
  assert.equal(department.status,200);
  assert.equal((await department.json()).path.at(-1).label,'Крым');
- const sales=await drill(deputy);
- assert.equal(sales.status,200);assert.deepEqual((await sales.json()).map((row:{id:string})=>row.id),['cross-k']);
+ const sales=await (await overview(deputy)).json();
+ assert.equal(typeof sales.numbers.remaining.overdue,'number');
+ assert.equal(sales.attention,undefined);
+ assert(!JSON.stringify(sales).includes('Задача для проверки'));
  assert.equal((await fetch(base+'/analytics/overview',{headers:{Cookie:deputy,'X-Ruspet-View-As':'head-crimea'}})).status,403);
 });

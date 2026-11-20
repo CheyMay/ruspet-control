@@ -6,6 +6,7 @@ import {assert} from './domain.js';
 import {publicOrigin} from './report-content.js';
 import {generateWebTaskNotices} from './task-notices.js';
 import {generateWebPlanNotices,visiblePlanNotice} from './personal-calendar.js';
+import {visibleDeadlineNotice} from './pending-task-work.js';
 import type {ManagementNotice,User} from '../shared/types.js';
 
 function pushHost(value:string){
@@ -85,7 +86,7 @@ export async function deliverWebPush(now=new Date()){
   o.personal_plan_alert_id IS NOT NULL AS personal_plan
   FROM outbox o JOIN web_push_subscriptions s ON s.user_id=o.recipient_id AND o.created_at>=s.created_at
   WHERE (o.task_notice IS NOT NULL OR o.management_notice IS NOT NULL OR o.dedupe_key LIKE 'staff-review:%' OR o.personal_plan_alert_id IS NOT NULL)
-   AND o.withdrawn_at IS NULL AND o.read_at IS NULL AND ${visiblePlanNotice}
+   AND o.withdrawn_at IS NULL AND o.read_at IS NULL AND ${visiblePlanNotice} AND ${visibleDeadlineNotice}
    AND o.created_at BETWEEN $1::timestamptz-interval '10 minutes' AND $1
    AND (o.dedupe_key NOT LIKE 'staff-review:%' OR EXISTS(SELECT 1 FROM telegram_registrations r
     WHERE r.id::text=split_part(o.dedupe_key,':',2) AND r.state='review' AND r.expires_at>$1))
@@ -97,7 +98,7 @@ export async function deliverWebPush(now=new Date()){
   if(!pushHost(row.endpoint))continue;
   const claim=await pool.query(`INSERT INTO web_push_deliveries(notification_id,endpoint,state)
    SELECT $1,endpoint,'sending' FROM web_push_subscriptions WHERE endpoint=$2 AND p256dh=$3 AND auth=$4
-    AND user_id=(SELECT recipient_id FROM outbox WHERE id=$1 AND read_at IS NULL AND withdrawn_at IS NULL)
+    AND user_id=(SELECT o.recipient_id FROM outbox o WHERE o.id=$1 AND o.read_at IS NULL AND o.withdrawn_at IS NULL AND ${visibleDeadlineNotice})
    ON CONFLICT DO NOTHING`,[row.id,row.endpoint,row.p256dh,row.auth]);
   if(!claim.rowCount)continue;
   try{

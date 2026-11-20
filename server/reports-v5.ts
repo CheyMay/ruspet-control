@@ -96,15 +96,15 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   const approvalTasks=kind==='nextday'?candidates:scoped;
   const approvals=live?(await db.query<Approval>("SELECT * FROM approvals WHERE state='pending' AND canceled_at IS NULL AND task_id=ANY($1)",[approvalTasks.map(t=>t.id)])).rows:[];
   const byApprovalTask=new Map(approvalTasks.map(t=>[t.id,t]));
-  const currentApproval=new Map(approvals.filter(a=>activeTaskApproval(byApprovalTask.get(a.task_id)!,a)&&
-   (a.type!=='deadline'||!a.proposed_deadline||Date.parse(a.proposed_deadline)>+to)).map(a=>[a.task_id,a]));
+  const currentApproval=new Map(approvals.filter(a=>activeTaskApproval(byApprovalTask.get(a.task_id)!,a)).map(a=>[a.task_id,a]));
   let tasks:Task[];
-  if(kind==='nextday')tasks=candidates.filter(t=>!currentApproval.has(t.id)||taskNextAction(t,currentApproval.get(t.id))?.userId===t.assignee_id)
+  if(kind==='nextday')tasks=candidates.filter(t=>!currentApproval.has(t.id))
    .sort((a,b)=>compareWorkPlan(a,b,nextDay));
   else if(p.queue)tasks=filtered;
   else if(['today','overdue','review'].includes(kind))tasks=scoped.filter(t=>taskQueue(t,to)===kind||kind==='overdue'&&elapsedToday(t,to));
   else if(view==='created')tasks=scoped.filter(t=>t.status!=='completed'||closedIds.has(t.id));
   else tasks=scoped.filter(t=>frontTasks([t],day).length>0||closedIds.has(t.id)||kind==='period'&&touched.has(t.id));
+  if(controlledOnly&&live&&view==='mine')tasks=tasks.filter(t=>t.status==='completed'||t.status==='active'&&!currentApproval.has(t.id));
   if(p.actorId)tasks=tasks.filter(t=>touched.has(t.id));
   const relevant=new Set(scoped.map(t=>t.id));const summary=summarizeWork(tasks,users,inRange.filter(e=>relevant.has(e.task_id||'')),{...p,queue:selectedQueue as ReportParameters['queue']},from,to,fronts,tracked,stateAvailable,atEnd);
   if(!stateAvailable)summary.notes.push('На конец выбранного периода ещё не было данных в системе. Историческое состояние недоступно.');
@@ -143,7 +143,7 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
    }
    stored.creatorProgress={openIds:open.map(t=>t.id),movedIds:[...moved],closedOnTimeIds:[...closedOnTime],closedLateIds:[...closedLate],
     idleOverdueIds:open.filter(t=>t.status==='active'&&(taskQueue(t,to)==='overdue'||elapsedToday(t,to))&&!moved.has(t.id)&&
-     taskNextAction(t,currentApproval.get(t.id))?.userId===t.assignee_id).map(t=>t.id),
+     !currentApproval.has(t.id)&&taskNextAction(t,undefined)?.userId===t.assignee_id).map(t=>t.id),
     myDecisionIds:live?open.filter(t=>(t.status==='review'||currentApproval.has(t.id))&&taskNextAction(t,currentApproval.get(t.id),reviewScope)?.userId===u.id).map(t=>t.id):[]};
   }
   const analysis=reportAnalysis(tasks,users,to,previous,source);

@@ -1,4 +1,4 @@
-import {canSetApprovedDeadline} from '../shared/actions.js';
+import {activeTaskApproval,canSetApprovedDeadline} from '../shared/actions.js';
 import {loadDeadlineHistories,queueDeadlineHistories} from './deadline-history.js';
 import {taskPrice} from '../shared/pricing.js';
 import {keepTaskApprovals} from './approval-updates.js';
@@ -27,6 +27,7 @@ import { providers } from './providers.js';
 import {pendingAssignmentTasks,registerTaskAcceptance,requireTaskAcceptance,taskAssignmentReceipt,taskPersonalPlan,visiblePlanNotice} from './personal-calendar.js';
 import {analyticsAccess} from './analytics-scope.js';
 import {withTaskClients} from './task-clients.js';
+import {pendingTaskWorkIds,visibleControlNotice,visibleDeadlineNotice} from './pending-task-work.js';
 const adapters=providers();
 const planningFindings=new Set(['planned_overdue','missing_plan_start','missing_plan_end','negative_plan','long_plan','plan_after_deadline','plan_before_creation','child_plan','parent_unavailable','child_deadline','children_unavailable']);
 export async function event(db:Db,taskId:string|null,actor:string|null,kind:string,message:string,data:object={}) {
@@ -71,9 +72,12 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false,inc
  const tasks=await withTaskClients(await visibleTasks(user,db),db), ids=tasks.map(t=>t.id), cfg=await config(db);
  const hierarchy=await approvalHierarchy(db),scope=approvalScope(hierarchy);
  const approvals=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
+ const taskIndex=new Map(tasks.map(task=>[task.id,task]));
+ const paused=new Set(approvals.filter(a=>activeTaskApproval(taskIndex.get(a.task_id)!,a)).map(a=>a.task_id));
  const editRequests=(await db.query(`SELECT p.id,p.task_id,t.creator_id,p.created_at FROM task_edit_permissions p JOIN tasks t ON t.id=p.task_id
   WHERE p.task_id=ANY($1) AND t.status='active' AND p.state='pending' AND p.task_version=t.version AND p.requester_id=t.assignee_id`,[ids])).rows;
- const controls=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
+ const controls=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows
+  .filter(c=>!paused.has(c.task_id)||!['waiting','escalated'].includes(c.state));
  const people=new Set([...tasks.flatMap(t=>[t.assignee_id,t.creator_id]),...approvals.flatMap((a:Approval)=>a.route.map(step=>step.userId))]);
  const users=(await db.query<User>('SELECT * FROM users ORDER BY name')).rows.filter(u=>globalAccess(user)||branchCovers(user.branch_id,u.branch_id)||u.id===user.id||people.has(u.id));
  const teamIds=await teamMemberIds(user,db);
@@ -88,10 +92,10 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false,inc
  deadlineApproverId:hierarchy?.sales_head_id??null,deadlineHistory,approvalScope:scope,lastTaskChange,selection,user,users,
  tasks:compactWorkspace?tasks.map(({source_fields,...task})=>({...task,price:task.price??taskPrice({price:task.price,source_fields})})):tasks,
  teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
- findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>cfg.config.showPlanning||!planningFindings.has(f.rule)),
+ findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>!paused.has(f.task_id)&&(cfg.config.showPlanning||!planningFindings.has(f.rule))),
  events:compactWorkspace?[]:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
  notifications:(await db.query(`SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox o WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2))
- AND ($3 OR o.personal_plan_alert_id IS NULL) AND ${visiblePlanNotice} ORDER BY created_at DESC LIMIT 150`,[user.id,ids,includePrivate])).rows,
+ AND ($3 OR o.personal_plan_alert_id IS NULL) AND ${visiblePlanNotice} AND ${visibleControlNotice} AND ${visibleDeadlineNotice} ORDER BY created_at DESC LIMIT 150`,[user.id,ids,includePrivate])).rows,
  reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=ANY($1) AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[reportScopes(user),!!cfg.config.showPlanning])).rows};
  });
 }
@@ -201,7 +205,7 @@ export async function runChecks(user:User,now=new Date()) {
   const allTasks=await visibleTasks(user,db);
   for(const visible of allTasks.filter(task=>controlsTask(task,scope))) {
    const task=await taskFor(db,visible.id,user,true);
-   if(!controlsTask(task,scope))continue;
+   if(!controlsTask(task,scope)||(await pendingTaskWorkIds(db,[task.id])).has(task.id))continue;
    const findings=evaluate(task,cfg.config,now,allTasks); found+=findings.length;
    await db.query("UPDATE findings SET status='resolved' WHERE task_id=$1 AND NOT(rule=ANY($2))",[task.id,findings.map(f=>f.rule)]);
    for(const f of findings) await db.query("INSERT INTO findings(id,task_id,rule,severity,message,status) VALUES($1,$2,$3,$4,$5,'open') ON CONFLICT(task_id,rule) DO UPDATE SET status='open',last_seen=now(),message=excluded.message,severity=excluded.severity",[randomUUID(),task.id,f.rule,f.severity,f.message]);
@@ -262,6 +266,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   assert(route.length>0,422,'Маршрут не настроен.'); assert(!route.some(s=>s.userId===user.id),422,'Согласовать собственный запрос нельзя.');
   const approvalId=randomUUID();
   await db.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,proposed_deadline,task_version,state,route,route_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10)",[approvalId,id,user.id,input.type,input.reason,plan,input.proposedDeadline||null,task.version,JSON.stringify(route),cfg.version]);
+  await db.query("UPDATE outbox SET withdrawn_at=now() WHERE task_id=$1 AND read_at IS NULL AND withdrawn_at IS NULL AND (dedupe_key LIKE 'control:%' OR dedupe_key LIKE 'remind:%')",[id]);
   await event(db,id,user.id,'approval_requested',input.type==='deadline'?'Запрошен перенос срока':'Запрошено закрытие задачи',{approvalId,oldDeadline:task.deadline,newDeadline:input.proposedDeadline,version:task.version,reason:input.reason,...(plan?{plan}:{}),route});
   await queueDeadlineHistories(db,[id]);
   if(route[0].userId!==hierarchy?.sales_head_id)await notify(db,id,route[0].userId,`Требуется решение по задаче #${id}: ${input.reason}`,`approval:${approvalId}:0`);
@@ -382,7 +387,7 @@ export async function remind(user:User,now=new Date()) {
   const controls=(await db.query("SELECT * FROM control_requests WHERE task_id=ANY($1) AND state='waiting' AND due_at<=$2",[ids,now])).rows as ControlRequest[];
   for(const candidate of controls) {
    const task=await taskFor(db,candidate.task_id,user,true);
-   if(!controlsTask(task,scope))continue;
+   if(!controlsTask(task,scope)||task.status!=='active'||(await pendingTaskWorkIds(db,[task.id])).has(task.id))continue;
    const c=(await db.query("SELECT * FROM control_requests WHERE id=$1 AND state='waiting' AND due_at<=$2 FOR UPDATE",[candidate.id,now])).rows[0] as ControlRequest|undefined;if(!c)continue; const escalated=c.reminders>=cfg.config.maxReminders;
    const recipient=escalated?(hierarchy?.direct_assignee_ids?hierarchy.sales_head_id:(await routeFor(db,task,['branchManager']))[0].userId):c.assignee_id;
    await notify(db,c.task_id,recipient,`${escalated?'Эскалация руководителю':'Напоминание'}: нет объяснения по задаче #${c.task_id}`,`remind:${c.id}:${c.reminders}`);
