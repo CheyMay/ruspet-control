@@ -105,10 +105,11 @@ export function AccessDirectory({roles,actor}:{roles:Record<string,string>;actor
    setMatching(null);focusProfile(user);setNotice('Запись справочника связана с существующим профилем.');
   }catch(e){setControlError((e as Error).message);}finally{setControlBusy(false);}
  }
- async function changeControl(id:string,value:string){
+ async function changeControl(person:AccessPerson,enabled:boolean|null){
   setControlBusy(true);setControlError('');
   try{
-   await api('/system/access/'+encodeURIComponent(id)+'/work-control','PUT',{enabled:value==='auto'?null:value==='on'});
+   await api('/system/access/'+encodeURIComponent(person.id)+'/work-control','PUT',{enabled});
+   setNotice(person.name+' · '+(enabled===null?'по правилам группы':enabled?'контроль включён':'контроль выключен'));
    refresh();
   }catch(e){setControlError((e as Error).message);}finally{setControlBusy(false);}
  }
@@ -153,7 +154,7 @@ export function AccessDirectory({roles,actor}:{roles:Record<string,string>;actor
  }
  const entries=value?.map(person=>({person,login:staffLogin(person)}));
  const working=entries?.filter(({person})=>person.work_controlled)??[];
- const scoped=entries?.filter(({person})=>group==='all'||(group==='work'?person.work_controlled:person.work_groups?.includes(group)));
+ const scoped=entries?.filter(({person})=>group==='all'||(group==='work'?person.work_controlled:group==='off'?!!person.work_groups&&!person.work_controlled:person.work_groups?.includes(group)));
  const counts={all:scoped?.length??0,ready:0,setup:0,disabled:0};
  for(const entry of scoped??[])counts[entry.login.state]++;
  const rank=sort==='ready'?['ready','setup','disabled']:['setup','disabled','ready'];
@@ -168,7 +169,7 @@ export function AccessDirectory({roles,actor}:{roles:Record<string,string>;actor
   {rollout.value&&value&&<div className="source-banner staff-rollout-status">
    <div><strong>{rollout.value.enabled?'Подключение продаж, аналитиков и руководителей':'Действует прежний список контроля'}</strong>
     <p>Под контролем {working.length} · Вход настроен у {working.filter(p=>p.login.state==='ready').length} · Telegram подключён у {working.filter(p=>p.person.paired_at).length}</p>
-    <p>Участие определяет проверки сроков и рабочие сводки. Права, маршруты согласований и обмен с Битрикс24 настраиваются отдельно.</p>
+    <p>Галочка включает автоматические проверки, напоминания о сроках и рабочие сводки по назначенным задачам. Сняв галочку, сотрудника можно найти через «Без контроля».</p>
    </div>
    {actor.root_access&&<button className="button secondary" disabled={controlBusy} onClick={()=>void changeRollout(!rollout.value!.enabled)}>
     {rollout.value.enabled?'Вернуться к прежнему списку':'Включить рабочую группу'}
@@ -210,7 +211,7 @@ export function AccessDirectory({roles,actor}:{roles:Record<string,string>;actor
      className={access===id?'selected':''} onClick={()=>setAccess(id)}>{accessFilters[id]} <small>{counts[id]}</small></button>)}
    </div>
    <div className="filters"><select aria-label="Группа сотрудников" value={group} onChange={e=>setGroup(e.target.value)}>
-     <option value="work">Под контролем</option><option value="all">Вся компания</option>
+     <option value="work">Под контролем</option><option value="off">Без контроля</option><option value="all">Вся компания</option>
      {Object.entries(groupLabels).map(([id,label])=><option key={id} value={id}>{label}</option>)}
     </select><input aria-label="Поиск сотрудника" placeholder="Имя, должность, подразделение или логин" value={query} onChange={e=>setQuery(e.target.value)}/>
     <select aria-label="Сортировка сотрудников" value={sort} onChange={e=>setSort(e.target.value)}>
@@ -222,12 +223,15 @@ export function AccessDirectory({roles,actor}:{roles:Record<string,string>;actor
    return <tr key={p.id}>
     <td><strong>{p.name}</strong><br/><small>{[p.position,p.branch_id].filter(Boolean).join(' · ')}</small></td>
     <td>{p.root_access?'Владелец':roles[p.role]}{editable&&<div><button className="text-button" aria-label={'Изменить доступ для '+p.name} onClick={()=>setProfile(p)}>Изменить</button></div>}</td>
-    <td><strong>{p.work_controlled?'Включён':'—'}</strong><br/><small>{(p.work_groups??[]).map(g=>groupLabels[g]).join(' · ')||' '}</small>
-     {rollout.value?.enabled&&p.work_groups&&<div><select className="staff-control-select" aria-label={'Участие в контроле сроков: '+p.name}
-      value={p.work_control_override===null?'auto':p.work_control_override?'on':'off'} disabled={busy||controlBusy}
-      onChange={e=>void changeControl(p.id,e.target.value)}>
-      <option value="auto">По должности и отделу</option><option value="on">Включить вручную</option><option value="off">Исключить</option>
-     </select></div>}
+    <td>
+     {rollout.value?.enabled&&p.work_groups?<label className="staff-control-toggle">
+      <input type="checkbox" aria-label={'Контроль сроков: '+p.name} checked={p.work_controlled} disabled={busy||controlBusy}
+       onChange={e=>void changeControl(p,e.target.checked)}/>
+      {p.work_controlled?'Включён':'Выключен'}
+     </label>:<strong>{p.work_controlled?'Включён':'—'}</strong>}
+     {!!p.work_groups?.length&&<div><small>{p.work_groups.map(g=>groupLabels[g]).join(' · ')}</small></div>}
+     {rollout.value?.enabled&&p.work_groups&&p.work_control_override!==null&&
+      <button type="button" className="text-button" disabled={busy||controlBusy} onClick={()=>void changeControl(p,null)}>По правилам группы</button>}
     </td>
     <td><small className="access-login-status" data-state={login.state}>{login.label}</small>{p.active_session&&<small className="muted"> · есть активная сессия</small>}{p.accounts.length?p.accounts.map(a=><div key={a.username}>
      {a.password_login===false?'Telegram / QR':a.username}{a.enabled?'':' · отключён'}

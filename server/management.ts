@@ -3,6 +3,7 @@ import {pool,transaction} from './db.js';
 import {visibleTasks,event,notify} from './service.js';
 import {assert,canManage} from './domain.js';
 import {summarize} from '../shared/analytics.js';
+import {controlsTask,staffWorkIds} from './staff-rollout.js';
 import type {User} from '../shared/types.js';
 
 export async function managementProgress(u:User,range:{from?:string;to?:string;owner?:string}={}){
@@ -34,7 +35,8 @@ export async function nudgeTeam(u:User,confirmed:boolean){
   const mark=(await db.query('SELECT * FROM management_observations WHERE user_id=$1 FOR UPDATE',[u.id])).rows[0];assert(mark?.playful_nudge,409,'Шуточная рассылка выключена в настройках.');
   assert(!mark.last_nudge_at||Date.now()-Date.parse(mark.last_nudge_at)>=3600000,429,'Повторная рассылка доступна через час.');
   const cfg=(await db.query('SELECT enabled,delivery FROM telegram_settings WHERE id=1')).rows[0];assert(cfg?.enabled&&cfg?.delivery,409,'Доставка Telegram выключена.');
-  const owners=[...new Set((await visibleTasks(u,db)).filter(t=>t.status!=='completed').map(t=>t.assignee_id))];
+  const scope=await staffWorkIds(db);
+  const owners=[...new Set((await visibleTasks(u,db)).filter(t=>t.status!=='completed'&&controlsTask(t,scope)).map(t=>t.assignee_id))];
   const recipients=(await db.query('SELECT DISTINCT user_id FROM telegram_binding WHERE user_id=ANY($1) AND user_id<>$2',[owners,u.id])).rows;
   assert(recipients.length,409,'В вашей команде нет подключённых получателей с незавершёнными задачами.');
   const key=randomUUID();for(const r of recipients)await notify(db,null,r.user_id,`Быстро работать! 🙂\n${u.name} напоминает о задачах. Откройте «Мои задачи», обновите результаты и ответьте на запросы.`, `management-nudge:${key}:${r.user_id}`);

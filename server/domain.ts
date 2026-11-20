@@ -1,4 +1,5 @@
 import {taskPrice} from '../shared/pricing.js';
+import {isSelfTask} from '../shared/actions.js';
 import {branchCovers} from '../shared/branches.js';
 import type { Task, User, Rules, Metrics, Approval, ControlRequest } from '../shared/types.js';
 import {exclusionReason} from '../shared/task-selection.js';
@@ -15,7 +16,7 @@ export const canManageTaskReminders = (u:User,t:Task) => canSee(u,t)&&(t.creator
 export const canManage = (u:User) => ['admin','director','branch_manager','sales_head'].includes(u.role);
 export function moscowDay(date: Date|string = new Date()): string { return new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(date)); }
 export function evaluate(task: Task, rules: Rules, now = new Date(), allTasks:Task[] = []) {
- if(task.status==='completed'||exclusionReason(task)) return [];
+ if(task.status==='completed'||isSelfTask(task)||exclusionReason(task)) return [];
  const result: {rule:string;severity:string;message:string}[]=[];
  const add=(rule:string,message:string,severity='warning')=>result.push({rule,message,severity});
  if(rules.requiredPrice!==false&&taskPrice(task)===null)add('missing_price','Не заполнена обязательная цена задачи');
@@ -25,7 +26,7 @@ export function evaluate(task: Task, rules: Rules, now = new Date(), allTasks:Ta
  if(rules.showPlanning && rules.plannedOverdue && task.status!=='review' && task.planned_end && businessDay(task.planned_end)<businessDay(now) && (!task.deadline || new Date(task.deadline)>=now)) add('planned_overdue','Плановое окончание просрочено');
  if(rules.requiredFields && (task.important===null || task.customer_risk===null)) add('required_fields','Не заполнены признаки важности или риска потери клиента');
  // Verified from GAS validateTaskCode; self-assigned tasks are exempt there.
- if(rules.code && task.assignee_id!==task.creator_id && !taskCode(task.title).valid) add('code','Некорректный буквенный код: [РЕ][ЗПОВ][БМ]*; старые коды с # допускаются');
+ if(rules.code && !taskCode(task.title).valid) add('code','Некорректный буквенный код: [РЕ][ЗПОВ][БМ]*; старые коды с # допускаются');
  if(rules.showPlanning && rules.planning && task.status==='active'){
   const {start,end}=plannedInterval(task);
   if(!start)add('missing_plan_start','Не указано плановое начало');

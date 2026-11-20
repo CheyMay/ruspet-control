@@ -4,7 +4,7 @@ import {taskPrice} from '../shared/pricing.js';
 import {keepTaskApprovals} from './approval-updates.js';
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
-import {staffWorkIds} from './staff-rollout.js';
+import {controlsTask,staffWorkIds} from './staff-rollout.js';
 import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,hierarchyRoute,requiresTaskApproval} from './approval-hierarchy.js';
 import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
@@ -183,9 +183,12 @@ async function addCommentCore(user:User,id:string,body:string,approvalId?:string
 }
 export async function refreshTaskFindings(db:Db,task:Task,user:User){
  const scope=await staffWorkIds(db);
- const findings=(!scope||scope.includes(task.assignee_id))?evaluate(task,(await config(db)).config,new Date(),await visibleTasks(user,db)):[];
+ const controlled=controlsTask(task,scope);
+ const findings=controlled?evaluate(task,(await config(db)).config,new Date(),await visibleTasks(user,db)):[];
  await db.query("UPDATE findings SET status='resolved' WHERE task_id=$1 AND NOT(rule=ANY($2))",[task.id,findings.map(f=>f.rule)]);
  for(const f of findings)await db.query("INSERT INTO findings(id,task_id,rule,severity,message,status) VALUES($1,$2,$3,$4,$5,'open') ON CONFLICT(task_id,rule) DO UPDATE SET status='open',last_seen=now(),message=excluded.message,severity=excluded.severity",[randomUUID(),task.id,f.rule,f.severity,f.message]);
+ if(!controlled)await db.query(`UPDATE outbox o SET withdrawn_at=now() FROM control_requests c
+  WHERE c.task_id=$1 AND o.withdrawn_at IS NULL AND (o.dedupe_key='control:'||c.id OR o.dedupe_key LIKE 'remind:'||c.id||':%')`,[task.id]);
  if(!findings.some(f=>f.severity!=='info'))await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[task.id]);
  return findings;
 }
@@ -195,9 +198,9 @@ export async function runChecks(user:User,now=new Date()) {
   await db.query('SELECT pg_advisory_xact_lock(431002)');
   const cfg=await config(db),scope=await staffWorkIds(db); let found=0;
   const allTasks=await visibleTasks(user,db);
-  for(const visible of allTasks.filter(task=>!scope||scope.includes(task.assignee_id))) {
+  for(const visible of allTasks.filter(task=>controlsTask(task,scope))) {
    const task=await taskFor(db,visible.id,user,true);
-   if(scope&&!scope.includes(task.assignee_id))continue;
+   if(!controlsTask(task,scope))continue;
    const findings=evaluate(task,cfg.config,now,allTasks); found+=findings.length;
    await db.query("UPDATE findings SET status='resolved' WHERE task_id=$1 AND NOT(rule=ANY($2))",[task.id,findings.map(f=>f.rule)]);
    for(const f of findings) await db.query("INSERT INTO findings(id,task_id,rule,severity,message,status) VALUES($1,$2,$3,$4,$5,'open') ON CONFLICT(task_id,rule) DO UPDATE SET status='open',last_seen=now(),message=excluded.message,severity=excluded.severity",[randomUUID(),task.id,f.rule,f.severity,f.message]);
@@ -372,7 +375,7 @@ export async function remind(user:User,now=new Date()) {
   const controls=(await db.query("SELECT * FROM control_requests WHERE task_id=ANY($1) AND state='waiting' AND due_at<=$2",[ids,now])).rows as ControlRequest[];
   for(const candidate of controls) {
    const task=await taskFor(db,candidate.task_id,user,true);
-   if(scope&&!scope.includes(task.assignee_id))continue;
+   if(!controlsTask(task,scope))continue;
    const c=(await db.query("SELECT * FROM control_requests WHERE id=$1 AND state='waiting' AND due_at<=$2 FOR UPDATE",[candidate.id,now])).rows[0] as ControlRequest|undefined;if(!c)continue; const escalated=c.reminders>=cfg.config.maxReminders;
    const recipient=escalated?(hierarchy?.direct_assignee_ids?hierarchy.sales_head_id:(await routeFor(db,task,['branchManager']))[0].userId):c.assignee_id;
    await notify(db,c.task_id,recipient,`${escalated?'Эскалация руководителю':'Напоминание'}: нет объяснения по задаче #${c.task_id}`,`remind:${c.id}:${c.reminders}`);
@@ -384,7 +387,9 @@ export async function remind(user:User,now=new Date()) {
   await adapters.telegram.dispatch(db);return {count};
  });
 }
-export async function makeReport(user:User,kind='snapshot',slot='manual',capturedAt=new Date(),parameters:ReportParameters={}) {return generateReport(user,kind,slot,capturedAt,parameters);}
+export async function makeReport(user:User,kind='snapshot',slot='manual',capturedAt=new Date(),parameters:ReportParameters={},controlledOnly=false) {
+ return generateReport(user,kind,slot,capturedAt,parameters,controlledOnly);
+}
 export async function listReports(user:User,input:{kind?:string;from?:string;to?:string;view?:ReportView;page:number}){
  return transaction(async db=>{
   await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');

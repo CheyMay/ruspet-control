@@ -258,6 +258,7 @@ async function deliverManagementNotices(user:User,chatId:string,now:Date,managem
   FROM outbox o WHERE o.recipient_id=$1 AND o.management_notice IS NOT NULL AND o.withdrawn_at IS NULL
   AND o.created_at BETWEEN $2::timestamptz-interval '24 hours' AND $2
   AND (($3 AND o.management_notice->>'kind'<>'workday') OR ($4 AND o.management_notice->>'kind'='workday'
+   AND (staff_work_ids() IS NULL OR o.recipient_id=ANY(staff_work_ids()))
    AND o.dedupe_key='workday:'||$5||':'||$1 AND o.created_at>=$6::timestamptz))
   AND (o.management_notice->>'kind'<>'approval-batch-ready' OR
    (o.created_at AT TIME ZONE 'Europe/Moscow')::date=($2::timestamptz AT TIME ZONE 'Europe/Moscow')::date

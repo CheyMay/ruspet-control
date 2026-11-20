@@ -35,12 +35,12 @@ export function ApprovalHierarchySettings({users}:{users:User[]}){
  return <form className="panel automation-settings" onSubmit={event=>{event.preventDefault();void save();}}>
   <h2>Маршрут согласования задач</h2>
   <label className="check"><input type="checkbox" checked={direct} onChange={e=>setDirect(e.target.checked)}/> Один согласующий для выбранных сотрудников</label>
-  <p className="muted">{direct?'Список сотрудников определяет автоматический контроль. Правило ниже задаёт маршрут для остальных задач.':'Первый этап обычного маршрута определяется филиалом задачи.'}</p>
+  <p className="muted">{direct?'Этот список задаёт маршрут согласования. Контроль сроков настраивается в разделе «Сотрудники и права».':'Первый этап обычного маршрута определяется филиалом задачи.'}</p>
   <div className="editor-grid">
    {(!direct||!branch)&&<label>Приоритет в своём подразделении<select required value={branch} onChange={e=>setBranch(e.target.value)}><option value="">Выберите руководителя подразделения</option>{options(canApproveBranch)}</select></label>}
    <label>{direct?'Согласующий':'Второй этап'}<select required value={sales} onChange={e=>setSales(e.target.value)}><option value="">Руководитель продаж или директор</option>{options(person=>person.role==='sales_head'||person.role==='director')}</select></label>
   </div>
-  {direct?<details className="source-banner"><summary>Сотрудники под контролем · {assignees.length}</summary>
+  {direct?<details className="source-banner"><summary>Исполнители в отдельном маршруте · {assignees.length}</summary>
    <label>Поиск сотрудника<input type="search" value={query} onChange={e=>setQuery(e.target.value)} /></label>
    <div style={{maxHeight:240,overflow:'auto'}}>
     {users.filter(person=>person.role==='employee'&&(assignees.includes(person.id)||person.name.toLocaleLowerCase('ru-RU').includes(query.trim().toLocaleLowerCase('ru-RU'))))

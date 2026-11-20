@@ -1,7 +1,7 @@
 import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {canSee} from './domain.js';
-import {staffWorkIds} from './staff-rollout.js';
+import {controlsTask,staffWorkIds} from './staff-rollout.js';
 import {button,htmlScreen} from './bot-ui.js';
 import {botDue} from './bot-presentation.js';
 import {businessDay} from '../shared/queues.js';
@@ -64,9 +64,10 @@ async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],chann
 
   const stamp=now.toISOString(),byId=new Map(tasks.filter(task=>task.status==='active').map(task=>[task.id,task]));
   const scope=await staffWorkIds(db);
-  const actionable=tasks.filter(task=>task.status==='active'&&!task.awaiting_decision);
-  const {overdue,elapsedToday,today,todaySlots,checkpoint}=deadlinePlan(delivery.deadlines&&(!scope||scope.includes(user.id))?actionable:[],now,previous);
-  const waiting=tasks.filter(task=>task.status==='review'||task.awaiting_decision).length;
+  const controlled=delivery.deadlines?tasks.filter(task=>controlsTask(task,scope)):[];
+  const actionable=controlled.filter(task=>task.status==='active'&&!task.awaiting_decision);
+  const {overdue,elapsedToday,today,todaySlots,checkpoint}=deadlinePlan(actionable,now,previous);
+  const waiting=controlled.filter(task=>task.status==='review'||task.awaiting_decision).length;
   const alreadyDelivered=channel==='telegram'?'SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text':
    "SELECT 1 FROM outbox d WHERE d.task_notice IS NOT NULL AND (d.task_notice->'assignmentIds') ? o.id::text";
   const rows=delivery.assignments?(await db.query<Assignment>(`SELECT o.id,o.task_id,o.created_at FROM outbox o
@@ -154,7 +155,7 @@ export async function generateWebTaskNotices(now=new Date()){
   await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['web-task-notice:'+user.id]);
   const stamp=now.toISOString(),dayStart=businessDay(now)+'T00:00:00+03:00';
   const previous=(await db.query<NoticeRecord>(`SELECT created_at,task_notice FROM outbox
-   WHERE recipient_id=$1 AND task_notice IS NOT NULL AND created_at BETWEEN $2 AND $3`,[user.id,dayStart,stamp])).rows;
+   WHERE recipient_id=$1 AND task_notice IS NOT NULL AND withdrawn_at IS NULL AND created_at BETWEEN $2 AND $3`,[user.id,dayStart,stamp])).rows;
   const plan=await planNotice(db,user,now,previous,'web',{deadlines:true,assignments:true,since:null});
   if(!plan)return;
   const id=randomUUID(),{sections,taskIds,hasDeadlines,hasAssignments}=noticeContent(plan.notice,now);

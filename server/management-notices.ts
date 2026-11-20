@@ -2,7 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {assert} from './domain.js';
 import {approvalHierarchy} from './approval-hierarchy.js';
-import {staffWorkIds} from './staff-rollout.js';
+import {controlsTask,staffWorkIds} from './staff-rollout.js';
 import {teamMemberIds} from './org.js';
 import {event,visibleTasks} from './service.js';
 import {businessDay,taskQueue} from '../shared/queues.js';
@@ -132,7 +132,7 @@ async function inactiveTeam(db:Db,branch:User,day:string,now:Date,scope:string[]
   const team=(central&&scope?scope:await teamMemberIds(branch,db)).filter(id=>id!==branch.id&&(!scope||scope.includes(id)));
   if(!team.length)return [];
   const teamIds=new Set(team);
-  const tasks=(await visibleTasks(branch,db)).filter(task=>teamIds.has(task.assignee_id)&&(central||branch.company_branch_access||branchCovers(branch.branch_id,task.branch_id)));
+  const tasks=(await visibleTasks(branch,db)).filter(task=>teamIds.has(task.assignee_id)&&controlsTask(task,null)&&(central||branch.company_branch_access||branchCovers(branch.branch_id,task.branch_id)));
   const people=(await db.query<User>("SELECT * FROM users WHERE id=ANY($1)",[team])).rows;
   const byId=new Map<string,Task>(tasks.map(task=>[task.id,task]));
   const actions=(await db.query<{actor_id:string;task_id:string;assignee:string|null}>(`SELECT e.actor_id,e.task_id,
@@ -164,7 +164,10 @@ export async function morningManagementReport(day:string,reportId:string){
   const previousDay=businessDay(previous);
   const saved=(await db.query<{details:Inactive[]}>('SELECT details FROM inactivity_reviews WHERE day=$1',[previousDay])).rows[0];
   const scope=await staffWorkIds(db);
-  const rows=(saved?.details??[]).filter(person=>!scope||scope.includes(person.id));
+  const previousIds=(saved?.details??[]).flatMap(person=>person.ids);
+  const stillControlled=new Set((await db.query<{id:string}>('SELECT id FROM tasks WHERE id=ANY($1) AND creator_id<>assignee_id',[previousIds])).rows.map(task=>task.id));
+  const rows=(saved?.details??[]).filter(person=>!scope||scope.includes(person.id))
+   .map(person=>({...person,ids:person.ids.filter(id=>stillControlled.has(id))})).filter(person=>person.ids.length);
   const body='Утренний отчёт'+(rows.length?'\n\nБез действий при просрочках за '+previousDay.split('-').reverse().join('.')+':\n'+inactivityLines(rows):
    saved?'\n\nЗа прошлый рабочий день просрочек без действий не зафиксировано.':'\n\nЗа прошлый рабочий день нет снимка активности.');
   await managementNotice(db,actor.id,body,'management-morning:'+day+':'+actor.id,{kind:'morning-report',reportId});

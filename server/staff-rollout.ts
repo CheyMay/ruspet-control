@@ -1,7 +1,10 @@
 import {pool,transaction,type Db} from './db.js';
 import {assert} from './domain.js';
 import {event} from './service.js';
-import type {User} from '../shared/types.js';
+import {isSelfTask} from '../shared/actions.js';
+import type {Task,User} from '../shared/types.js';
+
+export const controlsTask=(task:Task,scope:readonly string[]|null)=>!isSelfTask(task)&&(!scope||scope.includes(task.assignee_id));
 
 export async function staffWorkIds(db:Db){
  return (await db.query<{ids:string[]|null}>('SELECT staff_work_ids() AS ids')).rows[0].ids;
@@ -22,6 +25,11 @@ async function removeOpenChecks(db:Db,ids:string[]){
    AND o.withdrawn_at IS NULL AND (o.dedupe_key='control:'||c.id OR o.dedupe_key LIKE 'remind:'||c.id||':%')`,[ids]);
  await db.query("UPDATE control_requests SET state='resolved' WHERE assignee_id=ANY($1) AND state IN ('waiting','escalated')",[ids]);
  await db.query("UPDATE findings f SET status='resolved' FROM tasks t WHERE t.id=f.task_id AND t.assignee_id=ANY($1) AND f.status='open'",[ids]);
+ await db.query(`UPDATE outbox SET withdrawn_at=now() WHERE recipient_id=ANY($1) AND withdrawn_at IS NULL AND read_at IS NULL
+  AND ((task_notice->>'hasDeadlines'='true' AND task_notice->>'hasAssignments' IS DISTINCT FROM 'true')
+   OR management_notice->>'kind'='workday' OR dedupe_key LIKE 'management-nudge:%')`,[ids]);
+ await db.query(`UPDATE task_alerts SET canceled_at=now() WHERE recipient_id=ANY($1)
+  AND kind IN ('morning','noon') AND acknowledged_at IS NULL AND canceled_at IS NULL AND expires_at>now()`,[ids]);
 }
 
 export async function setStaffRollout(actor:User,enabled:boolean){

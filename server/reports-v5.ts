@@ -13,6 +13,7 @@ import type {ReportSummary} from '../shared/report-summary.js';
 import {activeTaskApproval,approvalTurn,taskNextAction} from '../shared/actions.js';
 import {branchCovers} from '../shared/branches.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
+import {controlsTask,staffWorkIds} from './staff-rollout.js';
 
 const scopeForView=(u:User,view:ReportView)=>view==='mine'?'user:'+u.id:view==='created'?'created:'+u.id:view==='team'?'team:'+u.id:'company';
 export function reportScopes(u:User,view?:ReportView){
@@ -37,7 +38,8 @@ export async function captureFronts(db:Db,ownerIds:string[],now:Date){
   await db.query('INSERT INTO work_fronts(user_id,day,captured_at,rows) VALUES($1,$2,$3,$4) ON CONFLICT DO NOTHING',[id,day,now.toISOString(),JSON.stringify(frontTasks(tasks,day))]);
  }
 }
-export async function generateReport(u:User,kind:string,slot:string,now:Date,raw:ReportParameters={}):Promise<Report>{
+export async function generateReport(u:User,kind:string,slot:string,now:Date,raw:ReportParameters={},controlledOnly=false):Promise<Report>{
+ if(controlledOnly)slot+=':control';
  assert(['snapshot','period','today','overdue','review','daily','nextday'].includes(kind),400,'Неизвестный вид отчёта.');
  return reportTransaction('report:'+u.id+':'+kind+':'+slot,async db=>{
   const view=raw.view??defaultReportView(u);
@@ -56,7 +58,9 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   if(old){assert(old.comparison_key===key,409,'Этот запрос уже использован с другими параметрами. Создайте новый отчёт.');return old;}
   const team=view==='team'?new Set(await teamMemberIds(u,db)):null;
   if(team&&p.assigneeId)assert(team.has(p.assigneeId),403,'Исполнитель вне вашей команды.');
-  const inView=(task:Task)=>view==='mine'?task.assignee_id===u.id:view==='created'?task.creator_id===u.id:team?team.has(task.assignee_id):true;
+  const workScope=controlledOnly?await staffWorkIds(db):null;
+  const inView=(task:Task)=>(!controlledOnly||controlsTask(task,workScope))&&
+   (view==='mine'?task.assignee_id===u.id:view==='created'?task.creator_id===u.id:team?team.has(task.assignee_id):true);
   const current=(await db.query<Task>('SELECT * FROM tasks WHERE ($1::text IS NULL OR creator_id=$1) ORDER BY deadline NULLS LAST,id',[view==='created'?u.id:null])).rows.filter(t=>canSee(u,t));
   const allowedIds=current.map(t=>t.id),allowed=new Set(allowedIds);
   const history=(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) ORDER BY created_at,id',[allowedIds])).rows as Event[];

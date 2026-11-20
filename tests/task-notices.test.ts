@@ -68,13 +68,15 @@ test('deadlines use personal tasks, quiet hours and separate status groups in bo
  const early=await makeTask('Срок наступит утром',at(day,'10:10'));
  const later=await makeTask('Срок наступит вечером',at(day,'18:00'));
  const foreign=await makeTask('Чужая просрочка',at(yesterday,'16:00'),other);
+ const self=await makeTask('Моя задача самому себе',at(yesterday,'15:00'));
+ await db.pool.query('UPDATE tasks SET creator_id=assignee_id WHERE id=$1',[self]);
  const excluded=await makeTask('Дневной чек-лист',at(yesterday,'16:00'));
  const tick=(time:string)=>notices.claimTelegramTaskNotice(worker,chat,at(day,time));
  assert.equal(await tick('08:59'),null);
  const first=await tick('09:00');assert(first);
  assert.deepEqual(first.overdue.map(t=>t.id),[late]);
  assert.deepEqual(first.today.map(t=>t.id),[early,later]);
- assert(!first.overdue.some(t=>t.id===foreign||t.id===excluded));
+ assert(!first.overdue.some(t=>t.id===foreign||t.id===excluded||t.id===self));
  assert.equal(await tick('09:29'),null);
  const combined=await tick('09:30');assert(combined);
  assert.deepEqual(combined.overdue.map(t=>t.id),[late]);
@@ -93,8 +95,40 @@ test('deadlines use personal tasks, quiet hours and separate status groups in bo
  assert.equal(feed.status,200);
  const summary=feed.body.find((notice:any)=>notice.task_notice);
  assert.match(summary.body,/Крайний срок сегодня/);
- assert(!summary.body.includes('Чужая просрочка')&&!summary.body.includes('Дневной чек-лист'));
- await setStatus(later,'completed');await setStatus(foreign,'completed');await setStatus(excluded,'completed');
+ assert(!summary.body.includes('Чужая просрочка')&&!summary.body.includes('Дневной чек-лист')&&!summary.body.includes('Моя задача самому себе'));
+ await setStatus(later,'completed');await setStatus(foreign,'completed');await setStatus(excluded,'completed');await setStatus(self,'completed');
+});
+
+test('turning off work control stops automatic checks while new assignments and personal reminders still arrive',async()=>{
+ const day='2035-01-02',now=at(day,'14:10');
+ const admin=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
+ const {setStaffRollout,setStaffWorkOverride}=await import('../server/staff-rollout.js');
+ const {pendingAlerts,tickTaskReminders}=await import('../server/reminders.js');
+ const {runChecks}=await import('../server/service.js');
+ const id=await makeTask('Назначение сотруднику вне контроля',at(day,'13:00'));
+ await assignmentTime(id,at(day,'13:50'));
+ const personal=randomUUID();
+ const original=(await db.pool.query('SELECT delivery FROM telegram_settings WHERE id=1')).rows[0].delivery;
+ try{
+  await setStaffRollout({...admin,root_access:true},true);
+  await setStaffWorkOverride(admin,worker.id,false);
+  await db.pool.query("UPDATE telegram_settings SET delivery=true WHERE id=1");
+  await db.pool.query(`INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,kind,body,due_at,expires_at)
+   VALUES($1,$2,$3,$4,'task','Личное напоминание',$5,$6)`,[personal,'task-once:'+personal,worker.id,id,now.toISOString(),at(day,'21:00').toISOString()]);
+  await tickTaskReminders(now);
+  assert.deepEqual((await pendingAlerts(worker,now)).map(alert=>alert.id),[personal]);
+  const batch=await notices.claimTelegramTaskNotice(worker,chat,now);
+  assert.deepEqual(batch?.assignments.map(task=>task.id),[id]);
+  assert.equal(batch?.prepare,undefined);
+  assert.deepEqual(batch?.elapsedToday,[]);
+  await runChecks(admin,now);
+  assert.equal((await db.pool.query("SELECT 1 FROM control_requests WHERE task_id=$1 AND state='waiting'",[id])).rowCount,0);
+ }finally{
+  await setStaffWorkOverride(admin,worker.id,null);
+  await setStaffRollout({...admin,root_access:true},false);
+  await db.pool.query('UPDATE telegram_settings SET delivery=$1 WHERE id=1',[original]);
+  await setStatus(id,'completed');
+ }
 });
 
 test('new assignments wait ten minutes and a concurrent tick only claims one personal batch',async()=>{
@@ -245,6 +279,8 @@ test('Friday evening sends one private digest with the Monday plan and creator r
  const day='2035-01-12',now=at(day,'19:02'),monday='2035-01-15';
  const work=await makeTask('Задача к понедельнику',at(monday,'12:00'));
  const tooLate=await makeTask('Задача на вторник',at('2035-01-16','11:00'));
+ const self=await makeTask('Личная задача на понедельник',at(monday,'09:00'));
+ await db.pool.query('UPDATE tasks SET creator_id=assignee_id WHERE id=$1',[self]);
  const withoutDate=await makeTask('Задача без срока в плане',null);
  const placed=await makeTask('Моя поставленная просрочка',at(day,'12:00'),other);
  await db.pool.query('UPDATE tasks SET creator_id=$2 WHERE id=$1',[placed,worker.id]);
@@ -259,7 +295,7 @@ test('Friday evening sends one private digest with the Monday plan and creator r
  const plan:Report=await service.getReport(worker,planReportId),creator:Report=await service.getReport(worker,creatorReportId);
  assert.equal(plan.summary?.tomorrow.day,monday);
  assert(plan.summary?.tomorrow.ids.includes(work));
- assert(!plan.summary?.tomorrow.ids.some(id=>[tooLate,withoutDate,placed].includes(id)));
+ assert(!plan.summary?.tomorrow.ids.some(id=>[tooLate,withoutDate,placed,self].includes(id)));
  assert.deepEqual(creator.summary?.creatorProgress?.idleOverdueIds,[placed]);
  assert.deepEqual(creator.rows.map(t=>t.id),[placed]);
  await login(worker);await login(other);
