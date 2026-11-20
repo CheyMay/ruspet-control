@@ -421,19 +421,51 @@ test('individual accounts require password, support two sessions and hide demo r
   assert.equal((await fetch(base+'/api/auth/me',{headers:{Cookie:b}})).status,200);
  }finally{if(previous===undefined)delete process.env.DEMO_AUTH;else process.env.DEMO_AUTH=previous;}
 });
-test('clarification stays on the same approval stage until requester replies',async()=>{
+test('clarification is a discussion on the same approval stage and requires a fresh explicit decision',async()=>{
+ const {botView,botClick,botText}=await import('../server/bot.js');
+ const anna=users.find(u=>u.id==='anna')!,lead=users.find(u=>u.id==='lead-msk')!,channel='approval-clarification-test';
  const id=(await request('admin','/tasks',taskInput)).data.id;
- const a=await service.requestApproval(users.find(u=>u.id==='anna')!,id,{type:'deadline',reason:'Нужен срок для проверки результата',plan:'Проверить данные и представить итоговый отчёт',proposedDeadline:new Date(Date.now()+86400000*10).toISOString(),expectedVersion:1});
+ const a=await service.requestApproval(anna,id,{type:'deadline',reason:'Нужен срок для проверки результата',proposedDeadline:new Date(Date.now()+86400000*10).toISOString(),expectedVersion:1});
  const path=`/approvals/${a.id}`;
- assert.equal((await request('lead-msk',path+'/decision',{decision:'clarify',comment:'Какие данные уже проверены?',expectedStep:0})).status,200);
- assert.equal((await request('lead-msk',path+'/decision',{decision:'approve',comment:'Согласовано после уточнения',expectedStep:0})).status,409);
+ const original=await service.detail(anna,id);
+ const oldRevision=original.approvals[0].action_revision;
+ const firstView=await botView(lead,channel,{op:'task_approval',id});
+ const confirmation=await botClick(lead,channel,botButton(firstView,'Согласовать'));
+ const oldApprove=botButton(confirmation,'Да, согласовать');
+
+ const question='Какие данные уже проверены?',answer='Проверены строки исходной выгрузки';
+ assert.equal((await request(lead.id,path+'/decision',{decision:'clarify',comment:question,expectedRevision:oldRevision,expectedStep:0})).status,200);
+ const waiting=(await service.detail(anna,id)).approvals[0];
+ assert.equal(waiting.current_step,0);
+ assert.equal(waiting.action_revision,oldRevision+1);
+ assert.equal((await request(lead.id,path+'/decision',{decision:'approve',comment:'Попытка до ответа',expectedRevision:waiting.action_revision,expectedStep:0})).status,409);
  assert.equal((await request('director',path+'/clarification',{answer:'Ответ другого человека'})).status,403);
- assert.equal((await request('anna',path+'/clarification',{answer:'Проверены строки исходной выгрузки'})).status,200);
- assert.equal((await request('anna',path+'/clarification',{answer:'Повторный ответ'})).status,409);
- assert.equal((await request('lead-msk',path+'/decision',{decision:'approve',comment:'Согласовано после уточнения',expectedStep:0})).status,200);
- const detail=(await request('anna',`/tasks/${id}`)).data;
- assert(detail.comments.some((c:any)=>c.kind==='clarification'));
- assert.equal(detail.approvals[0].current_step,1);
+ assert.equal((await request(anna.id,path+'/clarification',{answer,expectedRevision:oldRevision})).status,409);
+ const authorView=await botView(anna,channel,{op:'task_approval',id});
+ await botClick(anna,channel,botButton(authorView,'Ответить на уточнение'));
+ const reply=await botText(anna,channel,answer,randomUUID());
+ assert.match((await botClick(anna,channel,botButton(reply,'Подтвердить и отправить'))).text,/тому же согласующему/);
+ assert.equal((await request(anna.id,path+'/clarification',{answer:'Повторный ответ'})).status,409);
+
+ const afterAnswer=await service.detail(anna,id);
+ assert.equal(afterAnswer.approvals[0].state,'pending');
+ assert.equal(afterAnswer.approvals[0].current_step,0);
+ assert.equal(afterAnswer.approvalProgress?.approver,lead.name);
+ assert.equal(afterAnswer.approvalProgress?.clarificationBy,null);
+ assert.equal(afterAnswer.approvals[0].action_revision,waiting.action_revision+1);
+ assert.equal(afterAnswer.task.deadline,original.task.deadline);
+ assert.equal(afterAnswer.task.version,original.task.version);
+ assert.equal(afterAnswer.decisions.length,0);
+ assert.deepEqual(afterAnswer.comments.filter(c=>c.approval_id===a.id).map(c=>c.kind),['clarification','clarification']);
+ await assert.rejects(()=>botClick(lead,channel,oldApprove),/Версия согласования изменилась/);
+ assert.equal((await request(lead.id,path+'/decision',{decision:'approve',comment:'Согласовано после уточнения',
+  expectedRevision:afterAnswer.approvals[0].action_revision,expectedStep:0})).status,200);
+ const advanced=await service.detail(anna,id);
+ assert.equal(advanced.approvals[0].current_step,1);
+ assert.equal(advanced.approvals[0].clarification_answered_at,null);
+ assert.equal(advanced.decisions.length,1);
+ assert.equal(advanced.decisions[0].decision,'approve');
+ assert.equal(advanced.comments.filter(c=>c.approval_id===a.id).length,2);
 });
 test('task review accepts a positive result without comment but requires reason for return',async()=>{
  const id=(await request('admin','/tasks',taskInput)).data.id;
@@ -595,7 +627,10 @@ test('launch routing uses the task branch and adds the sales head selectively or
  const simple=await make('РЗМ* В названии, но не в коде'),coded=await make('РВМ* Код с В'),marked=await make('РЗМ* Отметка контроля');
  const task=(id:string)=>'/tasks/'+id;
  const propose=(id:string)=>request(assignee,task(id)+'/approvals',{type:'deadline',reason:'Проверяем перенос крайнего срока',plan:'Уточнить данные и закончить работу',proposedDeadline:new Date(Date.now()+9*86400000).toISOString(),expectedVersion:1});
- const decide=(actor:string,id:string,decision:string,comment:string)=>request(actor,'/approvals/'+id+'/decision',{decision,comment});
+ const decide=async(actor:string,id:string,decision:string,comment:string)=>{
+  const {rows:[current]}=await db.pool.query('SELECT action_revision,current_step FROM approvals WHERE id=$1',[id]);
+  return request(actor,'/approvals/'+id+'/decision',{decision,comment,expectedRevision:current.action_revision,expectedStep:current.current_step});
+ };
  try{
   assert.equal((await request(assignee,task(simple))).data.approvalProgress,null);
   assert.equal((await request(branch,task(simple))).status,200);
@@ -658,7 +693,10 @@ test('launch routing uses the task branch and adds the sales head selectively or
   assert.equal((await request(assignee,task(result))).data.task.status,'completed');
   const manager=(await db.pool.query('SELECT * FROM users WHERE id=$1',[branch])).rows[0];
   const profile={name:manager.name,position:manager.position,branchId:manager.branch_id,expectedVersion:manager.version,role:'admin'};
-  assert.equal((await request('admin','/system/access/'+branch,profile,'PATCH')).status,200);
+  const {updateEmployeeProfile}=await import('../server/employee-profiles.js');
+  const owner={...users.find(person=>person.id==='admin')!,root_access:true};
+  assert.equal((await request('admin','/system/access/'+branch,profile,'PATCH')).status,403);
+  await updateEmployeeProfile(owner,branch,profile);
   try{
    const overview=await request(branch,'/bootstrap');
    assert.equal(overview.data.user.role,'admin');
@@ -667,7 +705,7 @@ test('launch routing uses the task branch and adds the sales head selectively or
    assert.equal((await propose(afterPromotion)).status,201);
    assert.equal((await request(assignee,task(afterPromotion))).data.approvals[0].route[0].userId,branch);
   }finally{
-   assert.equal((await request('admin','/system/access/'+branch,{...profile,expectedVersion:manager.version+1,role:'branch_manager'},'PATCH')).status,200);
+   await updateEmployeeProfile(owner,branch,{...profile,expectedVersion:manager.version+1,role:'branch_manager'});
   }
   const enableAll=async(approveAll:boolean)=>request('admin','/approval-hierarchy',{branchId:otherBranch,salesId:sales,approveAll},'PUT');
   const routeUsers=async(id:string)=>(await request(assignee,task(id))).data.approvals[0].route.map((step:{userId:string})=>step.userId);

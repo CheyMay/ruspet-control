@@ -397,11 +397,15 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    }
   }
   else if(p.kind==='deadline'){const outcome=await requestApproval(u,p.id!,{type:'deadline',reason:v.reason,proposedDeadline:v.deadline,expectedVersion:p.version!});result=outcome.applied?'Крайний срок изменён.':'Новый срок предложен. Текущий крайний срок изменится после согласования.'}
-  else if(p.kind==='clarification'){await answerClarification(u,p.target!,v.answer);result='Ответ отправлен согласующему. Этап ожидает его решения.'}
+  else if(p.kind==='clarification'){
+   await answerClarification(u,p.target!,v.answer,p.revision);
+   result='Ответ добавлен в обсуждение. Запрос вернулся на решение тому же согласующему.';
+   nextActions.push([button('Посмотреть согласование','task_approval',{id:p.id,list:p.list})]);
+  }
   else if(['approve','approve_with_deadline','reject','later','clarify'].includes(p.kind!)){
    const adjusted=p.kind==='approve_with_deadline';
    const r=await decide(u,p.target!,{decision:adjusted?'approve':p.kind as 'approve'|'reject'|'later'|'clarify',
-    comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes,approvedDeadline:adjusted?v.deadline:undefined});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос отправлен автору запроса.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':adjusted?'Срок согласован на '+date(v.deadline)+' МСК.':'Согласование завершено.'}
+    comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes,approvedDeadline:adjusted?v.deadline:undefined});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос добавлен в обсуждение. Решение на этом этапе ждёт ответа автора.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':adjusted?'Срок согласован на '+date(v.deadline)+' МСК.':'Согласование завершено.'}
   else{
    const review=await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return'|'complete',v.comment||'',p.version!);
    result=review.state==='review'?(p.kind==='submit'?'Результат передан на приёмку.':'Задача на приёмке.')+' Текущий согласующий указан в карточке.':

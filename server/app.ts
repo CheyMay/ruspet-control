@@ -372,7 +372,10 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/tasks/:id/approvals',async(req,res)=>taskWrite(req,res,201,()=>service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:z.string().trim().max(4000).optional(),proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
  app.post('/api/approvals/history-refresh',async(req,res)=>res.json(await service.queueApprovalHistories(req.actor)));
  app.post('/api/approvals/:id/decision',async(req,res)=>taskWrite(req,res,200,()=>service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),approvedDeadline:date.optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
- app.post('/api/approvals/:id/clarification',async(req,res)=>taskWrite(req,res,200,()=>service.answerClarification(req.actor,z.uuid().parse(req.params.id),z.object({answer:z.string().trim().min(5).max(4000)}).parse(req.body).answer)));
+ app.post('/api/approvals/:id/clarification',async(req,res)=>{
+  const {answer,expectedRevision}=z.object({answer:z.string().trim().min(5).max(4000),expectedRevision:z.number().int().positive().optional()}).parse(req.body);
+  await taskWrite(req,res,200,()=>service.answerClarification(req.actor,z.uuid().parse(req.params.id),answer,expectedRevision));
+ });
  app.post('/api/controls/:id/answer',async(req,res)=>{await service.answerControl(req.actor,z.uuid().parse(req.params.id),z.object({reason:text,progress:text,plan:text}).parse(req.body));res.json({ok:true});});
  app.post('/api/checks/run',async(req,res)=>res.json(await service.runChecks(req.actor)));
  app.post('/api/reminders/run',async(req,res)=>res.json(await service.remind(req.actor)));
