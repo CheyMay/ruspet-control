@@ -45,7 +45,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    if(deadline)approvalRows.push([
     button('Согласовать','approval_deadline_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,
      revision:pending.action_revision,values:pending.proposed_deadline?{deadline:pending.proposed_deadline}:{}}),
-    ...(canSetApprovedDeadline(u.id,d.deadlineApproverId,pending)?[form('Выбрать другой срок','approve_with_deadline',pending.id,pending.current_step)]:[])
+    ...(canSetApprovedDeadline(u.id,pending,t,{deadlineApproverId:d.deadlineApproverId,creatorApproverId:d.approvalScope?.creatorApproverId})?[form('Выбрать другой срок','approve_with_deadline',pending.id,pending.current_step)]:[])
    ]);
    if(deadline)approvalRows.push([form('Согласовать с комментарием','approve',pending.id,pending.current_step)]);
    approvalRows.push([...(deadline?[]:resultReview?[button('Принять без комментария','approval_accept_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision})]:

@@ -366,7 +366,24 @@ test('only self-assigned changes bypass approvals and creator pricing controls b
  assert.equal(history.deadlineHistory[0].from,old);assert.equal(history.deadlineHistory[0].to,earlier);
  const notice=(await db.pool.query('SELECT body FROM outbox WHERE dedupe_key=$1',['approved:'+original.id])).rows[0]?.body;
  assert.match(notice,/22\.01\.2035, 17:00 МСК.*23\.01\.2035, 12:00 МСК/);
- assert.equal((await allow(low,liza)).state,'approved');
+ const bot=await import('../server/bot.js');
+ const lowCard=await bot.botView(liza,'deadline-creator-fixture',{op:'task_approval',id:low});
+ const upperCard=await bot.botView(liza,'deadline-creator-fixture',{op:'task_approval',id:boundary});
+ assert(lowCard.buttons.flat().some(button=>button.text==='Выбрать другой срок'));
+ assert(!upperCard.buttons.flat().some(button=>button.text==='Выбрать другой срок'));
+ const lowRequest=await approval(low),boundaryRequest=await approval(boundary);
+ const lizaDecision=(request:typeof lowRequest)=>api(liza,'/approvals/'+request.id+'/decision','POST',{
+  decision:'approve',expectedStep:0,expectedRevision:request.action_revision,approvedDeadline:earlier
+ });
+ assert.equal((await lizaDecision(boundaryRequest)).status,403);
+ assert.equal((await lizaDecision(lowRequest)).body.state,'approved');
+ assert.equal(await deadline(low),earlier);
+ const lowHistory=(await api(liza,'/tasks/'+low)).body;
+ assert.equal(lowHistory.approvals[0].proposed_deadline,next);
+ assert.equal(lowHistory.approvals[0].approved_deadline,earlier);
+ assert.equal(lowHistory.deadlineHistory[0].to,earlier);
+ const lowNotice=(await db.pool.query('SELECT body FROM outbox WHERE dedupe_key=$1',['approved:'+lowRequest.id])).rows[0]?.body;
+ assert.match(lowNotice,/22\.01\.2035, 17:00 МСК.*23\.01\.2035, 12:00 МСК/);
 
  const work=await create(liza,other,5000);
  await assert.rejects(()=>workflow.reviewTask(liza,work,'complete','',1),/согласующего/);

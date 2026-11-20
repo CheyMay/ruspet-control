@@ -568,7 +568,10 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
  const canDecide=active&&!change?.routeIssue&&actor?.id===data.user.id&&!waiting;
  const canAnswer=active&&waiting&&a.requester_id===data.user.id;
  const isDeadline=a.type==='deadline';
- const editDeadlineInline=!viewingEmployee&&canDecide&&canSetApprovedDeadline(data.user.id,taskDetail?.deadlineApproverId??data.deadlineApproverId,a);
+ const editDeadlineInline=!viewingEmployee&&canDecide&&canSetApprovedDeadline(data.user.id,a,task,{
+  deadlineApproverId:taskDetail?.deadlineApproverId??data.deadlineApproverId,
+  creatorApproverId:(taskDetail?.approvalScope??data.approvalScope)?.creatorApproverId
+ });
  const revision=`${a.id}:${a.action_revision}:${a.current_step}`;
  const proposed=a.proposed_deadline?moscowDateInput(a.proposed_deadline):'';
  const finalDate=deadlineDraft?.revision===revision?deadlineDraft.value:proposed;

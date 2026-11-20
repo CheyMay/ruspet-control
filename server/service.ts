@@ -283,8 +283,9 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
    return {state:'stale'};
   }
   if(input.approvedDeadline!==undefined){
-   assert(input.decision==='approve'&&canSetApprovedDeadline(user.id,hierarchy?.sales_head_id,a),403,
-    'Выбрать другой срок может руководитель продаж на последнем этапе согласования.');
+   assert(input.decision==='approve'&&canSetApprovedDeadline(user.id,a,task,{
+    deadlineApproverId:hierarchy?.sales_head_id,creatorApproverId:hierarchy?.creator_approver_id
+   }),403,'Для этого запроса итоговый крайний срок изменить нельзя.');
    assert(Date.parse(input.approvedDeadline)>Date.now(),400,'Итоговый крайний срок должен быть в будущем.');
   }
   if(input.decision==='reject'||input.decision==='clarify'||input.decision==='approve'&&a.type==='completion'&&task.status!=='review')

@@ -1,5 +1,6 @@
 import type {Approval,ApprovalScope,Bootstrap,Task,User} from './types.js';
 import {branchCovers} from './branches.js';
+import {priceBand} from './pricing.js';
 export type ActionItem={key:string;kind:'answer'|'decision'|'review'|'rework'|'clarification'|'edit_permission';taskId:string;title:string;label:string;ownerId:string;since:string|null;due:string|null;mine:boolean;targetId:string};
 export const isSelfTask=(task:Task)=>task.assignee_id===task.creator_id;
 export const usesCreatorApproval=(task:Task,scope?:ApprovalScope|null)=>
@@ -27,8 +28,12 @@ export function approvalTurn(approval:Approval){
  const clarification=!!approval.clarification_requested_at&&!approval.clarification_answered_at;
  return {clarification,userId:clarification?approval.requester_id:approval.route[approval.current_step]?.userId};
 }
-export function canSetApprovedDeadline(userId:string,headId:string|null|undefined,a:Approval){
- return !!headId&&userId===headId&&a.type==='deadline'&&a.current_step===a.route.length-1&&a.route[a.current_step]?.userId===userId;
+export function canSetApprovedDeadline(userId:string,a:Approval,task:Task|undefined,policy:{
+ deadlineApproverId?:string|null;creatorApproverId?:string|null;
+}){
+ if(a.type!=='deadline'||a.current_step!==a.route.length-1||a.route[a.current_step]?.userId!==userId)return false;
+ if(userId===policy.deadlineApproverId)return true;
+ return !!task&&a.route.length===1&&userId===policy.creatorApproverId&&task.creator_id===userId&&priceBand(task)==='low';
 }
 export function taskNextAction(task:Task,approval?:Approval,scope?:ApprovalScope|null){
  if(approval&&activeTaskApproval(task,approval)){
