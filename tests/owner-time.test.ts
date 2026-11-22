@@ -5,6 +5,7 @@ import {readFile} from 'node:fs/promises';
 import type {Server} from 'node:http';
 import pg from 'pg';
 import type {User} from '../shared/types.js';
+import {trainingMaterials} from '../shared/training-materials.js';
 
 const name='ruspet_time_test_'+randomBytes(5).toString('hex');
 let admin:pg.Client,db:typeof import('../server/db.js'),server:Server,base:string;
@@ -62,9 +63,25 @@ test('planner and owner credentials are private even from a regular admin',async
  assert.equal((await http('/api/telegram/pairing',staffCookie,'POST',{userId:owner.id})).status,403);
  assert.equal((await http('/api/system/access/'+owner.id+'/account',staffCookie,'POST',{username:'someone'})).status,403);
  const login=await import('../server/telegram-login.js');
- await assert.rejects(()=>login.setTelegramBinding(staff,owner.id,null),/владельца/);
+ await assert.rejects(()=>login.setTelegramBinding(staff,owner.id,null),{status:403});
  const directory=await (await import('../server/system-status.js')).accessDirectory(staff);
  assert.ok(!directory.some(row=>row.id===owner.id));
+});
+
+test('training downloads require the owner and send only listed attachments',async()=>{
+ for(const material of trainingMaterials){
+  const path='/api/owner/training/'+material.id;
+  assert.equal((await http(path)).status,401);
+  assert.equal((await http(path,staffCookie)).status,403);
+  const response=await http(path,ownerCookie);
+  assert.equal(response.status,200);
+  assert.equal(response.headers.get('cache-control'),'private, no-store');
+  assert.match(response.headers.get('content-disposition')??'',/attachment/);
+  const bytes=Buffer.from(await response.arrayBuffer());
+  assert.equal(bytes.subarray(0,material.file.endsWith('.pdf')?5:2).toString(),material.file.endsWith('.pdf')?'%PDF-':'PK');
+ }
+ assert.equal((await http('/api/owner/training/unknown',ownerCookie)).status,404);
+ assert.equal((await http('/api/owner/training/all',ownerCookie,'GET',undefined,{'X-Ruspet-View-As':staff.id})).status,403);
 });
 
 test('backfill hours, retain checklist, protect concurrent work and export a whole leap month',async()=>{

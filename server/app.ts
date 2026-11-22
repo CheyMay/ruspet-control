@@ -36,6 +36,7 @@ import {constants as zlib} from 'node:zlib';
 import {verifyPassword} from './passwords.js';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { z, ZodError } from 'zod';
 import { pool } from './db.js';
 import { AppError, assert } from './domain.js';
@@ -50,6 +51,7 @@ import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
 import {directorBatchStatus,directorBatchTasks,sendDirectorBatch} from './management-notices.js';
 import {taskWrite} from './task-write.js';
+import {trainingMaterials} from '../shared/training-materials.js';
 import type { User } from '../shared/types.js';
 declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
@@ -383,6 +385,13 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/reports/:id/print',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));res.type('html').send(printReport(report));});
  app.get('/api/reports/:id/csv',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const data={users:(await pool.query('SELECT id,name FROM users')).rows};const cell=(v:unknown)=>{let s=String(v??'');if(/^[\s]*[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};const rows=[['ID','Задача','Ответственный','Цена','Категория цены','Срок','Статус','Переносов'],...report.rows.map((t:any)=>[t.id,t.title,report.analysis?.team.find((u:{id:string;name:string})=>u.id===t.assignee_id)?.name||data.users.find(u=>u.id===t.assignee_id)?.name||t.assignee_id,formatPrice(t),priceLabels[priceBand(t)],t.deadline?new Date(t.deadline).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}):'Без срока',({active:'В работе',review:'На приёмке',completed:'Завершена'} as Record<string,string>)[t.status],t.transfer_count])];res.setHeader('Content-Disposition',`attachment; filename="ruspet-${report.day}.csv"`);res.type('text/csv').send('\uFEFF'+rows.map(row=>row.map(cell).join(';')).join('\r\n'));});
  app.use('/api/time',ownerTimeRouter());
+ app.get('/api/owner/training/:id',(req,res)=>{
+  res.setHeader('Cache-Control','private, no-store');
+  assert(req.actor.root_access,403,'Материалы доступны владельцу.');
+  const material=trainingMaterials.find(item=>item.id===req.params.id);
+  assert(material,404,'Такого материала нет.');
+  res.download(fileURLToPath(new URL('./training/'+material.file,import.meta.url)),material.download);
+ });
  app.use('/api',(_req,res)=>res.status(404).json({error:'Маршрут API не найден.'}));
  app.get('/time',async(req,res)=>{
   res.setHeader('Cache-Control','private, no-store');

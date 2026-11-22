@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 from pathlib import Path
+from shutil import copyfile
 from xml.sax.saxutils import escape
 from zipfile import ZIP_DEFLATED, ZipFile
 
@@ -92,6 +93,7 @@ def save_handbook(out, guide):
             page.y -= 8
         canvas.showPage()
     canvas.save()
+    return path
 
 
 def save_roles(out, guide):
@@ -112,21 +114,54 @@ def save_roles(out, guide):
                   size=10, color=MUTED)
         canvas.save()
         files.append(path)
-    with ZipFile(out / 'РУСПЭТ — памятки по ролям.zip', 'w', ZIP_DEFLATED) as archive:
+    package = out / 'РУСПЭТ — памятки по ролям.zip'
+    with ZipFile(package, 'w', ZIP_DEFLATED) as archive:
         for path in files:
             archive.write(path, path.name)
+    return package, files
+
+
+def save_briefing(out, briefing):
+    path = out / 'РУСПЭТ — шпаргалка для обучения.pdf'
+    canvas = Canvas(str(path), pagesize=A4)
+    canvas.setAuthor('РУСПЭТ')
+    canvas.setTitle(briefing['title'])
+    sections = briefing['sections']
+    for index, section in enumerate(sections, 1):
+        page = GuidePage(canvas, section['title'], briefing['title'] + ' · ' + briefing['subtitle'].lower(),
+                         index, len(sections))
+        if 'intro' in section:
+            page.text(section['intro'], size=11, color=MUTED, gap=13)
+        page.steps(section['steps'])
+        canvas.showPage()
+    canvas.save()
+    return path
 
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('output', type=Path, help='Directory for the handbook, individual PDFs and ZIP.')
+    parser.add_argument('--release-dir', type=Path, help='Copy the downloads into server/training for a release.')
     args = parser.parse_args()
     args.output.mkdir(parents=True, exist_ok=True)
-    source = Path(__file__).resolve().parents[1] / 'shared' / 'workspace-guide.json'
-    guide = json.loads(source.read_text(encoding='utf-8'))
+    shared = Path(__file__).resolve().parents[1] / 'shared'
+    guide = json.loads((shared / 'workspace-guide.json').read_text(encoding='utf-8'))
+    briefing = json.loads((shared / 'workspace-briefing.json').read_text(encoding='utf-8'))
     register_fonts()
-    save_handbook(args.output, guide)
-    save_roles(args.output, guide)
+    handbook = save_handbook(args.output, guide)
+    roles, role_files = save_roles(args.output, guide)
+    owner = save_briefing(args.output, briefing)
+    complete = args.output / 'РУСПЭТ — комплект для обучения.zip'
+    with ZipFile(complete, 'w', ZIP_DEFLATED) as archive:
+        for path in (owner, handbook):
+            archive.write(path, path.name)
+        for path in role_files:
+            archive.write(path, 'Памятки/' + path.name)
+    if args.release_dir:
+        args.release_dir.mkdir(parents=True, exist_ok=True)
+        for path, file in ((owner, 'briefing.pdf'), (handbook, 'handbook.pdf'), (roles, 'roles.zip'),
+                           (complete, 'complete.zip')):
+            copyfile(path, args.release_dir / file)
 
 
 if __name__ == '__main__':

@@ -24,6 +24,12 @@
 .guide-index > div:last-child { margin-bottom: 0; }
 .guide-index h3 { flex-basis: 100%; }
 .guide-index .text-button { display: inline-flex; align-items: center; gap: 4px; text-align: left; }
+.training-downloads { max-width: 780px; }
+.training-downloads ul { padding: 0; margin: 0; list-style: none; }
+.training-downloads li { display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 12px 0; border-top: 1px solid var(--theme-border); }
+.training-downloads li:last-child { padding-bottom: 0; }
+.training-downloads p { margin-top: 3px; }
+.training-downloads a { flex: none; }
 
 .workspace-tour:modal { position: fixed; inset: 0; margin: 0; border: 0; padding: 0;
  width: 100%; max-width: none; height: 100%; max-height: none; overflow: hidden; background: transparent; color: var(--theme-text); }
