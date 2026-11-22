@@ -5,8 +5,8 @@ export const protectedStaffRole=(role:User['role'])=>role==='admin'||role==='dir
 export const mayManageStaffIdentity=(actor:Pick<User,'id'|'role'|'root_access'>,target:Pick<User,'id'|'role'|'root_access'>)=>
  actor.role==='admin'&&!target.root_access&&(actor.root_access===true||actor.id===target.id||!protectedStaffRole(target.role));
 
-export type WorkspacePage='org'|'delegations'|'processes'|'okb'|'actions'|'bot'|'overview'|'tasks'|'approvals'|'checks'|'reports'|'people'|'journal'|'settings'|'notifications'|'calendar'|'analytics';
-const personal=new Set<WorkspacePage>(['overview','actions','tasks','approvals','reports','notifications','bot','settings','calendar']);
+export type WorkspacePage='org'|'delegations'|'processes'|'okb'|'actions'|'bot'|'overview'|'tasks'|'approvals'|'checks'|'reports'|'people'|'journal'|'settings'|'notifications'|'calendar'|'analytics'|'guide';
+const personal=new Set<WorkspacePage>(['overview','actions','tasks','approvals','reports','notifications','bot','settings','calendar','guide']);
 
 export function canOpenWorkspacePage(user:User,page:WorkspacePage,analytics?:AnalyticsAccess|null){
  if(page==='analytics')return !!analytics;
