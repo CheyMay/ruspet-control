@@ -14,7 +14,7 @@ import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
 import {changeUserAccount,createUserAccount} from './account-access.js';
 import {createEmployeeProfile,linkStaffProfile,updateEmployeeProfile} from './employee-profiles.js';
 import {setStaffRollout,setStaffWorkOverride,staffRolloutStatus} from './staff-rollout.js';
-import {notificationPreference,personalNotifications,readNotifications,saveNotificationPreference} from './notifications.js';
+import {notificationPreference,notificationPreferenceInput,personalNotifications,readNotifications,saveNotificationPreference} from './notifications.js';
 import {setOwnerBitrixExchange} from './owner-operations.js';
 import {taskIntegration} from './bitrix-fields.js';
 import {pilotReadiness,pilotQueue} from './pilot-readiness.js';
@@ -25,6 +25,11 @@ import {reportPdf} from './report-pdf.js';
 import {taskSyncStatus} from './task-sync.js';
 import {reminderInput,listTaskReminders,saveTaskReminder,disableTaskReminder,acknowledgeAlert,userAlerts} from './reminders.js';
 import {botView,botClick,botText,clearBotDraft,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
+import {taskGroups,createTaskGroup,groupTask} from './task-groups.js';
+import {clientNotes,addClientNote} from './client-notes.js';
+import {parseMoscowInput} from './bot.js';
+import {parseVoiceIntent} from './voice-intent.js';
+import {resolveAssignee} from './bot-voice-actions.js';
 import {browserAudioFormat,transcribeAudio,voiceEnabled} from './transcription.js';
 import {voiceMaxBytes} from '../shared/voice.js';
 import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
@@ -49,7 +54,7 @@ import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,editTaskPrice,newTaskAssignees,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
-import {directorBatchStatus,directorBatchTasks,sendDirectorBatch} from './management-notices.js';
+import {directorBatchTasks} from './management-notices.js';
 import {taskWrite} from './task-write.js';
 import {trainingMaterials} from '../shared/training-materials.js';
 import type { User } from '../shared/types.js';
@@ -182,8 +187,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.delete('/api/notifications/push',async(req,res)=>res.json(await removeWebPush(req.actor,webPushEndpoint.parse(req.body).endpoint)));
  app.post('/api/notifications/push/test',async(req,res)=>res.json(await testDevicePush(req.actor,pushSession(req),webPushEndpoint.parse(req.body).endpoint)));
  app.put('/api/notifications/preferences',async(req,res)=>{
-  const {telegramDigest}=z.object({telegramDigest:z.boolean()}).parse(req.body);
-  res.json(await saveNotificationPreference(req.actor,telegramDigest));
+  res.json(await saveNotificationPreference(req.actor,notificationPreferenceInput.parse(req.body)));
  });
  app.post('/api/alerts/:id/ack',async(req,res)=>res.json(await acknowledgeAlert(req.actor,String(req.params.id))));
  app.get('/api/org',async(req,res)=>res.json(await orgDirectory(req.actor)));
@@ -271,6 +275,27 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   }
   res.json(await pending);
  });
+ app.post('/api/voice/transcript',express.raw({type:['audio/*','video/mp4'],limit:voiceMaxBytes,inflate:false}),async(req,res)=>{
+  assert(voiceEnabled('web',req.actor.id),409,'Голосовой ввод недоступен. Можно ввести текст.');
+  assert(Buffer.isBuffer(req.body)&&req.body.length>0,415,'Запишите голосовое или выберите аудиофайл.');
+  const format=browserAudioFormat(req.get('Content-Type')||'',req.body);
+  const transcript=await transcribeAudio(new Blob([new Uint8Array(req.body)]),format,req.actor.id);
+  if(req.query.mode!=='task'){res.json({transcript});return;}
+  const direct=parseVoiceIntent(transcript);
+  const intent=direct?.kind==='create_task'?direct:parseVoiceIntent('Создай задачу. '+transcript);
+  const values=intent?.values??{};
+  const person=values.assignee?await resolveAssignee(req.actor,{op:'form',kind:'create_task'},values.assignee,pool):null;
+  let deadline:string|undefined;
+  if(values.deadline!=='без срока'){
+   try{deadline=parseMoscowInput(values.dueDay&&!/^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/.test(values.deadline??'')?values.dueDay+' 18:00':values.deadline??'');}catch{}
+  }
+  res.json({transcript,values,deadline,assigneeId:person?.id});
+ });
+ app.get('/api/task-groups',async(req,res)=>res.json(await taskGroups(req.actor)));
+ app.post('/api/task-groups',async(req,res)=>res.status(201).json(await createTaskGroup(req.actor,z.object({name:z.string().trim().min(1).max(80)}).parse(req.body).name)));
+ app.put('/api/tasks/:id/group',async(req,res)=>res.json(await groupTask(req.actor,String(req.params.id),z.object({groupId:z.uuid().nullable()}).parse(req.body).groupId)));
+ app.get('/api/okb/companies/:id/notes',async(req,res)=>res.json(await clientNotes(req.actor,{companyId:z.uuid().parse(req.params.id),taskId:z.string().max(100).optional().parse(req.query.task)},z.uuid().optional().parse(req.query.before))));
+ app.post('/api/okb/companies/:id/notes',async(req,res)=>res.status(201).json(await addClientNote(req.actor,{companyId:z.uuid().parse(req.params.id),taskId:z.string().max(100).optional().parse(req.query.task)},z.object({body:z.string().trim().min(1).max(20000)}).parse(req.body).body)));
  app.post('/api/integrations/v1/companies/batch',async(req,res)=>res.json(await syncCompanySnapshots(req.actor,req.body)));
  app.get('/api/okb/companies/:id/responsibility',async(req,res)=>res.json(await companyResponsibility(req.actor,z.uuid().parse(req.params.id))));
  app.get('/api/okb/companies',async(req,res)=>res.json(await listCompanies(req.actor,typeof req.query.q==='string'?req.query.q:'')));
@@ -307,8 +332,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   assert(req.actor.role==='admin',403,'Маршрут настраивает администратор.');
   res.json(await approvalHierarchy(pool));
  });
- app.get('/api/director-approval-batches',async(req,res)=>res.json(await directorBatchStatus(req.actor)));
- app.post('/api/director-approval-batches',async(req,res)=>res.status(201).json(await sendDirectorBatch(req.actor)));
+
  app.get('/api/director-approval-batches/:id',async(req,res)=>res.json(await directorBatchTasks(req.actor,z.uuid().parse(req.params.id))));
  app.put('/api/approval-hierarchy',async(req,res)=>{
   const input=z.object({branchId:z.string().min(1).max(100),salesId:z.string().min(1).max(100),approveAll:z.boolean().optional(),

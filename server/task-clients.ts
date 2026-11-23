@@ -60,15 +60,16 @@ export async function withTaskClients(tasks:Task[],db:Db):Promise<Task[]>{
    // Company data is optional when the separate OKB database is unavailable.
   }
  }
- const byId=new Map(clients.map(client=>[client.id,client.name]));
+ const byId=new Map(clients.map(client=>[client.id,client]));
  const byBitrix=new Map(clients.flatMap(client=>
-  client.bitrix_portal&&client.bitrix_id&&!client.bitrix_deleted_at?[[crmKey(client.bitrix_portal,client.bitrix_id),client.name] as const]:[]));
+  client.bitrix_portal&&client.bitrix_id&&!client.bitrix_deleted_at?[[crmKey(client.bitrix_portal,client.bitrix_id),client] as const]:[]));
  return tasks.map(task=>{
   const selected=task.company_id?byId.get(task.company_id):undefined;
   const binding=bindings.get(task.id);
-  const linked=(binding?binding.ids.map(id=>byBitrix.get(crmKey(binding.portal,id))):[]).filter((name):name is string=>!!name);
+  const linked=(binding?binding.ids.map(id=>byBitrix.get(crmKey(binding.portal,id))):[]).filter((client):client is Client=>!!client);
+  const clientRefs=(selected?[selected]:linked).map(({id,name})=>({id,name}));
   const imported=importedTaskClient(task.source_fields?.['Компания']);
-  const names=selected?[selected]:linked.length?[...new Set(linked)]:imported?[imported]:[];
-  return names.length?{...task,client_names:names}:task;
+  const names=clientRefs.length?[...new Set(clientRefs.map(client=>client.name))]:imported?[imported]:[];
+  return names.length?{...task,client_names:names,client_refs:clientRefs}:task;
  });
 }

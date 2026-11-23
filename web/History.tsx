@@ -2,7 +2,7 @@ import {formatPrice,taskPrice} from '../shared/pricing.js';
 import type {Event,User,Task} from '../shared/types.js';
 const format=(value:unknown)=>value===null||value===undefined?'Не указано':typeof value==='boolean'?value?'Да':'Нет':String(value);
 const date=(value:string)=>new Date(value).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit'});
-const fields:Record<string,string>={price:'Цена задачи',creator_id:'Постановщик',title:'Название',description:'Описание',deadline:'Крайний срок',planned_start:'Плановое начало',planned_end:'Плановое окончание',assignee_id:'Исполнитель',status:'Статус',important:'Важная задача',customer_risk:'Риск клиента',parent_id:'Родитель',company_id:'Связь с ОКБ',custom_fields:'Дополнительные поля',transfer_count:'Переносы'};
+const fields:Record<string,string>={price:'Цена задачи',creator_id:'Постановщик',title:'Название',description:'Описание',deadline:'Крайний срок',planned_start:'Плановое начало',planned_end:'Плановое окончание',assignee_id:'Исполнитель',status:'Статус',important:'Важная задача',customer_risk:'Риск клиента',parent_id:'Родитель',company_id:'Связь с ОКБ',custom_fields:'Дополнительные поля',priority:'Приоритет',critical:'Критичность',result_required:'Обязательность результата',transfer_count:'Переносы'};
 const statuses:Record<string,string>={active:'В работе',review:'На приёмке',completed:'Завершена'};
 export function History({events,users,showPlanning=false}: {events:Event[];users:User[];showPlanning?:boolean}){
  const undone=new Set(events.flatMap(e=>e.kind==='action_undone'&&Array.isArray(e.data.originalEvents)?e.data.originalEvents as string[]:[]));

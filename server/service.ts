@@ -56,7 +56,10 @@ export async function visibleTasksForCompany(user:User,id:string):Promise<Task[]
  return (await pool.query<Task>("SELECT * FROM tasks WHERE company_id=$1 ORDER BY (status='completed'),updated_at DESC,id",[id])).rows.filter(t=>canSee(user,t));
 }
 export async function visibleTasks(user:User,db:Db=pool):Promise<Task[]> {
- return (await db.query<Task>(`SELECT * FROM tasks WHERE $1 OR assignee_id=$2 OR creator_id=$2
+ return (await db.query<Task>(`SELECT t.*, (t.status='active' AND EXISTS(SELECT 1 FROM personal_task_plans p
+  WHERE p.task_id=t.id AND p.assignment_epoch=t.assignment_epoch AND p.user_id=t.assignee_id
+  AND p.requires_acceptance AND p.accepted_at IS NULL)) assignment_pending
+  FROM tasks t WHERE $1 OR assignee_id=$2 OR creator_id=$2
   OR ($3 AND (branch_id=$4 OR starts_with(branch_id,$4 || ' / ')))
   ORDER BY deadline ASC NULLS LAST,id`,[globalAccess(user)||user.role==='branch_manager'&&!!user.company_branch_access,user.id,
    user.role==='branch_manager'&&!!user.branch_id&&user.branch_id!==unassignedBranch,user.branch_id])).rows.filter(t=>canSee(user,t));
@@ -254,7 +257,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   const cfg=await config(db),min=cfg.config.responseMinLength;
   const plan=input.type==='completion'?input.plan?.trim()??'':'';
   assert(input.reason.trim().length>=min,400,`Причина запроса: минимум ${min} символов.`);
-  if(input.type==='completion')assert(plan.length>=min,400,`Результат: минимум ${min} символов.`);
+  if(input.type==='completion'&&task.result_required!==false)assert(plan.length>=min,400,`Результат: минимум ${min} символов.`);
   if(input.type==='deadline') { assert(input.proposedDeadline&&new Date(input.proposedDeadline)>new Date(),400,'Новый срок должен быть в будущем.'); assert(new Date(input.proposedDeadline).getTime()!==new Date(task.deadline||0).getTime(),400,'Новый срок совпадает с текущим.'); }
   const hierarchy=await approvalHierarchy(db,true);
   if(input.type==='deadline'&&!requiresDeadlineApproval(hierarchy,task,user.id)){
@@ -273,7 +276,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   await db.query("UPDATE outbox SET withdrawn_at=now() WHERE task_id=$1 AND read_at IS NULL AND withdrawn_at IS NULL AND (dedupe_key LIKE 'control:%' OR dedupe_key LIKE 'remind:%')",[id]);
   await event(db,id,user.id,'approval_requested',input.type==='deadline'?'Запрошен перенос срока':'Запрошено закрытие задачи',{approvalId,oldDeadline:task.deadline,newDeadline:input.proposedDeadline,version:task.version,reason:input.reason,...(plan?{plan}:{}),route});
   await queueDeadlineHistories(db,[id]);
-  if(route[0].userId!==user.id&&(input.type==='completion'||route[0].userId!==hierarchy?.sales_head_id))
+  if(route[0].userId!==user.id)
    await notify(db,id,route[0].userId,`Требуется решение по задаче #${id}: ${input.reason}`,`approval:${approvalId}:0`);
   await adapters.telegram.dispatch(db);
   return {id:approvalId};
@@ -305,6 +308,9 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
   }
   if(input.decision==='reject'||input.decision==='clarify')
    assert(input.comment.trim().length>=5,400,'Комментарий к решению обязателен, минимум 5 символов.');
+  await db.query(`UPDATE outbox SET read_at=now() WHERE recipient_id=$1 AND task_id=$2 AND read_at IS NULL
+   AND split_part(dedupe_key,':',1) IN ('approval','clarification-answer','defer')
+   AND split_part(dedupe_key,':',2)=$3`,[user.id,task.id,id]);
   if(input.decision==='clarify') {
    await db.query(`UPDATE approvals SET clarification_question=$2,clarification_answer=NULL,clarification_requested_at=now(),
     clarification_answered_at=NULL,deferred_until=NULL,action_revision=action_revision+1 WHERE id=$1`,[id,input.comment]);
@@ -333,13 +339,13 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
    await event(db,task.id,user.id,'approval_rejected','В изменении отказано',{approvalId:id,comment:input.comment});
    await notify(db,task.id,a.requester_id,`По задаче #${task.id} отказано. ${input.comment}`,`rejected:${id}`);
   } else if(a.current_step<a.route.length-1) {
-   await db.query(`UPDATE approvals SET current_step=current_step+1,deferred_until=NULL,
-    clarification_question=NULL,clarification_answer=NULL,clarification_requested_at=NULL,clarification_answered_at=NULL WHERE id=$1`,[id]);
-   await event(db,task.id,user.id,'step_approved',`Этап согласован: ${a.route[a.current_step].label}`,{approvalId:id,comment:input.comment});
+   await db.query(`UPDATE approvals SET current_step=current_step+1,deferred_until=NULL,approved_deadline=COALESCE($2,approved_deadline),
+    clarification_question=NULL,clarification_answer=NULL,clarification_requested_at=NULL,clarification_answered_at=NULL WHERE id=$1`,[id,input.approvedDeadline??null]);
+   await event(db,task.id,user.id,'step_approved',`Этап согласован: ${a.route[a.current_step].label}`,{approvalId:id,comment:input.comment,approvedDeadline:input.approvedDeadline??a.approved_deadline});
    const next=a.route[a.current_step+1];
-   if(next.userId!==hierarchy?.sales_head_id)await notify(db,task.id,next.userId,`Требуется ваше решение по задаче #${task.id}`,`approval:${id}:${a.current_step+1}`);
+   await notify(db,task.id,next.userId,`Требуется ваше решение по задаче #${task.id}`,`approval:${id}:${a.current_step+1}`);
   } else {
-   const approvedDeadline=a.type==='deadline'?(input.approvedDeadline??a.proposed_deadline):null;
+   const approvedDeadline=a.type==='deadline'?(input.approvedDeadline??a.approved_deadline??a.proposed_deadline):null;
    const deadlineAlreadySet=!!approvedDeadline&&Date.parse(approvedDeadline)===Date.parse(task.deadline??'');
    if(a.type==='deadline'&&!deadlineAlreadySet)assert(approvedDeadline&&Date.parse(approvedDeadline)>Date.now(),409,'Предложенный срок уже прошёл. Выберите актуальный срок или отклоните запрос.');
    const deadlineChangedByApprover=!!approvedDeadline&&Date.parse(approvedDeadline)!==Date.parse(a.proposed_deadline??'');

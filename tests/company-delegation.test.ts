@@ -246,3 +246,36 @@ test('Telegram finds the company and voice delegation suggests its manager befor
  await bot.botClick(lead,channel,confirm.token);
  assert.equal((await db.pool.query('SELECT assignee_id FROM tasks WHERE delegated_from_id=$1',[linked])).rows[0].assignee_id,anna.id);
 });
+
+test('client notes use the same history in OKB and in authorized task cards',async()=>{
+ const client=await company(),related=await source(client.id),unrelated=await source();
+ const path='/okb/companies/'+client.id+'/notes',body='Важные условия поставки. '.repeat(200);
+ const saved=await request(lead,path+'?task='+related,{body});
+ assert.equal(saved.status,201);
+ assert.equal(saved.data.author,lead.name);
+ assert.equal((await request(director,path)).data.notes[0].body,body.trim());
+ assert.equal((await request(lead,path+'?task='+related)).data.notes[0].id,saved.data.id);
+ assert.equal((await request(lead,path+'?task='+unrelated)).status,404);
+ assert.equal((await request(anna,path+'?task='+related)).status,404);
+});
+
+test('a personal group, subtasks and task options are saved atomically',async()=>{
+ const group=await request(director,'/task-groups',{name:'Запуск клиентов'});
+ assert.equal(group.status,201);
+ const duplicate=await request(director,'/task-groups',{name:'запуск клиентов'});
+ assert.equal(duplicate.data.id,group.data.id);
+ const parent=await source();
+ const options={...input(anna.id),parentId:parent,groupId:group.data.id,priority:'high',critical:true,resultRequired:false};
+ const child=await request(director,'/tasks',options);
+ assert.equal(child.status,201);
+ const task=await row(child.data.id);
+ assert.equal(task.parent_id,parent);
+ assert.equal(task.result_required,false);
+ assert.equal(task.critical,true);
+ assert.equal(task.priority,'high');
+ assert.equal((await row(parent)).result_required,true);
+ assert.equal((await request(director,'/task-groups')).data.items[task.id],group.data.id);
+ assert.equal((await request(anna,'/task-groups')).data.items[task.id],undefined);
+ assert.equal((await request(anna,'/tasks/'+task.id+'/group',{groupId:group.data.id},'PUT')).status,404);
+ assert.equal((await workflow.reviewTask(anna,task.id,'submit','',task.version)).state,'review');
+});

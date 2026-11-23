@@ -1,3 +1,6 @@
+import {TaskGroupPicker} from './TaskGroups.js';
+import {VoiceRecorder} from './VoiceRecorder.js';
+import {transcribeVoice} from './ClientNotes.js';
 import {CompanyPicker,TaskHints,TaskTemplates,deadlineShortcut,type TemplateContent} from './TaskComposeTools.js';
 import {taskPrice} from '../shared/pricing.js';
 import {api} from './api.js';
@@ -29,7 +32,7 @@ export function ReviewActions({task,user,busy,act,scope}: {task:Task;user:User;b
  const submit=user.id===task.assignee_id||user.id===task.creator_id||['admin','director','sales_head','branch_manager'].includes(user.role);
  const reviewer=canReview(user,task,scope);
  if(canComplete(user,task,scope)||task.status==='completed'||task.status==='active'&&!submit||task.status==='review'&&!reviewer)return null;
- return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.'}</p><label>{task.status==='review'?'Комментарий (при возврате обязателен)':'Результат работы'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||(action!=='accept'&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div></section>;
+ return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':task.result_required===false?'Передайте выполненную задачу постановщику. При необходимости добавьте комментарий.':'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.'}</p><label>{task.status==='review'?'Комментарий (при возврате обязателен)':task.result_required===false?'Результат или комментарий · необязательно':'Результат работы'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||((action==='return'||action==='submit'&&task.result_required!==false)&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div></section>;
 }
 export function CompleteTaskDialog({task,users,busy,error,save,close}:{
  task:Task;users:User[];busy:boolean;error:string;save:(comment:string)=>Promise<boolean>;close:()=>void;
@@ -41,7 +44,7 @@ export function CompleteTaskDialog({task,users,busy,error,save,close}:{
    <button className="icon-button" type="button" disabled={busy} onClick={close} aria-label="Закрыть">✕</button></div>
   <p className="eyebrow">#{task.id}</p><h3>{task.title}</h3>
   <TaskPeople task={task} users={users}/>
-  <label>Результат или комментарий · необязательно<textarea maxLength={4000} value={comment} onChange={event=>setComment(event.target.value)}/></label>
+  <label>{task.result_required===false?'Результат или комментарий · необязательно':'Результат работы · обязательно'}<textarea required={task.result_required!==false} minLength={task.result_required===false?undefined:5} maxLength={4000} value={comment} onChange={event=>setComment(event.target.value)}/></label>
   {error&&<p className="alert error" role="alert">{error}</p>}
   <div className="drawer-actions"><button type="button" className="button secondary" disabled={busy} onClick={close}>Отмена</button>
    <button type="submit" className="button primary" disabled={busy||task.status==='completed'}>{task.status==='completed'?'Задача завершена':'Завершить задачу'}</button></div>
@@ -59,15 +62,15 @@ function readDraft(key:string):Partial<TaskDraft>{
 function storeDraft(key:string,value?:TaskDraft){
  try{if(value)sessionStorage.setItem(key,JSON.stringify(value));else sessionStorage.removeItem(key);}catch{}
 }
-export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,showPlanning,onConditional,companyId:initialCompany,canLink,availableTasks}:{
+export function TaskEditor({task,copyOf,parent,users,user,busy,save,saveError,close,showPlanning,onConditional,companyId:initialCompany,canLink,availableTasks}:{
  task:Task|null;showPlanning:boolean;users:User[];user:User;busy:boolean;save:Act;close:()=>void;
- copyOf?:Task;
+ copyOf?:Task;parent?:Task;
  saveError?:string;
  onConditional?:(draft:import('./WorkDesign.js').ProcessDraft)=>void;
  companyId?:string|null;canLink:boolean;availableTasks:Task[];
 }){
  const initial=task??copyOf;
- const draftKey='ruspet-task-draft:'+user.id+':'+(task?'edit:'+task.id+':'+task.version:copyOf?'copy:'+copyOf.id:'new:'+(initialCompany??''));
+ const draftKey='ruspet-task-draft:'+user.id+':'+(task?'edit:'+task.id+':'+task.version:copyOf?'copy:'+copyOf.id:'new:'+(parent?.id??initialCompany??''));
  const [draft]=useState(()=>readDraft(draftKey));
  const [copyRequestId]=useState(()=>copyOf?crypto.randomUUID():undefined);
  const [error,setError]=useState(''),[assignees,setAssignees]=useState<User[]|null>(null),[assigneeRetry,setAssigneeRetry]=useState(0);
@@ -75,13 +78,19 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
  const [price,setPrice]=useState(draft.price??(initial?String(taskPrice(initial)??''):''));
  const [owner,setOwner]=useState(draft.owner??initial?.assignee_id??user.id),[deadline,setDeadline]=useState(draft.deadline??localDate(copyOf?.deadline));
  const [branch,setBranch]=useState(draft.branch??(initial&&initial.branch_id!==unassignedBranch?initial.branch_id:''));
- const [companyId,setCompanyId]=useState(draft.companyId===undefined?initial?.company_id??initialCompany??null:draft.companyId);
+ const [companyId,setCompanyId]=useState(draft.companyId===undefined?initial?.company_id??initialCompany??parent?.company_id??null:draft.companyId);
  const [important,setImportant]=useState(draft.important===undefined?initial?.important??null:draft.important);
  const [risk,setRisk]=useState(draft.risk===undefined?initial?.customer_risk??null:draft.risk);
  const [mode,setMode]=useState(draft.mode==='conditional'&&!onConditional?'once':draft.mode??'once'),[fields,setFields]=useState(draft.fields??initial?.custom_fields??[]);
  const [schedule,setSchedule]=useState(draft.schedule??{});
  const [extra,setExtra]=useState(draft.extra??{});
- const [edited,setEdited]=useState(false);
+ const [edited,setEdited]=useState(false),[voice,setVoice]=useState(false),[voiceHint,setVoiceHint]=useState('');
+ useEffect(()=>{
+  if(initial)return;
+  let live=true;
+  void api<{enabled:boolean}>('/bot/voice').then(value=>{if(live)setVoice(value.enabled);}).catch(()=>{});
+  return()=>{live=false;};
+ },[initial]);
  useEffect(()=>{
   if(edited)storeDraft(draftKey,{title,description,price,owner,deadline,branch,companyId,important,risk,mode,fields,schedule,extra});
  },[edited,draftKey,title,description,price,owner,deadline,branch,companyId,important,risk,mode,fields,schedule,extra]);
@@ -107,7 +116,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
  const allowedOwners=assignees??users.filter(person=>person.id===owner);
  const branches=[...new Set(users.map(person=>person.branch_id).filter(id=>id&&id!==unassignedBranch))].sort((a,b)=>a.localeCompare(b,'ru'));
  const ownerAllowed=!!assignees?.some(person=>person.id===owner);
- const heading=task?'Редактировать задачу':copyOf?'Копия задачи':'Новая задача';
+ const heading=task?'Редактировать задачу':copyOf?'Копия задачи':parent?'Новая подзадача':'Новая задача';
  return <div className="modal-backdrop"><form className="modal task-editor task-compose-editor" role="dialog" aria-modal="true" aria-label={heading}
   onChangeCapture={()=>setEdited(true)}
   onInvalid={event=>{const section=(event.target as HTMLElement).closest('details');if(section)section.open=true;}}
@@ -120,10 +129,11 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
    return value?original&&localDate(original)===value?original:new Date(String(value)+':00+03:00').toISOString():null;
   };
   const common={price:Number(f.get('price')),title:String(f.get('title')),description:String(f.get('description')),
-   assigneeId:owner,customFields:fields,...(canLink?{companyId}:{}),...(canSetBranch&&branch&&mode!=='conditional'?{branchId:branch}:{})};
+   assigneeId:owner,customFields:fields,priority:extra.priority??initial?.priority??'normal',
+   critical:(extra.critical??String(initial?.critical??false))==='true',resultRequired:(extra.resultRequired??String(initial?.result_required??true))==='true',...(canLink?{companyId}:{}),...(canSetBranch&&branch&&mode!=='conditional'?{branchId:branch}:{})};
   const body={...common,deadline:task?task.deadline:date('deadline',copyOf?.deadline),plannedStart:showPlanning?date('plannedStart',plan.start):initial?.planned_start||null,
    plannedEnd:showPlanning?date('plannedEnd',plan.end):initial?.planned_end||null,important,customerRisk:risk,
-   parentId:String(f.get('parentId')||'').trim()||null,...(task?{expectedVersion:task.version,reason:f.get('reason')}:copyOf?{requestId:copyRequestId}:{})};
+   parentId:String(f.get('parentId')||'').trim()||null,...(!task&&mode==='once'&&extra.groupId?{groupId:extra.groupId}:{}),...(task?{expectedVersion:task.version,reason:f.get('reason')}:copyOf?{requestId:copyRequestId}:{})};
   if(mode==='conditional'&&onConditional){storeDraft(draftKey);onConditional(common);return;}
   const success=mode==='repeat'?await save('/work-design/schedules',{
    template:body,frequency:f.get('frequency'),every:Number(f.get('every')),startsAt:date('startsAt'),
@@ -131,7 +141,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
   },'POST','Расписание сохранено'):await save(task?`/tasks/${encodeURIComponent(task.id)}`:copyOf?`/tasks/${encodeURIComponent(copyOf.id)}/copy`:'/tasks',body,task?'PUT':'POST',copyOf?'Копия создана':undefined);
   if(success){storeDraft(draftKey);close();}
  }}>
-  <div className="panel-heading"><div><h2>{heading}</h2>{copyOf&&<p>Исходная задача #{copyOf.id}. Проверьте поля перед созданием.</p>}</div><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
+  <div className="panel-heading"><div><h2>{heading}</h2>{parent&&<p>Родительская задача #{parent.id} · {parent.title}</p>}{copyOf&&<p>Исходная задача #{copyOf.id}. Проверьте поля перед созданием.</p>}</div><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
   <div className="task-compose-body">
   {draft.title!==undefined&&<div className="task-draft-banner"><span>Черновик восстановлен</span><button type="button" className="text-button" onClick={()=>{storeDraft(draftKey);close();}}>Удалить черновик</button></div>}
   {saveError&&<p className="alert error" role="alert">{saveError}</p>}
@@ -143,6 +153,19 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
    </label>)}
   </div></fieldset>}
   {!initial&&<TaskTemplates user={user} canShare={canLink} read={()=>({title,description,price:price===''?undefined:Number(price),customFields:fields,important,customerRisk:risk})} apply={applyTemplate}/>}
+  {voice&&!initial&&<div className="task-voice-draft">
+   <div className="drawer-actions"><VoiceRecorder label="Заполнить голосом" hint="Назовите задачу, исполнителя, цену и крайний срок. Например: «Сверить договор. Исполнитель Иван Петров. Цена 1500. Срок завтра в 15:00»." disabled={busy} onSend={async audio=>{
+    const draft=await transcribeVoice(audio,'task'),values=draft.values??{};
+    setEdited(true);setTitle((values.title||draft.transcript).slice(0,500));
+    if(values.description)setDescription(values.description.slice(0,10000));
+    if(values.price&&Number.isFinite(Number(values.price)))setPrice(values.price);
+    if(draft.deadline)setDeadline(localDate(draft.deadline));
+    else if(/^без срока$/iu.test(values.deadline??''))setDeadline('');
+    if(draft.assigneeId){setOwner(draft.assigneeId);setBranch('');}
+    setVoiceHint(values.assignee&&!draft.assigneeId?'Уточните исполнителя вручную. Черновик заполнен.':'Черновик заполнен. Проверьте поля перед созданием.');
+   }}/></div>
+   {voiceHint&&<small role="status">{voiceHint}</small>}
+  </div>}
   <label>Название<input autoFocus name="title" required minLength={3} maxLength={500} value={title} onChange={e=>setTitle(e.target.value)}/></label>
   <label>Описание<textarea name="description" maxLength={10000} value={description} onChange={e=>setDescription(e.target.value)}/></label>
   <div className="editor-grid">
@@ -161,6 +184,12 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
    {branch&&!branches.includes(branch)&&<option value={branch}>{branch}</option>}
    {branches.map(id=><option key={id} value={id}>{id}</option>)}
   </select></label>}
+  <div className="editor-grid">
+   <label>Приоритет<select value={extra.priority??initial?.priority??'normal'} onChange={e=>setExtra({...extra,priority:e.target.value})}><option value="normal">Обычный</option><option value="high">Высокий</option></select></label>
+   <label>Критичность<select value={extra.critical??String(initial?.critical??false)} onChange={e=>setExtra({...extra,critical:e.target.value})}><option value="false">Обычная</option><option value="true">Критичная</option></select></label>
+   {(!task||task.creator_id===user.id||user.role==='admin')&&<label>Результат при завершении<select value={extra.resultRequired??String(initial?.result_required??true)} onChange={e=>setExtra({...extra,resultRequired:e.target.value})}><option value="true">Обязателен</option><option value="false">Необязателен</option></select></label>}
+  </div>
+  {!task&&mode==='once'&&<TaskGroupPicker value={extra.groupId??''} onChange={id=>{setEdited(true);setExtra(current=>({...current,groupId:id}));}}/>}
   {canLink&&<CompanyPicker value={companyId} onChange={value=>{setEdited(true);setCompanyId(value);}}/>}
   {!task&&mode==='once'&&<><label>Крайний срок · МСК<input type="datetime-local" name="deadline" value={deadline} onChange={e=>setDeadline(e.target.value)}/></label>
    <div className="task-quick-actions">{[[0,'Сегодня, 18:00'],[1,'Завтра, 18:00'],[7,'Через неделю']].map(([days,label])=><button className="button secondary" key={days} type="button" disabled={new Date(deadlineShortcut(Number(days))+':00+03:00')<=new Date()} onClick={()=>{setEdited(true);setDeadline(deadlineShortcut(Number(days)));}}>{label}</button>)}</div>
@@ -179,7 +208,7 @@ export function TaskEditor({task,copyOf,users,user,busy,save,saveError,close,sho
    <div className="editor-grid">{showPlanning&&mode==='once'&&<><label>Плановое начало · МСК<input name="plannedStart" type="datetime-local" value={extra.plannedStart??localDate(plan.start)} onChange={e=>setExtra({...extra,plannedStart:e.target.value})}/></label><label>Плановое окончание · МСК<input name="plannedEnd" type="datetime-local" value={extra.plannedEnd??localDate(plan.end)} onChange={e=>setExtra({...extra,plannedEnd:e.target.value})}/></label></>}
     {[{name:'important',label:'Важная задача',value:important,set:setImportant},{name:'customerRisk',label:'Риск потери клиента',value:risk,set:setRisk}].map(v=><label key={v.name}>{v.label}<select name={v.name} value={v.value===true?'yes':v.value===false?'no':'unknown'} onChange={e=>v.set(e.target.value==='unknown'?null:e.target.value==='yes')}><option value="unknown">Не указано</option><option value="yes">Да</option><option value="no">Нет</option></select></label>)}
    </div>
-   <label>ID родительской задачи<input name="parentId" value={extra.parentId??initial?.parent_id??''} onChange={e=>setExtra({...extra,parentId:e.target.value})} placeholder="Необязательно"/></label>
+   <label>ID родительской задачи<input name="parentId" value={extra.parentId??parent?.id??initial?.parent_id??''} onChange={e=>setExtra({...extra,parentId:e.target.value})} placeholder="Необязательно"/></label>
   </>}
   <fieldset className="task-custom-fields"><legend>Дополнительные поля</legend>
    {fields.map((field,index)=><div className="field-row" key={index}>

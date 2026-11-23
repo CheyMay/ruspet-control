@@ -162,7 +162,7 @@ test('voice creates a personal task once and carries a partial deadline into the
  assert.equal(rows.length,1);
  const task=rows[0];assert.equal(task.assignee_id,actor.id);assert.equal(Number(task.price),5000);
  assert.match(result.text,/поставлена/);
- const denied=await bot.botVoiceDraft(actor,channel,'Поставь задачу: Проверить договор. Исполнитель admin. Цена 100.','outside-scope');
+ const denied=await bot.botVoiceDraft(actor,channel,'Поставь задачу: Проверить договор. Исполнитель Несуществующий Сотрудник. Цена 100.','outside-scope');
  assert.match(denied.text,/Имя и фамилия исполнителя/);
  assert.equal(buttons(denied).some(b=>b.text==='Подтвердить и отправить'),false);
  const assigned=await bot.botVoiceDraft(admin,channel,'Поставь задачу: Проверить договор. Исполнитель anna. Цена 100.','inside-scope');
@@ -172,7 +172,7 @@ test('voice creates a personal task once and carries a partial deadline into the
  await bot.botView(actor,channel,{op:'task',id:task.id});
  const partial=await bot.botVoiceDraft(actor,channel,'Перенеси эту задачу на послезавтра. Причина: поставка задержалась. План: сверю остатки и пришлю итог.','transfer-voice');
  assert.match(partial.text,/Дата уже указана/);
- assert.match(partial.text,/сверю остатки/);
+ assert.match(partial.text,/поставка задержалась/);
  const ready=await bot.botVoiceDraft(actor,channel,'в четыре дня','transfer-time');
  assert.match(ready.text,/16:00/);
  assert.ok(buttons(ready).some(b=>b.text==='Подтвердить и отправить'));
@@ -215,4 +215,18 @@ test('explicit personal reminders work with general Telegram delivery disabled',
  await bot.botClick(actor,channel,cancel.token);
  assert.ok((await db.pool.query('SELECT canceled_at FROM task_alerts WHERE id=$1',[once[0].id])).rows[0].canceled_at);
  assert.equal((await reminders.pendingAlerts(actor,new Date(once[0].due_at),5,false)).length,0);
+});
+
+test('task composer voice draft normalizes the deadline and does not create a task',async()=>{
+ const title='Проверить договор из голосового черновика';
+ globalThis.fetch=async()=>Response.json({text:'Надо поставить задачу себе. Название: '+title+'. Цена 1500. Срок завтра в 16:00.'});
+ const response=await realFetch(site+'/api/voice/transcript?mode=task',{method:'POST',
+  headers:{Cookie:cookie,'Content-Type':'audio/wav'},body:new Uint8Array(wav)});
+ assert.equal(response.status,200);
+ const draft=await response.json();
+ assert.equal(draft.values.title,title);
+ assert.equal(draft.assigneeId,'anna');
+ assert.equal(draft.values.price,'1500');
+ assert.match(draft.deadline,/T16:00:00\+03:00$|T13:00:00.000Z$/);
+ assert.equal((await db.pool.query('SELECT count(*)::int n FROM tasks WHERE title=$1',[title])).rows[0].n,0);
 });

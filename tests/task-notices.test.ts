@@ -236,8 +236,8 @@ test('branch inactivity is captured once and reaches the next working day report
  assert(morning.body.includes(worker.name));assert.equal(morning.management_notice.reportId,'fixture-report');
 });
 
-test('director gets one batch for current requests and the admin cannot send it twice',async()=>{
- const management=await import('../server/management-notices.js'),service=await import('../server/service.js');
+test('director is notified through the normal approval queue without a manual batch',async()=>{
+ const service=await import('../server/service.js');
  const adminUser=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
  const branch=(await db.pool.query<User>("SELECT * FROM users WHERE id='branch-fixture'")).rows[0];
  await db.pool.query("INSERT INTO org_reporting(employee_id,manager_id) VALUES($1,$2),($2,$3)",[worker.id,branch.id,director.id]);
@@ -249,19 +249,9 @@ test('director gets one batch for current requests and the admin cannot send it 
  assert.equal((await workflow.reviewTask(worker,result,'submit','Подготовили результат',1)).state,'review');
  const {rows:[completion]}=await db.pool.query("SELECT route FROM approvals WHERE task_id=$1 AND type='completion'",[result]);
  assert.deepEqual(completion.route,[{userId:director.id,label:'Постановщик'}]);
- assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE recipient_id=$1 AND dedupe_key LIKE $2",[director.id,'approval:'+a.id+':%'])).rows[0].n,0);
- assert.equal((await management.directorBatchStatus(adminUser))?.total,1);
- await db.pool.query("INSERT INTO login_accounts(user_id,username,password_hash,enabled) VALUES($1,'fixture-admin','fixture',true)",[adminUser.id]);
- await management.remindAboutApprovalBatch('2035-01-05');
- await management.remindAboutApprovalBatch('2035-01-05');
- assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE recipient_id=$1 AND management_notice->>'kind'='approval-batch-ready'",[adminUser.id])).rows[0].n,1);
- await assert.rejects(()=>management.sendDirectorBatch(worker),/администратору/);
- const concurrent=await Promise.allSettled([management.sendDirectorBatch(adminUser),management.sendDirectorBatch(adminUser)]);
- const sent=concurrent.flatMap(result=>result.status==='fulfilled'?[result.value]:[]);
- assert.equal(sent.length,1);assert.equal(sent[0].count,1);
- assert.equal((await management.directorBatchTasks(director,sent[0].id))[0].task_id,id);
- await assert.rejects(()=>management.directorBatchTasks(worker,sent[0].id),/недоступен/);
- assert.equal((await management.directorBatchStatus(adminUser))?.total,0);
+ assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE recipient_id=$1 AND dedupe_key LIKE $2",[director.id,'approval:'+a.id+':%'])).rows[0].n,1);
+ await login(adminUser);
+ assert.equal((await api(adminUser,'/director-approval-batches','POST',{})).status,404);
  const bot=await import('../server/bot.js');
  const home=await bot.botView(director,'team-test');
  assert(home.buttons.flat().some(button=>button.text==='Мои задачи'));
@@ -387,7 +377,8 @@ test('pricing controls deadline approvals and only the creator accepts completio
  assert.equal((await request(self,worker)).applied,true);
  assert.equal(await deadline(self),next);
  assert.equal(await approval(self),undefined);
- assert.equal((await workflow.reviewTask(worker,self,'complete','',2)).state,'completed');
+ await assert.rejects(()=>workflow.reviewTask(worker,self,'complete','',2),/Укажите результат/);
+ assert.equal((await workflow.reviewTask(worker,self,'complete','Сверено и готово',2)).state,'completed');
 
  const ordinary=await create(adminUser,other,85);
  await request(ordinary,other);
@@ -411,14 +402,14 @@ test('pricing controls deadline approvals and only the creator accepts completio
  const decidePath='/approvals/'+original.id+'/decision';
  const first={expectedStep:0,expectedRevision:original.action_revision};
  assert.equal(original.plan,'');
- assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve',approvedDeadline:earlier})).status,403);
  assert.equal((await api(liza,decidePath,'POST',{...first,decision:'reject'})).status,400);
  assert.equal((await api(liza,decidePath,'POST',{...first,decision:'clarify'})).status,400);
- assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve'})).body.state,'pending');
+ assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve',approvedDeadline:earlier})).body.state,'pending');
+ assert.equal((await approval(maksim)).approved_deadline,earlier);
  assert.equal(await deadline(maksim),old);assert.equal(await writeCount(),0);
  const final={expectedStep:1,expectedRevision:original.action_revision};
  assert.equal((await api(director,decidePath,'POST',{...final,decision:'approve',approvedDeadline:'2000-01-01T12:00:00+03:00'})).status,400);
- assert.equal((await api(director,decidePath,'POST',{...final,decision:'approve',approvedDeadline:earlier})).body.state,'approved');
+ assert.equal((await api(director,decidePath,'POST',{...final,decision:'approve'})).body.state,'approved');
  assert.equal(await deadline(maksim),earlier);assert.equal(await writeCount(),1);
  const history=(await api(director,'/tasks/'+maksim)).body;
  assert.equal(history.approvals[0].proposed_deadline,next);assert.equal(history.approvals[0].approved_deadline,earlier);
@@ -558,4 +549,37 @@ test('an employee can assign a new task across branches from the form, chat and 
  assert.match((await botClick(worker,channel,pick(voice,'Подтвердить и отправить'))).text,/поставлена/);
  const voiceNoOwner=await botVoiceDraft(worker,channel,'Поставь задачу: сверить макет. Цена 2000.',randomUUID());
  assert.match(voiceNoOwner.text,/Имя и фамилия исполнителя/);
+});
+
+test('Telegram topics and push settings are independent',async()=>{
+ assert.equal((await api(worker,'/notifications/preferences','PUT',{
+  telegramDigest:true,telegramTopics:{assignments:false},pushEnabled:false,pushTopics:{deadlines:false}
+ })).status,200);
+ const saved=await api(worker,'/notifications/preferences');
+ assert.deepEqual(saved.body,{telegramDigest:true,telegramTopics:{assignments:false},pushEnabled:false,pushTopics:{deadlines:false}});
+ const id=await makeTask('Проверка подписки на назначения',null);
+ const now=at('2035-02-01','10:15');
+ await assignmentTime(id,at('2035-02-01','10:00'));
+ const notice=await notices.claimTelegramTaskNotice(worker,chat,now);
+ assert(!notice?.assignments.some(task=>task.id===id));
+ await notices.generateWebTaskNotices(now);
+ const feed=await api(worker,'/notifications');
+ assert(feed.body.some((item:{task_notice?:{taskIds:string[]}})=>item.task_notice?.taskIds.includes(id)));
+});
+
+test('an assigned task stays unaccepted until the manager sets a plan, with separate calendar dates',async()=>{
+ const calendar=await import('../server/personal-calendar.js'),service=await import('../server/service.js');
+ const actor={...other,id:'calendar-manager',position:'Менеджер по продажам'};
+ await db.pool.query('INSERT INTO users(id,name,role,branch_id,position) VALUES($1,$2,$3,$4,$5)',[actor.id,actor.name,actor.role,actor.branch_id,actor.position]);
+ const stamp=at('2035-03-12','12:00'),personal=at('2035-03-11','14:00');
+ const id=await makeTask('Назначение с отдельным личным планом',stamp,actor);
+ const pending=(await service.visibleTasks(actor)).find(task=>task.id===id);
+ assert.equal(pending?.assignment_pending,true);
+ const {personalPlan}=await service.detail(actor,id);
+ assert.equal(personalPlan?.needsAcceptance,true);
+ await calendar.saveTaskPlan(actor,id,{epoch:personalPlan!.epoch,revision:personalPlan!.revision,plannedAt:personal.toISOString(),accept:true});
+ assert.equal((await service.visibleTasks(actor)).find(task=>task.id===id)?.assignment_pending,false);
+ const month=await calendar.personalCalendar(actor,'2035-03');
+ assert.equal(Date.parse(month.deadlines?.find(task=>task.id===id)?.deadline??''),+stamp);
+ assert.equal(Date.parse(month.scheduled.find(task=>task.id===id)!.plan.plannedAt!),+personal);
 });

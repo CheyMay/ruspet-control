@@ -1,4 +1,5 @@
 import {useEffect,useState} from 'react';
+import {notificationTopics,type NotificationPreferences,type NotificationTopic} from '../shared/notification-settings.js';
 import {Bell,CheckCheck} from 'lucide-react';
 import {groupNotifications} from '../shared/notifications.js';
 import {workdayReports} from '../shared/report-links.js';
@@ -60,23 +61,31 @@ export function NotificationCenter({items,readOnly,open,refresh}:{items:Notifica
 }
 
 export function NotificationSettings({userId}:{userId:string}){
- const [enabled,setEnabled]=useState<boolean|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [preferences,setPreferences]=useState<NotificationPreferences|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
  useEffect(()=>{
   let live=true;
-  api<{telegramDigest:boolean}>('/notifications/preferences').then(value=>{if(live)setEnabled(value.telegramDigest);}).catch(e=>{if(live)setError(e.message);});
+  api<NotificationPreferences>('/notifications/preferences').then(value=>{if(live)setPreferences(value);}).catch(e=>{if(live)setError(e.message);});
   return()=>{live=false;};
  },[]);
- async function change(value:boolean){
+ async function change(value:NotificationPreferences){
   setBusy(true);setError('');
-  try{const result=await api<{telegramDigest:boolean}>('/notifications/preferences','PUT',{telegramDigest:value});setEnabled(result.telegramDigest);}
+  try{setPreferences(await api<NotificationPreferences>('/notifications/preferences','PUT',value));}
   catch(e){setError((e as Error).message);}finally{setBusy(false);}
  }
  return <section className="panel automation-settings"><h2>Мои уведомления</h2>
   {error&&<p className="alert error" role="alert">{error}</p>}
-  <label className="toggle-row">
-   <span><strong>Рабочие уведомления в Telegram</strong><small>Сроки, новые задачи и общие события. Личные напоминания приходят по назначенному расписанию.</small></span>
-   <input type="checkbox" checked={enabled??false} disabled={busy||enabled===null} onChange={e=>void change(e.target.checked)}/>
-  </label>
+  <p className="muted">Новые задачи собираются примерно за 10 минут. Уведомления на сайте доступны при любых настройках.</p>
+  {preferences&&<div className="notification-channels">
+   {([{label:'Telegram',master:'telegramDigest',topics:'telegramTopics'},{label:'Push на устройствах',master:'pushEnabled',topics:'pushTopics'}] as const).map(channel=><fieldset key={channel.master}>
+    <legend>{channel.label}</legend>
+    <label className="toggle-row"><strong>Получать уведомления</strong><input type="checkbox" checked={preferences[channel.master]}
+     disabled={busy} onChange={e=>void change({...preferences,[channel.master]:e.target.checked})}/></label>
+    {Object.entries(notificationTopics).map(([key,label])=><label className="toggle-row" key={key}>
+     <span>{label}</span><input type="checkbox" checked={preferences[channel.topics][key as NotificationTopic]??true}
+      disabled={busy||!preferences[channel.master]} onChange={e=>void change({...preferences,[channel.topics]:{...preferences[channel.topics],[key]:e.target.checked}})}/>
+    </label>)}
+   </fieldset>)}
+  </div>}
   <DeviceNotifications install userId={userId}/>
  </section>;
 }

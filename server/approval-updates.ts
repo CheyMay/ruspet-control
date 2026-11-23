@@ -7,7 +7,7 @@ import {completionApprovalRoute,isSelfTask} from '../shared/actions.js';
 import type {Approval,ApprovalTaskChange,Task} from '../shared/types.js';
 
 const editableFields=['title','description','assignee_id','branch_id','planned_start','planned_end',
- 'important','customer_risk','parent_id','price','custom_fields','company_id'] as const;
+ 'important','customer_risk','parent_id','price','custom_fields','company_id','priority','critical','result_required'] as const;
 
 function fieldValue(task:Task,field:string){
  const raw=field==='price'?taskPrice(task):task[field as keyof Task];
@@ -58,6 +58,7 @@ export async function keepTaskApprovals(db:Db,before:Task,after:Task,fields:read
   await db.query(`UPDATE approvals SET task_change=$2,task_version=$3,action_revision=$4,route=$5,
    current_step=CASE WHEN $6 THEN 0 ELSE current_step END,
    deferred_until=CASE WHEN $6 OR $7 THEN NULL ELSE deferred_until END,
+   approved_deadline=CASE WHEN $6 THEN NULL ELSE approved_deadline END,
    clarification_question=CASE WHEN $6 THEN NULL ELSE clarification_question END,
    clarification_answer=CASE WHEN $6 THEN NULL ELSE clarification_answer END,
    clarification_requested_at=CASE WHEN $6 THEN NULL ELSE clarification_requested_at END,
@@ -67,7 +68,7 @@ export async function keepTaskApprovals(db:Db,before:Task,after:Task,fields:read
    await db.query("UPDATE outbox SET withdrawn_at=now() WHERE dedupe_key LIKE $1 AND withdrawn_at IS NULL",['approval:'+approval.id+':%']);
   }
   if(!routeChanged&&!routeIssue)await carryApprovalBatch(db,approval.id,approval.current_step,approval.action_revision,revision);
-  if(routeChanged&&!routeIssue&&(approval.type==='completion'||route[0].userId!==hierarchy?.sales_head_id)&&route[0].userId!==actorId)
+  if(routeChanged&&!routeIssue&&route[0].userId!==actorId)
    await notify(db,after.id,route[0].userId,'Маршрут согласования изменился. Проверьте задачу #'+after.id,
     `approval:${approval.id}:route:${revision}`);
   await event(db,after.id,actorId,'approval_task_changed',source==='bitrix'?'Задача обновлена в Битрикс24 во время согласования':'Задача изменена в РУСПЭТ во время согласования',

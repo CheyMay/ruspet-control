@@ -25,6 +25,9 @@ function TaskBoardCard({task,names,now,open,startDrag,endDrag}:{task:Task;names:
  return <button type="button" className="kanban-card" draggable={!!startDrag} onDragStart={startDrag} onDragEnd={endDrag} onClick={()=>open(task.id)}>
   <span className="kanban-card-reference"><span>#{task.id}</span>{taskPrice(task)!==null&&<span>{formatPrice(task)}</span>}</span>
   <strong>{task.title}</strong>
+  {(task.assignment_pending||task.priority==='high'||task.critical)&&<span className="task-flags">
+   {task.assignment_pending&&<small>Не принята</small>}{task.priority==='high'&&<small>Высокий приоритет</small>}{task.critical&&<small>Критичная</small>}
+  </span>}
   {!!task.client_names?.length&&<span className="kanban-client">{task.client_names.join(' · ')}</span>}
   {due&&<span className="kanban-card-deadline"><CalendarDays size={15} aria-hidden="true"/><time dateTime={task.deadline!}>{due}</time></span>}
   <span className="kanban-card-people">

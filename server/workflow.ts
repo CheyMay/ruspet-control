@@ -1,3 +1,4 @@
+import {groupTask} from './task-groups.js';
 import {queueDeadlineHistories} from './deadline-history.js';
 import {editedApprovalFields,keepTaskApprovals} from './approval-updates.js';
 import {canEditTaskPrice} from '../shared/task-edit.js';
@@ -86,7 +87,8 @@ async function insertTask(db:Db,u:User,input:TaskInput,origin?:{kind:'delegation
  const owner=delegated?(await db.query<User>('SELECT * FROM users WHERE id=$1',[input.assigneeId])).rows[0]:await validateTaskAssignment(db,u,input),id='L-'+randomUUID().slice(0,8);
  assert(input.price!==undefined&&Number.isFinite(input.price)&&input.price>=0,400,'Цена новой задачи обязательна.');
  const branch=await resolveTaskBranch(db,u,owner,input.branchId,copy);
- const task=(await db.query("INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,price,deadline,original_deadline,planned_start,planned_end,status,priority,code,important,customer_risk,parent_id,custom_fields,company_id,delegated_from_id) VALUES($1,$2,$3,$4,$5,$6,$14,$7,$7,$8,$9,'active',$18,$10,$11,$12,$13,$15,$16,$17) RETURNING *",[id,input.title,input.description,branch,owner.id,u.id,input.deadline,input.plannedStart,input.plannedEnd,input.title.split(/\s/)[0],input.important,input.customerRisk,input.parentId,input.price,JSON.stringify(input.customFields??[]),input.companyId??null,delegated?.id??null,copy?.priority??'normal'])).rows[0];
+ const task=(await db.query("INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,price,deadline,original_deadline,planned_start,planned_end,status,priority,code,important,customer_risk,parent_id,custom_fields,company_id,delegated_from_id,result_required,critical) VALUES($1,$2,$3,$4,$5,$6,$14,$7,$7,$8,$9,'active',$18,$10,$11,$12,$13,$15,$16,$17,$19,$20) RETURNING *",[id,input.title,input.description,branch,owner.id,u.id,input.deadline,input.plannedStart,input.plannedEnd,input.title.split(/\s/)[0],input.important,input.customerRisk,input.parentId,input.price,JSON.stringify(input.customFields??[]),input.companyId??null,delegated?.id??null,input.priority??copy?.priority??'normal',input.resultRequired??copy?.result_required??delegated?.result_required??true,input.critical??copy?.critical??false])).rows[0];
+ if(input.groupId)await groupTask(u,id,input.groupId,db,task);
  const message=delegated?'Создано поручение из задачи #'+delegated.id:copy?'Создана копия задачи #'+copy.id:'Создана локальная задача';
  await db.query('INSERT INTO mock_provider_tasks(id,snapshot,revision) VALUES($1,$2,1)',[id,JSON.stringify(task)]);await refreshTaskFindings(db,task,u);
  await event(db,id,performer.id,'created',message,{after:task,delegatedFrom:delegated?.id,copiedFrom:copy?.id});
@@ -164,6 +166,8 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
  const before=(await db.query('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0] as Task;
  assert(before&&canSee(u,before),404,'Задача недоступна.');assert(reason?.trim().length>=5&&reason.length<=4000,400,'Укажите причину изменения, минимум 5 символов.');assert(before.status==='active',409,'Редактировать можно только задачу в работе.');assert(before.version===version,409,'Задача изменилась. Обновите карточку.');
  const editPermissionId=await useTaskEditPermission(db,u,before);
+ if(input.resultRequired!==undefined&&input.resultRequired!==(before.result_required??true))
+  assert(u.id===before.creator_id||u.role==='admin',403,'Обязательность результата меняет постановщик или администратор.');
  assert(input.deadline===before.deadline,400,'Крайний срок меняется через запрос согласования.');
  const owner=await validateTaskAssignment(db,u,input,id,before.assignee_id,before.creator_id);
  const companyId=input.companyId===undefined?before.company_id??null:input.companyId;
@@ -172,7 +176,7 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
   if(companyId)await getCompany(u,companyId);
  }
  const branch=await resolveTaskBranch(db,u,owner,input.branchId,before);
- const after=(await db.query('UPDATE tasks SET title=$2,description=$3,assignee_id=$4,branch_id=$5,planned_start=$6,planned_end=$7,important=$8,customer_risk=$9,parent_id=$10,code=$11,price=COALESCE($12,price),custom_fields=COALESCE($13,custom_fields),company_id=$14,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.title,input.description,owner.id,branch,input.plannedStart,input.plannedEnd,input.important,input.customerRisk,input.parentId,input.title.split(/\s/)[0],input.price??null,input.customFields===undefined?null:JSON.stringify(input.customFields),companyId])).rows[0];
+ const after=(await db.query('UPDATE tasks SET title=$2,description=$3,assignee_id=$4,branch_id=$5,planned_start=$6,planned_end=$7,important=$8,customer_risk=$9,parent_id=$10,code=$11,price=COALESCE($12,price),custom_fields=COALESCE($13,custom_fields),company_id=$14,result_required=COALESCE($15,result_required),priority=COALESCE($16,priority),critical=COALESCE($17,critical),version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.title,input.description,owner.id,branch,input.plannedStart,input.plannedEnd,input.important,input.customerRisk,input.parentId,input.title.split(/\s/)[0],input.price??null,input.customFields===undefined?null:JSON.stringify(input.customFields),companyId,input.resultRequired??null,input.priority??null,input.critical??null])).rows[0];
  await provider.applyApprovedChange(db,after,before.version);
  await keepTaskApprovals(db,before,after,editedApprovalFields(before,after),'ruspet',u.id);
  if(before.assignee_id!==after.assignee_id){
@@ -212,7 +216,8 @@ async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return'
  if(action==='submit'){assert(canRequest(u,before),403,'Нет права сдавать задачу.');assert(before.status==='active',409,'Задача уже передана или завершена.');}
  else if(action==='complete')assert(canComplete(u,before,approvalScope(await approvalHierarchy(db,true))),403,'Завершите свою задачу или примите результат на приёмке.');
  else {assert(canReview(u,before),403,'Результат принимает постановщик задачи.');assert(before.status==='review',409,'Задача не ожидает приёмки.');}
- if(action==='submit'||action==='return')assert(comment.trim().length>=5,400,'Укажите результат или причину возврата, минимум 5 символов.');
+ if(action==='return')assert(comment.trim().length>=5,400,'Укажите причину возврата, минимум 5 символов.');
+ if((action==='submit'||action==='complete')&&before.result_required!==false)assert(comment.trim().length>=5,400,'Укажите результат, минимум 5 символов.');
  const pending=(await db.query<Approval>("SELECT * FROM approvals WHERE task_id=$1 AND state='pending' AND canceled_at IS NULL",[id])).rows[0];
  if(pending?.type==='completion'&&activeTaskApproval(before,pending)&&(action==='accept'||action==='return')){
   const decision=await decideCore(u,pending.id,{decision:action==='accept'?'approve':'reject',comment,

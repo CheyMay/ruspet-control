@@ -14,7 +14,7 @@ export async function actionState(db:Db,id:string):Promise<ActionState>{
 export function sameState(a:ActionState,b:ActionState){
  // Notification delivery status is independent of task state. New task events,
  // changed controls, routes or submissions still prevent an unsafe undo.
- const stable=({outbox,task,approvals,...rest}:ActionState)=>({...rest,approvals:approvals.map(a=>({...a,task_change:a.task_change??null,approved_deadline:a.approved_deadline??null})),task:{...task,assignment_epoch:task.assignment_epoch??1,custom_fields:task.custom_fields??[],company_id:task.company_id??null,delegated_from_id:task.delegated_from_id??null}});return isDeepStrictEqual(stable(a),stable(b));
+ const stable=({outbox,task,approvals,...rest}:ActionState)=>({...rest,approvals:approvals.map(a=>({...a,task_change:a.task_change??null,approved_deadline:a.approved_deadline??null})),task:{...task,result_required:task.result_required??true,critical:task.critical??false,assignment_epoch:task.assignment_epoch??1,custom_fields:task.custom_fields??[],company_id:task.company_id??null,delegated_from_id:task.delegated_from_id??null}});return isDeepStrictEqual(stable(a),stable(b));
 }
 export async function spawnedTasks(db:Db,eventIds:string[]){
  return !!(await db.query(`SELECT 1 FROM task_acceptance_events e JOIN business_runs r USING(event_id)

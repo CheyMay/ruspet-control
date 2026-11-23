@@ -1,0 +1,16 @@
+.task-flags,.calendar-counts { display:flex; flex-wrap:wrap; align-items:center; gap:.35rem; }
+.task-flags { margin-top:.35rem; }
+.kanban-card .task-flags small { padding:.16rem .35rem; border-radius:4px; background:var(--surface-muted,#eef0f2); color:var(--text,#232a34); }
+.badge.unaccepted i { background:#af6627; }
+.task-group-picker,.task-subtask-list,.client-notes { display:grid; gap:.55rem; margin-block:.75rem; }
+.task-group-picker > .text-button,.task-subtask-list > .text-button { justify-self:start; text-align:left; }
+.client-note { border-top:1px solid var(--line,#dbe0e5); padding:.65rem 0; }
+.client-note p { white-space:pre-wrap; overflow-wrap:anywhere; margin:.35rem 0; }
+.notification-channels { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,17rem),1fr)); gap:1rem; }
+.notification-channels fieldset { min-width:0; border:1px solid var(--line,#dbe0e5); border-radius:8px; padding:.5rem .85rem; }
+.notification-channels legend { padding-inline:.4rem; font-weight:600; }
+.calendar-days .calendar-counts { justify-content:flex-end; gap:.2rem; }
+.calendar-days .calendar-counts small { padding:.1rem .28rem; border-radius:4px; background:var(--surface-muted,#eef0f2); font-weight:600; }
+.calendar-days .calendar-counts .calendar-deadline-count { color:var(--text,#232a34); border:1px solid var(--line,#dbe0e5); }
+.calendar-day h4 { margin:.85rem 0 .4rem; }
+.workspace-back { white-space:nowrap; }

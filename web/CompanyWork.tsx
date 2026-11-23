@@ -1,4 +1,5 @@
 import {useEffect,useState,type FormEvent} from 'react';
+import {ClientNotes} from './ClientNotes.js';
 import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import type {User} from '../shared/types.js';
@@ -33,6 +34,7 @@ export function CompanyWork({id,users,openTask,createTask,onContact}:{id:string;
     <p>{status[task.status]??task.status} · {person(task.assignee_id)} · {moscowTimestamp(task.deadline)}</p></div></div>)}
    {!!work.history.length&&<details className="automation-log"><summary>Последние действия по задачам</summary>{work.history.map(entry=><p key={entry.id}>{moscowTimestamp(entry.created_at)} · {person(entry.actor_id)} · #{entry.task_id} · {entry.message}</p>)}</details>}
   </>}
+  <ClientNotes key={id} id={id}/>
   <details className="automation-log okb-contact-history"><summary>Контакты{contacts?' · '+contacts.length:''}</summary>
    <form className="work-design-form" onSubmit={save}><label>Что обсудили<textarea value={note} onChange={e=>setNote(e.target.value)} required minLength={3} maxLength={2000}/></label>
     <button className="button secondary" disabled={busy}>Зафиксировать контакт</button></form>

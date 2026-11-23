@@ -10,6 +10,7 @@ import {isSalesManager} from '../shared/personal-calendar.js';
 import {workQueueTitle} from '../shared/work-queue.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import type {Task,User} from '../shared/types.js';
+import {topicOn} from './notifications.js';
 import {hasPendingTaskApproval} from './pending-task-work.js';
 
 const minute=60_000,repeatEvery=30*minute,assignmentWindow=10*minute;
@@ -84,13 +85,14 @@ export async function claimTelegramTaskNotice(user:User,chatId:string,now:Date):
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtextextended($1,0))',['telegram-task-notice:'+user.id]);
   const settings=(await db.query<Delivery>(`SELECT greatest(b.paired_at,s.task_delivery_enabled_at) AS since,
-    s.task_delivery AS assignments,s.deadline_delivery AS deadlines
+    (s.task_delivery AND ${topicOn('telegram','assignments')}) AS assignments,
+    (s.deadline_delivery AND ${topicOn('telegram','deadlines')}) AS deadlines
    FROM telegram_binding b JOIN telegram_settings s ON s.id=1 AND s.enabled AND (s.task_delivery OR s.deadline_delivery)
    LEFT JOIN notification_preferences p ON p.user_id=b.user_id
    WHERE b.user_id=$1 AND b.chat_id=$2 AND COALESCE(p.telegram_digest,true)
     AND (NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=b.user_id)
      OR EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=b.user_id AND a.enabled))`,[user.id,chatId])).rows[0];
-  if(!settings)return null;
+  if(!settings||!settings.assignments&&!settings.deadlines)return null;
   const stamp=now.toISOString(),dayStart=businessDay(now)+'T00:00:00+03:00';
   const previous=(await db.query<NoticeRecord>(`SELECT created_at,task_notice FROM telegram_delivery
    WHERE chat_id=$1 AND task_notice IS NOT NULL AND task_notice->>'userId'=$2 AND created_at BETWEEN $3 AND $4`,[chatId,user.id,dayStart,stamp])).rows;

@@ -41,7 +41,7 @@ export function taskActionFields(kind:string|undefined,min:number,withAssignee=t
   case 'permission_request':return [field('reason','Что нужно изменить в карточке?')];
   case 'permission_reject':return [field('comment','Почему редактирование отклонено?')];
   case 'permission_approve':return [];
-  case 'complete':return [];
+  case 'complete':return [field('comment','Опишите готовый результат')];
   case 'delegate':return [assigneeField,field('instruction','Поручение сотруднику или «пропустить»',1)];
   case 'delegate_client':return [field('client','Введите название клиента или ИНН',2,150)];
   case 'answer':return [field('reason','Что помешало выполнить задачу?',min),field('progress','Что уже сделано?',min),field('plan','Что будете делать дальше?',min)];

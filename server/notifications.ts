@@ -1,3 +1,5 @@
+import {z} from 'zod';
+import {notificationTopics,type NotificationPreferences} from '../shared/notification-settings.js';
 import {pool,type Db} from './db.js';
 import {visibleTasks} from './service.js';
 import {visiblePlanNotice} from './personal-calendar.js';
@@ -21,12 +23,23 @@ export async function readNotifications(user:User,ids:string[]){
  return {count:result.rowCount??0};
 }
 
-export async function notificationPreference(user:User){
- const result=await pool.query('SELECT telegram_digest FROM notification_preferences WHERE user_id=$1',[user.id]);
- return {telegramDigest:result.rows[0]?.telegram_digest??true};
+const topics=z.partialRecord(z.enum(Object.keys(notificationTopics) as [keyof typeof notificationTopics,...(keyof typeof notificationTopics)[]]),z.boolean());
+export const notificationPreferenceInput=z.object({
+ telegramDigest:z.boolean(),pushEnabled:z.boolean().optional(),telegramTopics:topics.optional(),pushTopics:topics.optional()
+});
+export const approvalNoticeKind="split_part(o.dedupe_key,':',1) IN ('approval','clarify','clarification','clarification-answer','approved','approved-assignee','rejected','defer','review','review-return','review-accepted','approval-route','approval-route-closed')";
+export const topicOn=(channel:'telegram'|'push',topic:keyof typeof notificationTopics)=>`COALESCE((p.${channel}_topics->>'${topic}')::boolean,true)`;
+
+export async function notificationPreference(user:User):Promise<NotificationPreferences>{
+ const result=await pool.query('SELECT telegram_digest,push_enabled,telegram_topics,push_topics FROM notification_preferences WHERE user_id=$1',[user.id]);
+ const row=result.rows[0];
+ return {telegramDigest:row?.telegram_digest??true,pushEnabled:row?.push_enabled??true,telegramTopics:row?.telegram_topics??{},pushTopics:row?.push_topics??{}};
 }
-export async function saveNotificationPreference(user:User,telegramDigest:boolean){
- await pool.query(`INSERT INTO notification_preferences(user_id,telegram_digest) VALUES($1,$2)
-  ON CONFLICT(user_id) DO UPDATE SET telegram_digest=excluded.telegram_digest`,[user.id,telegramDigest]);
- return {telegramDigest};
+export async function saveNotificationPreference(user:User,pref:z.infer<typeof notificationPreferenceInput>){
+ await pool.query(`INSERT INTO notification_preferences AS p(user_id,telegram_digest,push_enabled,telegram_topics,push_topics)
+  VALUES($1,$2,COALESCE($3,true),COALESCE($4,'{}'::jsonb),COALESCE($5,'{}'::jsonb))
+  ON CONFLICT(user_id) DO UPDATE SET telegram_digest=$2,push_enabled=COALESCE($3,p.push_enabled),
+  telegram_topics=COALESCE($4,p.telegram_topics),push_topics=COALESCE($5,p.push_topics)`,
+  [user.id,pref.telegramDigest,pref.pushEnabled??null,pref.telegramTopics?JSON.stringify(pref.telegramTopics):null,pref.pushTopics?JSON.stringify(pref.pushTopics):null]);
+ return notificationPreference(user);
 }

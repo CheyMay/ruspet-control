@@ -95,7 +95,7 @@ function fields(text:string,names:Record<string,string>,loose?:(key:string,tail:
 }
 
 function createIntent(text:string,now:Date):VoiceIntent|null{
- const command=text.match(/^(?:поставь(?:те)?|создай(?:те)?|назначь(?:те)?|поставить|создать)\s+(?:(себе|мне)\s+)?(?:новую\s+)?задачу(?=$|[\s,:.])/iu);
+ const command=text.match(/^(?:(?:нужно|надо)\s+)?(?:поставь(?:те)?|создай(?:те)?|назначь(?:те)?|поставить|создать|поставим|создадим)\s+(?:(себе|мне)\s+)?(?:новую\s+)?задачу(?=$|[\s,:.—–-])/iu);
  if(!command)return null;
  let rest=clean(text.slice(command[0].length)),assignee=command[1];
  const self=rest.match(/^(себе|мне)(?=$|[\s,:.])/iu);

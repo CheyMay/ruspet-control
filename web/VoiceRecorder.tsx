@@ -7,7 +7,7 @@ type AudioDraft={audio:Blob;url:string;id:string};
 const mimeTypes=['audio/webm;codecs=opus','audio/mp4','audio/ogg;codecs=opus'];
 const suffixTypes:Record<string,string>={webm:'audio/webm',mp4:'audio/mp4',m4a:'audio/mp4',ogg:'audio/ogg',oga:'audio/ogg',wav:'audio/wav',mp3:'audio/mpeg'};
 
-export function VoiceRecorder({onSend,disabled,mobile=false}:{onSend:(audio:Blob,id:string)=>Promise<void>;disabled:boolean;mobile?:boolean}){
+export function VoiceRecorder({onSend,disabled,mobile=false,label='Голосом',hint}:{label?:string;hint?:string;onSend:(audio:Blob,id:string)=>Promise<void>;disabled:boolean;mobile?:boolean}){
  const [open,setOpen]=useState(false),[state,setState]=useState<'idle'|'permission'|'recording'|'sending'>('idle');
  const [elapsed,setElapsed]=useState(0),[draft,setDraft]=useState<AudioDraft|null>(null),[error,setError]=useState('');
  const recorder=useRef<MediaRecorder|null>(null),stream=useRef<MediaStream|null>(null);
@@ -93,18 +93,18 @@ export function VoiceRecorder({onSend,disabled,mobile=false}:{onSend:(audio:Blob
  }
  const clock=Math.floor(elapsed/60)+':'+String(elapsed%60).padStart(2,'0');
  return <>
-  <button type="button" className={mobile?'mobile-mic':'button secondary'} disabled={disabled} onClick={()=>void start()}><Mic size={mobile?21:17}/> <span>Голосом</span></button>
+  <button type="button" className={mobile?'mobile-mic':'button secondary'} disabled={disabled} onClick={()=>void start()}><Mic size={mobile?21:17}/> <span>{label}</span></button>
   {open&&createPortal(<div className="voice-overlay" onMouseDown={event=>{if(event.target===event.currentTarget&&state!=='sending')close();}}>
    <section className="voice-sheet" role="dialog" aria-modal="true" aria-labelledby="voice-title">
     <div className="voice-heading"><h2 id="voice-title">Голосовое сообщение</h2><button type="button" className="icon-button" aria-label="Закрыть запись" disabled={state==='sending'} onClick={close}><X size={21}/></button></div>
-    <p className="muted">Назовите действие и номер задачи. Если бот уже задал вопрос, ответьте на него голосом.</p>
-    <details className="voice-examples">
+    <p className="muted">{hint??'Назовите действие и номер задачи. Если бот уже задал вопрос, ответьте на него голосом.'}</p>
+    {!hint&&<details className="voice-examples">
      <summary>Что можно сказать</summary>
      <blockquote>«{voiceExample}»</blockquote>
      <blockquote>«Поставь себе задачу: сверить цены. Цена 5 тысяч. Срок завтра в 15:00»</blockquote>
      <blockquote>«Напомни по этой задаче завтра в 10:00»</blockquote>
      <blockquote>«Сдай эту задачу: цены сверены, расхождений нет»</blockquote>
-    </details>
+    </details>}
     {state==='permission'&&<p role="status">Разрешите доступ к микрофону.</p>}
     {state==='recording'&&<div className="voice-live" role="status"><AudioLines size={24}/> Запись идёт <strong>{clock}</strong></div>}
     {state==='sending'&&<p role="status">Распознаём запись…</p>}

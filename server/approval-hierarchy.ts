@@ -160,7 +160,7 @@ async function alignPolicyRequests(db:Db,actorId:string,hierarchy:Hierarchy){
  for(const approval of rows){
   const route=configuredApprovalRoute(hierarchy,approval.task,approval.requester_id);
   if(!route||route.length===approval.route.length&&route.every((step,i)=>step.userId===approval.route[i].userId))continue;
-  await db.query(`UPDATE approvals SET route=$2,current_step=0,state=$3,action_revision=action_revision+1,deferred_until=NULL,
+  await db.query(`UPDATE approvals SET route=$2,current_step=0,state=$3,action_revision=action_revision+1,deferred_until=NULL,approved_deadline=NULL,
    canceled_at=CASE WHEN $3='stale' THEN now() ELSE NULL END,
    clarification_question=NULL,clarification_answer=NULL,clarification_requested_at=NULL,clarification_answered_at=NULL WHERE id=$1`,
    [approval.id,JSON.stringify(route.length?route:approval.route),route.length?'pending':'stale']);
@@ -168,7 +168,7 @@ async function alignPolicyRequests(db:Db,actorId:string,hierarchy:Hierarchy){
   await event(db,approval.task_id,actorId,'approval_route_changed','Маршрут открытого согласования обновлён',
    {approvalId:approval.id,previousRoute:approval.route,route});
   const approver=route[0]?.userId;
-  if(approver&&approver!==hierarchy.sales_head_id)await notify(db,approval.task_id,approver,'Требуется решение по задаче #'+approval.task_id,
+  if(approver)await notify(db,approval.task_id,approver,'Требуется решение по задаче #'+approval.task_id,
    'approval:'+approval.id+':route:'+String(approval.action_revision+1));
   if(!approver)await notify(db,approval.task_id,approval.requester_id,'Запрос нужно подать заново от другого участника задачи.',
    'approval-route-closed:'+approval.id);

@@ -5,6 +5,8 @@ import {TaskBranchReview,TaskCardFields,TaskEditPanel} from './TaskCardSections.
 import {roleLabels as roles} from './employee-roles.js';
 import {DelegationInbox,OrgWorkspace} from './OrgWorkspace.js';
 import {TaskDelegation} from './TaskDelegation.js';
+import {ClientNotes} from './ClientNotes.js';
+import {TaskGroupPicker,type TaskGroupsData} from './TaskGroups.js';
 import {CompanyReference} from './TaskComposeTools.js';
 import type {ProcessDraft} from './WorkDesign.js';
 import {BitrixActivity} from './BitrixActivity.js';
@@ -13,7 +15,7 @@ import {EmployeeFilter,SearchFilter} from './SearchFilter.js';
 import {AccessDirectory,SystemHealth,moscowTimestamp} from './SystemHealth.js';
 import {readFilterSelection,useRememberedFilter,writeFilterSelection} from './remembered-filter.js';
 import {Journal} from './Journal.js';
-import {ApprovalWorkspace,DirectorBatch} from './ApprovalWorkspace.js';
+import {ApprovalWorkspace} from './ApprovalWorkspace.js';
 import {ApprovalHierarchySettings} from './ApprovalHierarchySettings.js';
 import {UndoAction} from './UndoAction.js';
 import {StaffUndo} from './StaffUndo.js';
@@ -85,7 +87,7 @@ const previewSections=new Set<Page>(['overview','actions','tasks','approvals','c
 const date=(v:string|null,full=false)=>v?new Date(v).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'short',...(full?{hour:'2-digit',minute:'2-digit'}:{})}):'Без срока';
 const day=(v:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(v));
 const initials=(name:string)=>name.split(' ').slice(0,2).map(s=>s[0]).join('');
-const stateLabels:Record<string,string>={canceled:'Отменено',pending:'На согласовании',approved:'Согласовано',rejected:'Отказано',stale:'Требует нового запроса',active:'В работе',review:'На приёмке',completed:'Завершена',waiting:'Ждём ответа',answered:'Ответ получен',escalated:'Эскалация',resolved:'Устранено'};
+const stateLabels:Record<string,string>={unaccepted:'Не принята',canceled:'Отменено',pending:'На согласовании',approved:'Согласовано',rejected:'Отказано',stale:'Требует нового запроса',active:'В работе',review:'На приёмке',completed:'Завершена',waiting:'Ждём ответа',answered:'Ответ получен',escalated:'Эскалация',resolved:'Устранено'};
 const managed=(u:User)=>u.role!=='employee';
 const allowedRequest=(u:User,t:Task)=>u.id===t.assignee_id||u.id===t.creator_id||managed(u)&&(u.role!=='branch_manager'||(u.company_branch_access||branchCovers(u.branch_id,t.branch_id)));
 function Empty({children}: {children:ReactNode}){return <div className="empty"><CheckCheck size={28}/><h3>Здесь пока нет записей</h3><p>{children}</p></div>;}
@@ -109,7 +111,8 @@ export function App(){
  const [selected,setSelected]=useState<string|null>(null),[detail,setDetail]=useState<TaskDetail|null>(null),[drawerTab,setDrawerTab]=useState('info'),[requestType,setRequestType]=useState<'deadline'|'completion'|null>(null),[mobileMenu,setMobileMenu]=useState(false);
  const [detailError,setDetailError]=useState('');
  const [demo,setDemo]=useState(true),[processDraft,setProcessDraft]=useState<ProcessDraft|null>(null);
- const [editor,setEditor]=useState<{task:Task|null;copyOf?:Task;companyId?:string}|null>(null);
+ const [groups,setGroups]=useState<TaskGroupsData>({groups:[],items:{}}),[groupFilter,setGroupFilter]=useState('');
+ const [editor,setEditor]=useState<{task:Task|null;copyOf?:Task;companyId?:string;parent?:Task}|null>(null);
  const [completingTask,setCompletingTask]=useState<Task|null>(null);
  const [boardMove,setBoardMove]=useState<{id:string;deadline?:string}|null>(null);
  const [okbCompany,setOkbCompany]=useState<string|null>(null);
@@ -142,14 +145,25 @@ export function App(){
   const next=await api<TaskDetail>('/tasks/'+encodeURIComponent(id),'GET',undefined,{timeout:10000});
   if(generation===detailGeneration.current){setDetail(next);setDetailError('');}
  }
- async function openTask(id:string,tab='info'){
+ async function openTask(id:string,tab='info',track=true){
   if(!selected&&document.activeElement instanceof HTMLElement)taskOpener.current=document.activeElement;
   const generation=++detailGeneration.current;
   setSelected(id);setDrawerTab(tab);setDetail(null);setDetailError('');setError('');
-  window.history.replaceState(null,'',`#task=${encodeURIComponent(id)}`);
+  if(track&&id!==selected){
+   const url=new URL(location.href);url.hash='task='+encodeURIComponent(id);
+   const previous=history.state;
+   history.pushState({...previous,ruspet:true,depth:(previous?.depth??0)+1,drawer:true},'',url);
+   setCanGoBack(true);
+  }
   try{await refreshDetail(id);}catch(e){if(generation===detailGeneration.current)setDetailError((e as Error).message);}
  }
- function closeTask(){detailGeneration.current++;setSelected(null);setDetail(null);setRequestType(null);window.history.replaceState(null,'',window.location.pathname+window.location.search);}
+ function clearTask(){detailGeneration.current++;setSelected(null);setDetail(null);setRequestType(null);}
+ function closeTask(track=true){
+  if(track&&selected&&history.state?.drawer){history.back();return;}
+  clearTask();
+  if(!track)return;
+  const url=new URL(location.href);url.hash='';url.searchParams.delete('task');history.replaceState(history.state,'',url);
+ }
  useLayoutEffect(()=>{
   if(selected)drawerClose.current?.focus({preventScroll:true});
   else{
@@ -157,13 +171,13 @@ export function App(){
    taskOpener.current=null;
   }
  },[selected]);
- async function login(id:string){refreshGeneration.current++;setBusy(true);setError('');try{await api('/demo/login','POST',{userId:id});closeTask();setEditor(null);setTablePage(0);setSearch('');setLinkedIds(null);setWorkDay(null);setProcessDraft(null);setOkbCompany(null);pendingWrites.current.clear();snapshot.current=undefined;await refresh();showToast('Пользователь переключён. Права доступа применены.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
+ async function login(id:string){refreshGeneration.current++;setBusy(true);setError('');try{await api('/demo/login','POST',{userId:id});closeTask(false);setEditor(null);setTablePage(0);setSearch('');setLinkedIds(null);setWorkDay(null);setProcessDraft(null);setOkbCompany(null);pendingWrites.current.clear();snapshot.current=undefined;await refresh();showToast('Пользователь переключён. Права доступа применены.');}catch(e){setError((e as Error).message);}finally{setBusy(false);}}
  async function logout(){
   setBusy(true);
   try{
    await api('/auth/logout','POST',{},{timeout:10000});
    refreshGeneration.current++;snapshot.current=undefined;pendingWrites.current.clear();
-   setSearch('');setLinkedIds(null);setWorkDay(null);closeTask();setEditor(null);setProcessDraft(null);setOkbCompany(null);
+   setSearch('');setLinkedIds(null);setWorkDay(null);closeTask(false);setEditor(null);setProcessDraft(null);setOkbCompany(null);
    setPage('overview');setError('');setConnectionIssue(null);setData(null);
   }catch(error){setError((error as Error).message);}
   finally{setBusy(false);}
@@ -258,7 +272,17 @@ export function App(){
  },[data]);
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!tour){if(boardMove){if(!busy){setBoardMove(null);setError('');}}else if(completingTask&&!busy)setCompletingTask(null);else if(editor)setEditor(null);else if(requestType)setRequestType(null);else closeTask();}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[requestType,editor,completingTask,boardMove,busy,tour]);
  function openSettings(target:string){go('settings');setSettingsTarget(target);}
- function go(next:Page,taskFilter?:string,view?:ReportView,workBucket:'all'|WorkBucket='all'){if((viewingEmployee&&!previewSections.has(next))||(data&&!canOpenWorkspacePage(data.user,next,data.analyticsAccess)))return;if(next!=='okb')setOkbCompany(null);if(next!=='processes')setProcessDraft(null);setTablePage(0);setPage(next);setMobileMenu(false);setShowTaskMetrics(false);if(next==='settings')setSettingsTarget(undefined);if(next==='notifications')setNoticeTab('feed');if(next==='actions')setWorkEntry(previous=>({bucket:workBucket,visit:previous.visit+1}));if(next==='tasks'&&(view||!taskFilter)){setTaskView(view??null);if(!taskFilter){setOwner('all');setFilter('all');setSearch('');setFromDate('');setToDate('');setBranch('all');setPriceFilter('all');setLinkedIds(null);setWorkDay(null);}}if(next==='reports'){setReportOpen(null);setReportPdf(false);setReportView(view??null);}if(next!=='tasks'){setLinkedIds(null);setWorkDay(null);}if(taskFilter){setSearch('');setFromDate('');setToDate('');setWorkDay(null);setLinkedIds(null);setPriceFilter('all');setFilter(taskFilter);setOwner('all');setBranch('all');}}
+ const [canGoBack,setCanGoBack]=useState(()=>Boolean(history.state?.ruspet&&history.state.depth));
+ function go(next:Page,taskFilter?:string,view?:ReportView,workBucket:'all'|WorkBucket='all',track=true){if((viewingEmployee&&!previewSections.has(next))||(data&&!canOpenWorkspacePage(data.user,next,data.analyticsAccess)))return;if(track&&(next!==page||next==='tasks'&&(taskFilter!==undefined||view!==undefined)||next==='actions'&&workBucket!=='all')){
+  const url=new URL(location.pathname,location.origin);url.searchParams.set('view',next);
+  if(next==='tasks')url.searchParams.set('scope',view??(next===page?taskView:null)??'mine');
+  if(taskFilter&&next==='tasks')url.searchParams.set('filter',taskFilter);
+  if(next==='actions'&&workBucket!=='all')url.searchParams.set('queue',workBucket);
+  if(new URL(location.href).searchParams.has('full'))url.searchParams.set('full','1');
+  if(url.href!==location.href){history.pushState({ruspet:true,depth:(history.state?.depth??0)+1},'',url);setCanGoBack(true);}
+  routeFromUrl.current=url.search;
+  if(selected)clearTask();
+ }if(next!=='okb')setOkbCompany(null);if(next!=='processes')setProcessDraft(null);setTablePage(0);setPage(next);setMobileMenu(false);setShowTaskMetrics(false);if(next==='settings')setSettingsTarget(undefined);if(next==='notifications')setNoticeTab('feed');if(next==='actions')setWorkEntry(previous=>({bucket:workBucket,visit:previous.visit+1}));if(next==='tasks'&&(view||!taskFilter)){setTaskView(view??null);if(!taskFilter){setGroupFilter('');setOwner('all');setFilter('all');setSearch('');setFromDate('');setToDate('');setBranch('all');setPriceFilter('all');setLinkedIds(null);setWorkDay(null);}}if(next==='reports'){setReportOpen(null);setReportPdf(false);setReportView(view??null);}if(next!=='tasks'){setLinkedIds(null);setWorkDay(null);}if(taskFilter){setGroupFilter('');setSearch('');setFromDate('');setToDate('');setWorkDay(null);setLinkedIds(null);setPriceFilter('all');setFilter(taskFilter);setOwner('all');setBranch('all');}}
  const userById=(id:string)=>data?.users.find(u=>u.id===id);
  useEffect(()=>{
   if(!data)return;
@@ -282,17 +306,44 @@ export function App(){
   };
  },[data?.user.id,busy,editor,requestType,boardMove,selected]);
  useEffect(()=>{if(data&&!data.rules.showPlanning&&filter==='planned_today')setFilter('all');},[data?.rules.showPlanning,filter]);
- const appliedLink=useRef('');
- useEffect(()=>{if(!data)return;const marker=data.user.id+':'+location.search;if(appliedLink.current===marker)return;appliedLink.current=marker;const q=new URLSearchParams(location.search);if(q.get('view')==='guide'){setPage('guide');return;}if(q.get('view')==='training'&&data.user.root_access){setSettingsTarget('training');setPage('settings');return;}if(q.get('view')==='registrations'&&data.user.role==='admin'){setSettingsTarget('registrations');setPage('settings');return;}if(q.get('view')==='approvals'&&canOpenWorkspacePage(data.user,'approvals')){setPage('approvals');return;}if(q.get('view')==='notifications'){setPage('notifications');return;}if(q.get('view')==='actions'){const bucket=q.get('queue')||'';setWorkEntry({bucket:Object.hasOwn(workLabels,bucket)?bucket as WorkBucket:'all',visit:0});setPage('actions');return;}if(q.get('view')==='analytics'&&data.analyticsAccess&&!viewingEmployee){setPage('analytics');return;}if(q.get('view')==='calendar'&&!viewingEmployee){setPage('calendar');return;}if(q.get('view')==='reports'){if(!q.get('report')&&!canOpenWorkspacePage(data.user,'reports'))return;setPage('reports');setReportOpen(q.get('report'));setReportPdf(q.get('format')==='pdf');return;}if(q.get('view')!=='tasks')return;setPage('tasks');setTaskView(q.get('scope')==='created'?'created':q.get('scope')==='team'?'team':q.get('scope')==='mine'||q.get('owner')===data.user.id?'mine':hasCompanyOverview(data.user)?'company':q.get('owner')&&managed(data.user)?'team':null);setTablePage(0);setSearch('');setBranch('all');setFromDate('');setToDate('');setLinkedIds(null);setFilter(q.get('filter')||'all');setOwner(q.get('owner')||'all');setWorkDay(q.get('day'));if(['deadline','title','transfers','price_desc','work_priority'].includes(q.get('sort')||''))setSort(q.get('sort')!);setPriceFilter(q.get('price')||'all');if(q.get('task'))void openTask(q.get('task')!);const reportId=q.get('report');if(reportId)void api<import('../shared/types.js').Report>('/reports/'+encodeURIComponent(reportId)).then(r=>{const subset=q.get('subset'),s=r.summary,at=new Date(s?.to||r.created_at);const outcomeIds:Record<string,string[]|undefined>={submitted:s?.activity.submittedIds,transferred:s?.outcomes?.transferIds,requested_transfer:s?.outcomes?.requestedTransferIds,explained:s?.outcomes?.explanationIds,approval_decision:s?.approvalQueue?.decisionIds,approval_clarification:s?.approvalQueue?.clarificationIds,creator_open:s?.creatorProgress?.openIds,creator_moved:s?.creatorProgress?.movedIds,creator_idle:s?.creatorProgress?.idleOverdueIds,creator_decision:s?.creatorProgress?.myDecisionIds,creator_on_time:s?.creatorProgress?.closedOnTimeIds,creator_late:s?.creatorProgress?.closedLateIds};const ids=subset&&subset in outcomeIds?outcomeIds[subset]:subset==='elapsed_today'?r.rows.filter(t=>elapsedToday(t,at)).map(t=>t.id):subset==='due_later_today'?r.rows.filter(t=>taskQueue(t,at)==='today'&&!elapsedToday(t,at)).map(t=>t.id):subset==='expected'?s?.front.expectedIds:subset==='front_closed'?s?.front.closedIds:subset==='processed'?s?.activity.processedIds:subset==='closed'?s?.activity.closedIds:subset==='remaining'?s?.front.remainingIds:subset==='tomorrow'?s?.tomorrow.ids:subset==='late'?s?.lateIds:r.rows.filter(t=>!subset||subset==='all'||taskQueue(t,at)===subset).map(t=>t.id);setLinkedIds(ids||[]);setFilter('all');}).catch(e=>setError(e.message));},[data?.user.id]);
+ const routeFromUrl=useRef(location.search);
+ const linkHandler=useRef<(sameSection?:boolean)=>void>(()=>{});
+ linkHandler.current=(sameSection=false)=>{if(!data)return;
+ const q=new URLSearchParams(location.search);
+ const next=q.get('view');routeFromUrl.current=location.search;
+ const taskId=new URLSearchParams(location.hash.slice(1)).get('task')??q.get('task');
+ clearTask();setEditor(null);setCompletingTask(null);setBoardMove(null);setMobileMenu(false);
+ if(taskId)void openTask(taskId,'info',false);
+ if(sameSection)return;
+ if(!next){setPage('overview');return;}
+ if(nav.some(item=>item.id===next)&&!canOpenWorkspacePage(data.user,next as Page,data.analyticsAccess)){setPage('overview');return;}if(q.get('view')==='guide'){setPage('guide');return;}if(q.get('view')==='training'&&data.user.root_access){setSettingsTarget('training');setPage('settings');return;}if(q.get('view')==='registrations'&&data.user.role==='admin'){setSettingsTarget('registrations');setPage('settings');return;}if(q.get('view')==='approvals'&&canOpenWorkspacePage(data.user,'approvals')){setPage('approvals');return;}if(q.get('view')==='notifications'){setPage('notifications');return;}if(q.get('view')==='actions'){const bucket=q.get('queue')||'';setWorkEntry({bucket:Object.hasOwn(workLabels,bucket)?bucket as WorkBucket:'all',visit:0});setPage('actions');return;}if(q.get('view')==='analytics'&&data.analyticsAccess&&!viewingEmployee){setPage('analytics');return;}if(q.get('view')==='calendar'&&!viewingEmployee){setPage('calendar');return;}if(q.get('view')==='reports'){if(!q.get('report')&&!canOpenWorkspacePage(data.user,'reports'))return;setPage('reports');setReportOpen(q.get('report'));setReportPdf(q.get('format')==='pdf');return;}if(q.get('view')!=='tasks'){setPage(nav.find(item=>item.id===next)?.id??'overview');return;}setPage('tasks');setTaskView(q.get('scope')==='created'?'created':q.get('scope')==='team'?'team':q.get('scope')==='mine'||q.get('owner')===data.user.id?'mine':hasCompanyOverview(data.user)?'company':q.get('owner')&&managed(data.user)?'team':null);setTablePage(0);setSearch('');setBranch('all');setFromDate('');setToDate('');setLinkedIds(null);setFilter(q.get('filter')||'all');setOwner(q.get('owner')||'all');setWorkDay(q.get('day'));if(['deadline','title','transfers','price_desc','work_priority','urgency'].includes(q.get('sort')||''))setSort(q.get('sort')!);setPriceFilter(q.get('price')||'all');const reportId=q.get('report');if(reportId)void api<import('../shared/types.js').Report>('/reports/'+encodeURIComponent(reportId)).then(r=>{const subset=q.get('subset'),s=r.summary,at=new Date(s?.to||r.created_at);const outcomeIds:Record<string,string[]|undefined>={submitted:s?.activity.submittedIds,transferred:s?.outcomes?.transferIds,requested_transfer:s?.outcomes?.requestedTransferIds,explained:s?.outcomes?.explanationIds,approval_decision:s?.approvalQueue?.decisionIds,approval_clarification:s?.approvalQueue?.clarificationIds,creator_open:s?.creatorProgress?.openIds,creator_moved:s?.creatorProgress?.movedIds,creator_idle:s?.creatorProgress?.idleOverdueIds,creator_decision:s?.creatorProgress?.myDecisionIds,creator_on_time:s?.creatorProgress?.closedOnTimeIds,creator_late:s?.creatorProgress?.closedLateIds};const ids=subset&&subset in outcomeIds?outcomeIds[subset]:subset==='elapsed_today'?r.rows.filter(t=>elapsedToday(t,at)).map(t=>t.id):subset==='due_later_today'?r.rows.filter(t=>taskQueue(t,at)==='today'&&!elapsedToday(t,at)).map(t=>t.id):subset==='expected'?s?.front.expectedIds:subset==='front_closed'?s?.front.closedIds:subset==='processed'?s?.activity.processedIds:subset==='closed'?s?.activity.closedIds:subset==='remaining'?s?.front.remainingIds:subset==='tomorrow'?s?.tomorrow.ids:subset==='late'?s?.lateIds:r.rows.filter(t=>!subset||subset==='all'||taskQueue(t,at)===subset).map(t=>t.id);setLinkedIds(ids||[]);setFilter('all');}).catch(e=>setError(e.message));};
+ useEffect(()=>{
+  if(!data)return;
+  if(!history.state?.ruspet)history.replaceState({ruspet:true,depth:0},'',location.href);
+  const follow=()=>{setCanGoBack(Boolean(history.state?.ruspet&&history.state.depth));linkHandler.current(location.search===routeFromUrl.current);};
+  linkHandler.current();
+  window.addEventListener('popstate',follow);
+  return()=>window.removeEventListener('popstate',follow);
+ },[data?.user.id]);
  const now=data?new Date(data.serverTime):new Date();
  const onApproval=(t:Task)=>!!data?.approvals.some(a=>activeTaskApproval(t,a));
  const overdue=(t:Task)=>!onApproval(t)&&(taskQueue(t,now)==='overdue'||elapsedToday(t,now));
- const taskState=(t:Task)=>onApproval(t)?'pending':overdue(t)?'overdue':t.status;
+ async function refreshGroups(){
+  const next=await api<TaskGroupsData>('/task-groups');setGroups(next);
+ }
+ useEffect(()=>{
+  if(!data||viewingEmployee){setGroups({groups:[],items:{}});return;}
+  let active=true;
+  void api<TaskGroupsData>('/task-groups').then(next=>{if(active)setGroups(next);}).catch(()=>{});
+  return()=>{active=false;};
+ },[data?.user.id,page,viewingEmployee]);
+ const taskState=(t:Task)=>onApproval(t)?'pending':(t.assignment_pending||detail?.task.id===t.id&&detail.assignmentReceipt?.state==='pending')?'unaccepted':overdue(t)?'overdue':t.status;
  const filterTasks=(items:Task[],f=filter)=>items.filter(t=>{
   if(f.startsWith('day:'))return t.status==='active'&&!onApproval(t)&&!!t.deadline&&businessDay(t.deadline)===f.slice(4);
   const deadline=taskQueue(t,now);
   switch(f){
    case 'all':return true;
+   case 'unaccepted':return t.assignment_pending===true&&!onApproval(t);
    case 'risk':return t.customer_risk===true&&t.status!=='completed';
    case 'planned_today':return !onApproval(t)&&plannedToday(t,now);
    case 'active':return t.status!=='completed';
@@ -314,7 +365,7 @@ export function App(){
     const approval=data!.approvals.find(a=>activeTaskApproval(t,a));
     const next=taskNextAction(t,approval,data!.approvalScope);
     return <tr key={t.id}>
-    <td><button className="task-link" onClick={()=>void openTask(t.id)}><span className="task-id">#{t.id} <span>{t.code}</span></span><strong>{t.title}</strong></button><TaskMeta task={t}/></td>
+    <td><button className="task-link" onClick={()=>void openTask(t.id)}><span className="task-id">#{t.id} <span>{t.code}</span></span><strong>{t.title}</strong></button><TaskMeta task={t}/>{(t.priority==='high'||t.critical)&&<div className="task-flags">{t.priority==='high'&&<small>Высокий приоритет</small>}{t.critical&&<small className="red-text">Критичная</small>}</div>}</td>
     <td><TaskPeople task={t} users={data!.users}/><small>{t.branch_id}</small></td>
     <td><strong>{formatPrice(t)}</strong><small>{priceLabels[priceBand(t)]}</small></td>
     <td className={overdue(t)?'late-date':''}>{date(t.deadline,true)}
@@ -351,7 +402,7 @@ export function App(){
  const requestedScope=trainingStep?.page==='tasks'?trainingStep.scope??taskView:taskView;
  const currentScope=requestedScope==='company'&&!company?'mine':requestedScope==='team'&&!teamAllowed?'mine':requestedScope??'mine';
  const members=new Set(data.teamIds);
- const scopedTasks=linkedIds?data.tasks.filter(t=>linkedIds.includes(t.id)):currentScope==='mine'?data.tasks.filter(t=>t.assignee_id===data.user.id):
+ const scopedTasks=groupFilter&&!linkedIds?data.tasks.filter(t=>groups.items[t.id]===groupFilter):linkedIds?data.tasks.filter(t=>linkedIds.includes(t.id)):currentScope==='mine'?data.tasks.filter(t=>t.assignee_id===data.user.id):
   currentScope==='created'?data.tasks.filter(t=>t.creator_id===data.user.id):
   currentScope==='team'?data.tasks.filter(t=>members.has(t.assignee_id)):data.tasks;
  const taskIndex=new Map(data.tasks.map(task=>[task.id,task]));
@@ -359,7 +410,7 @@ export function App(){
  const scopedOwners=new Set(scopedTasks.map(task=>task.assignee_id));
  const ownerNames=data.users.filter(person=>selectedOwners.has(person.id)).map(person=>person.name).join(', ');
  const teamDirectory=currentScope==='team'&&(trainingStep?.scope==='team'||!showKanban&&!linkedIds&&!selectedOwners.size&&
-  filter==='all'&&!workDay&&!search.trim()&&!fromDate&&!toDate&&branch==='all'&&priceFilter==='all');
+  filter==='all'&&!groupFilter&&!workDay&&!search.trim()&&!fromDate&&!toDate&&branch==='all'&&priceFilter==='all');
  const pending=data.approvals.filter(a=>{const task=taskIndex.get(a.task_id);return !!task&&activeTaskApproval(task,a);});
  const pendingTasks=new Set(pending.map(a=>a.task_id));
  const boardMoveTask=boardMove&&taskIndex.get(boardMove.id);
@@ -367,34 +418,34 @@ export function App(){
  function moveBoardTask(task:Task,deadline?:string){
   if(canMoveBoardTask(task)){setError('');setBoardMove({id:task.id,deadline});}
  }
- const matchingTasks=scopedTasks.filter(t=>(priceFilter==='all'||priceBand(t)===priceFilter)&&(branch==='all'||t.branch_id===branch)&&(currentScope==='mine'&&!linkedIds||!selectedOwners.size||selectedOwners.has(t.assignee_id))&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.trim().replace(/^#\s*/,'').toLowerCase()));
- const visible=filterTasks(matchingTasks).sort((a,b)=>sort==='price_desc'?(taskPrice(b)??-1)-(taskPrice(a)??-1):sort==='work_priority'?compareWorkPlan(a,b,workDay||businessDay(now)):sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='transfers'?b.transfer_count-a.transfer_count:(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+ const matchingTasks=scopedTasks.filter(t=>(!groupFilter||groups.items[t.id]===groupFilter)&&(priceFilter==='all'||priceBand(t)===priceFilter)&&(branch==='all'||t.branch_id===branch)&&(currentScope==='mine'&&!linkedIds||!selectedOwners.size||selectedOwners.has(t.assignee_id))&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.trim().replace(/^#\s*/,'').toLowerCase()));
+ const visible=filterTasks(matchingTasks).sort((a,b)=>sort==='price_desc'?(taskPrice(b)??-1)-(taskPrice(a)??-1):sort==='urgency'?Number(!!b.critical)-Number(!!a.critical)||Number(b.priority==='high')-Number(a.priority==='high')||(a.deadline||'9999').localeCompare(b.deadline||'9999'):sort==='work_priority'?compareWorkPlan(a,b,workDay||businessDay(now)):sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='transfers'?b.transfer_count-a.transfer_count:(a.deadline||'9999').localeCompare(b.deadline||'9999'));
  const myWork=workQueue(data),myActionCount=workCount(myWork);
  const myApprovals=pending.filter(a=>approvalTurn(a).userId===data.user.id);
  const scopedMetrics=summarize(matchingTasks,now,pendingTasks);
- const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
+ const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'Не приняты',count:matchingTasks.filter(t=>t.assignment_pending&&!pendingTasks.has(t.id)).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
  const cardApproval=detail?.approvals.some(a=>activeTaskApproval(detail.task,a));
  const cardCanComplete=!!detail&&!viewingEmployee&&!cardApproval&&!detail.personalPlan?.needsAcceptance&&canComplete(data.user,detail.task,detail.approvalScope);
  const title=page==='guide'?'Гайд':page==='notifications'?'Уведомления':nav.find(n=>n.id===page)?.label;
  const user=data.user;
  const guideEnabled=(area:Page)=>(!viewingEmployee||previewSections.has(area))&&canOpenWorkspacePage(user,area,data.analyticsAccess);
  function showTourStep(step:TourStep,taskId?:string){
-  if(selected&&!step.card)closeTask();
+  if(selected&&!step.card)closeTask(false);
   if(step.page==='tasks')setPage('tasks');
-  else if(page!==step.page)go(step.page);
+  else if(page!==step.page)go(step.page,undefined,undefined,'all',false);
   if(step.card&&taskId){
    if(selected===taskId)setDrawerTab(step.card);
-   else void openTask(taskId,step.card);
+   else void openTask(taskId,step.card,false);
   }
  }
  function startTour(steps:TourStep[]){
   const taskId=data?.tasks.find(task=>task.assignee_id===user.id&&task.status==='active')?.id;
   setTour({steps,index:0,taskId});showTourStep(steps[0],taskId);
  }
- function openGuide(){if(selected)closeTask();go('guide');}
+ function openGuide(){go('guide');}
  return <div className="app">
   <aside className={mobileMenu?'sidebar mobile-open':'sidebar'}><a className="brand" href="#" onClick={e=>{e.preventDefault();go('overview');}}><CapMark/><span>РУСПЭТ<small>Контроль и согласование</small></span></a>{data.managerPreview&&<p className="nav-label">Учебный стенд</p>}<nav>{nav.filter(n=>(!viewingEmployee||previewSections.has(n.id))&&canOpenWorkspacePage(data.user,n.id,data.analyticsAccess)).map(({id,label,icon:Icon},i)=><button key={id} className={`${page===id?'active':''} ${i===6?'nav-divider':''}`} onClick={()=>go(id)}><Icon size={18}/><span>{label}</span>{id==='actions'&&myActionCount>0&&<b title="Задачи, где ход за вами">{myActionCount}</b>}{id==='approvals'&&myApprovals.length>0&&<b>{myApprovals.length}</b>}</button>)}{!viewingEmployee&&data.user.root_access&&<a className="owner-planner-link" href="/time"><CalendarDays size={18}/> Личный планер</a>}{!viewingEmployee&&<a className="owner-planner-link" href="/mobile"><MessageSquare size={18}/> Мобильная версия</a>}</nav></aside>
-  <div className={'workspace-main'+(page==='tasks'&&showKanban?' kanban-workspace':'')}><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-toggle" aria-label="Меню" onClick={()=>setMobileMenu(!mobileMenu)}><PanelLeftClose size={19}/></button><span>Рабочее пространство</span><ChevronRight size={14}/><strong>{title}</strong></div><div className="topbar-right"><button type="button" className="button secondary guide-entry" onClick={openGuide} aria-current={page==='guide'?'page':undefined}><BookOpen size={17}/> Гайд</button><ThemeToggle/>{demo&&<span className="demo-label">ДЕМО</span>}<button className="icon-button notification-button" aria-label="Уведомления" onClick={()=>go('notifications')}><Bell size={19}/>{data.notifications.some(item=>!item.read_at)&&<i/>}</button><div className="user-switch"><Avatar user={data.user}/>{demo?<div><label htmlFor="persona">Демонстрационная роль</label><select id="persona" value={data.user.id} disabled={busy} onChange={e=>void login(e.target.value)}>{users.map(u=><option key={u.id} value={u.id}>{u.name} · {roles[u.role]}</option>)}</select></div>:<div><strong>{data.user.name}</strong><small>{data.user.root_access?'Владелец · root':data.user.position.trim()||roles[data.user.role]}</small></div>}{!demo&&!viewingEmployee&&<button className="text-button" disabled={busy} onClick={()=>void logout()}>Выйти</button>}</div></div></header>
+  <div className={'workspace-main'+(page==='tasks'&&showKanban?' kanban-workspace':'')}><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-toggle" aria-label="Меню" onClick={()=>setMobileMenu(!mobileMenu)}><PanelLeftClose size={19}/></button>{canGoBack&&<button type="button" className="text-button workspace-back" onClick={()=>history.back()}>‹ Назад</button>}<span>Рабочее пространство</span><ChevronRight size={14}/><strong>{title}</strong></div><div className="topbar-right"><button type="button" className="button secondary guide-entry" onClick={openGuide} aria-current={page==='guide'?'page':undefined}><BookOpen size={17}/> Гайд</button><ThemeToggle/>{demo&&<span className="demo-label">ДЕМО</span>}<button className="icon-button notification-button" aria-label="Уведомления" onClick={()=>go('notifications')}><Bell size={19}/>{data.notifications.some(item=>!item.read_at)&&<i/>}</button><div className="user-switch"><Avatar user={data.user}/>{demo?<div><label htmlFor="persona">Демонстрационная роль</label><select id="persona" value={data.user.id} disabled={busy} onChange={e=>void login(e.target.value)}>{users.map(u=><option key={u.id} value={u.id}>{u.name} · {roles[u.role]}</option>)}</select></div>:<div><strong>{data.user.name}</strong><small>{data.user.root_access?'Владелец · root':data.user.position.trim()||roles[data.user.role]}</small></div>}{!demo&&!viewingEmployee&&<button className="text-button" disabled={busy} onClick={()=>void logout()}>Выйти</button>}</div></div></header>
   <main>{viewingEmployee&&<div className="source-banner view-as-banner"><div><strong>Просмотр от имени {data.user.name}</strong><p>Данные и задачи доступны по роли сотрудника. Режим только для чтения.</p></div><a className="button secondary" href="/">В админскую панель</a></div>}{page!=='analytics'&&page!=='guide'&&<div className="page-heading"><div>{page==='overview'&&<div className="eyebrow">{new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'long',year:'numeric',weekday:'long'}).format(now)}</div>}<h1>{title}</h1>{page!=='overview'&&<p>{({org:'Руководители команд и временные замещения.',delegations:'Выданные поручения, сроки и приёмка.',processes:'Условия создания задач и расписания повторений.',okb:'Компании, контакты и состояние работы с ними.',actions:'Просрочки, оставшиеся сроки на сегодня и задачи, где нужен следующий шаг.',bot:'Личные чаты и действия по задачам.',overview:'',tasks:'Сроки, исполнители и полная история каждой задачи.',approvals:'Запросы на перенос крайнего срока и закрытие задач.',checks:'Нарушения по задачам и ответы сотрудников.',reports:'Сохранённые снимки состояния. Часовой пояс — Москва.',people:'Нагрузка и состояние задач в вашей области доступа.',journal:'История действий, ответов и решений без перезаписи.',settings:'Правила контроля, маршруты и состояние подключений.',notifications:'Уведомления по задачам, проверкам и решениям.'} as Record<Page,string>)[page]}</p>}</div><div className="heading-actions">{page!=='bot'&&<button className="button secondary square" aria-label="Обновить данные" disabled={busy} onClick={()=>{setBusy(true);refresh().then(()=>showToast('Данные обновлены')).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}><RefreshCw size={16}/></button>}{page==='bot'&&<button className="button secondary" onClick={()=>openSettings('notices')}>Уведомления и Telegram</button>}{!viewingEmployee&&page==='tasks'&&<button className="button primary" disabled={busy} onClick={()=>setEditor({task:null})}>Создать задачу</button>}{!viewingEmployee&&managed(data.user)&&page==='checks'&&<button className="button primary" disabled={busy} onClick={()=>void act('/checks/run',undefined,'POST','Проверка завершена. Нарушения и запросы обновлены.')} ><ShieldCheck size={17}/> Проверить задачи</button>}</div></div>}
   {connectionNotice}
   {page==='guide'&&<WorkspaceGuide user={user} enabled={guideEnabled} launch={startTour} preview={viewingEmployee} salesOverview={data.analyticsAccess==='sales'}
@@ -423,10 +474,12 @@ export function App(){
      {data.selection&&<p>В рабочей выборке: {data.selection.included}. Исключено: {data.selection.checklist} с чек-листами и {data.selection.unfinishedAnalysis} на анализ невыполненных задач.</p>}
      <dl className="freshness"><div><dt>Импорт в систему</dt><dd>{moscowTimestamp(data.source.imported_at)}</dd></div><div><dt>Последнее изменение задач</dt><dd>{moscowTimestamp(data.lastTaskChange)}</dd></div><div><dt>Расчёт показателей</dt><dd>{moscowTimestamp(data.serverTime)}</dd></div></dl>
     </details>}</>}
-  </details>}{teamDirectory?<TeamTasks tasks={scopedTasks} users={data.users} now={now} paused={pendingTasks} onSelect={(id,f)=>{go('tasks',f,'team');setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">Выборка из сохранённого отчёта · показано текущее состояние доступных задач.<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={setFilter} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel" data-presentation={showKanban?'board':'list'}><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label>{showKanban&&<button type="button" className="button secondary" aria-expanded={showBoardFilters} aria-controls="task-filter-options" onClick={()=>setShowBoardFilters(value=>!value)}><Filter size={16}/> Фильтры</button>}<div id="task-filter-options" className="task-filter-options" hidden={showKanban&&!showBoardFilters}><SearchFilter label="Филиал" value={branch} onChange={setBranch} empty={{value:'all',label:'Все филиалы'}} placeholder="Название подразделения" options={[...new Set(data.tasks.map(t=>t.branch_id))].sort((a,b)=>a.localeCompare(b,'ru')).map(value=>({value,label:value}))}/>{(currentScope!=='mine'||linkedIds)&&<EmployeeFilter label="Исполнители" values={ownerSelection} onChange={ids=>setOwner(writeFilterSelection(ids))} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>selectedOwners.has(u.id)||scopedOwners.has(u.id))}/>}<label className="date-filter">Крайний срок от<input aria-label="Крайний срок от" type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></label><label className="date-filter">до<input aria-label="Крайний срок до" type="date" min={fromDate} value={toDate} onChange={e=>setToDate(e.target.value)}/></label><select aria-label="Категория цены" value={priceFilter} onChange={e=>{setPriceFilter(e.target.value);setTablePage(0)}}><option value="all">Любая цена</option>{Object.entries(priceLabels).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select><select aria-label="Сортировка" value={sort} onChange={e=>setSort(e.target.value)}><option value="deadline">По сроку</option><option value="price_desc">По цене: сначала дороже</option><option value="work_priority">Порядок работы: просрочки и цена</option><option value="title">По названию</option><option value="transfers">По переносам</option></select></div></div>{(search||(currentScope!=='mine'||linkedIds)&&!!selectedOwners.size||branch!=='all'||fromDate||toDate||priceFilter!=='all'||workDay)&&<div className="active-filter"><span>{[search&&'Поиск: '+search,(currentScope!=='mine'||linkedIds)&&ownerNames,branch!=='all'&&branch,fromDate&&'С '+fromDate,toDate&&'По '+toDate,priceFilter!=='all'&&priceLabels[priceFilter as keyof typeof priceLabels],workDay&&'На '+workDay].filter(Boolean).join(' · ')}</span><button className="text-button" onClick={()=>go('tasks','all')}>Сбросить фильтры</button></div>}{!showKanban&&<>{renderTaskTable(visible)}{visible.length>50&&<div className="pagination"><button className="button secondary" disabled={tablePage===0} onClick={()=>setTablePage(p=>p-1)}>Назад</button><span>{tablePage+1} / {Math.ceil(visible.length/50)}</span><button className="button secondary" disabled={(tablePage+1)*50>=visible.length} onClick={()=>setTablePage(p=>p+1)}>Далее</button></div>}<div className="panel-footer"><span>Найдено {visible.length} из {scopedTasks.length}</span></div></>}</section>
+  </details>}{teamDirectory?<TeamTasks tasks={scopedTasks} users={data.users} now={now} paused={pendingTasks} onSelect={(id,f)=>{go('tasks',f,'team');setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">Выборка из сохранённого отчёта · показано текущее состояние доступных задач.<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={setFilter} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel" data-presentation={showKanban?'board':'list'}><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label>{groups.groups.length>0&&!viewingEmployee&&<select aria-label="Моя подборка" value={groupFilter} onChange={e=>{setGroupFilter(e.target.value);setTablePage(0);}}>
+    <option value="">Все подборки</option>{groups.groups.map(group=><option key={group.id} value={group.id}>{group.name}</option>)}
+   </select>}{showKanban&&<button type="button" className="button secondary" aria-expanded={showBoardFilters} aria-controls="task-filter-options" onClick={()=>setShowBoardFilters(value=>!value)}><Filter size={16}/> Фильтры</button>}<div id="task-filter-options" className="task-filter-options" hidden={showKanban&&!showBoardFilters}><SearchFilter label="Филиал" value={branch} onChange={setBranch} empty={{value:'all',label:'Все филиалы'}} placeholder="Название подразделения" options={[...new Set(data.tasks.map(t=>t.branch_id))].sort((a,b)=>a.localeCompare(b,'ru')).map(value=>({value,label:value}))}/>{(currentScope!=='mine'||linkedIds)&&<EmployeeFilter label="Исполнители" values={ownerSelection} onChange={ids=>setOwner(writeFilterSelection(ids))} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>selectedOwners.has(u.id)||scopedOwners.has(u.id))}/>}<label className="date-filter">Крайний срок от<input aria-label="Крайний срок от" type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></label><label className="date-filter">до<input aria-label="Крайний срок до" type="date" min={fromDate} value={toDate} onChange={e=>setToDate(e.target.value)}/></label><select aria-label="Категория цены" value={priceFilter} onChange={e=>{setPriceFilter(e.target.value);setTablePage(0)}}><option value="all">Любая цена</option>{Object.entries(priceLabels).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select><select aria-label="Сортировка" value={sort} onChange={e=>setSort(e.target.value)}><option value="deadline">По сроку</option><option value="price_desc">По цене: сначала дороже</option><option value="work_priority">Порядок работы: просрочки и цена</option><option value="urgency">По критичности и приоритету</option><option value="title">По названию</option><option value="transfers">По переносам</option></select></div></div>{(search||(currentScope!=='mine'||linkedIds)&&!!selectedOwners.size||branch!=='all'||fromDate||toDate||priceFilter!=='all'||workDay)&&<div className="active-filter"><span>{[search&&'Поиск: '+search,(currentScope!=='mine'||linkedIds)&&ownerNames,branch!=='all'&&branch,fromDate&&'С '+fromDate,toDate&&'По '+toDate,priceFilter!=='all'&&priceLabels[priceFilter as keyof typeof priceLabels],workDay&&'На '+workDay].filter(Boolean).join(' · ')}</span><button className="text-button" onClick={()=>go('tasks','all')}>Сбросить фильтры</button></div>}{!showKanban&&<>{renderTaskTable(visible)}{visible.length>50&&<div className="pagination"><button className="button secondary" disabled={tablePage===0} onClick={()=>setTablePage(p=>p-1)}>Назад</button><span>{tablePage+1} / {Math.ceil(visible.length/50)}</span><button className="button secondary" disabled={(tablePage+1)*50>=visible.length} onClick={()=>setTablePage(p=>p+1)}>Далее</button></div>}<div className="panel-footer"><span>Найдено {visible.length} из {scopedTasks.length}</span></div></>}</section>
    {showKanban&&<TaskKanban tasks={visible} users={data.users} now={now} pending={pendingTasks} filtered={filter!=='all'||visible.length!==scopedTasks.length||!!linkedIds}
     open={id=>void openTask(id)} canMove={canMoveBoardTask} move={moveBoardTask}/>}</>}</>}
-  {page==='approvals'&&data.user.role==='admin'&&!viewingEmployee&&!tour&&<DirectorBatch stamp={data.serverTime}/>}
+
   {page==='approvals'&&<ApprovalWorkspace readOnly={viewingEmployee||!!tour} startOnMine={!!tour} data={data} render={a=><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask}/>}/>}
   {page==='checks'&&<QualityWorkspace key={data.user.id} data={data} open={(id,tab)=>void openTask(id,tab)} settings={viewingEmployee?undefined:()=>openSettings('rules')}/>}
   {page==='reports'&&<WorkspaceSection label="Загружаем отчёты…"><Reports key={data.user.id+':'+(trainingStep?.scope??reportView??'default')} initialView={trainingStep?.scope??reportView??undefined} initialReport={reportOpen} downloadPdf={reportPdf} readOnly={viewingEmployee} data={data} refresh={refresh} openAutomation={company&&!viewingEmployee?()=>openSettings('automation'):undefined}/></WorkspaceSection>}
@@ -474,6 +527,7 @@ export function App(){
        }}>
         {detail&&!viewingEmployee&&<>
          <button type="button" disabled={busy} onClick={()=>setEditor({task:null,copyOf:detail.task})}><Copy size={15}/>Создать копию</button>
+         <button type="button" disabled={busy} onClick={()=>setEditor({task:null,parent:detail.task})}>＋ Создать подзадачу</button>
          {detail.approvalWatch?.canChange&&detail.task.status!=='completed'&&(detail.approvalWatch.byCode?
           <span><Bookmark size={15}/>Контроль по коду В</span>:
           <button type="button" disabled={busy} onClick={()=>void act('/tasks/'+encodeURIComponent(detail.task.id)+'/approval-watch',{enabled:!detail.approvalWatch?.manual},'PUT')}>
@@ -487,7 +541,7 @@ export function App(){
         }}><Link size={15}/>Скопировать ссылку</button>
        </div>
       </details>
-      <button type="button" ref={drawerClose} className="icon-button" aria-label="Закрыть карточку" onClick={closeTask}><X size={21}/></button>
+      <button type="button" ref={drawerClose} className="icon-button" aria-label="Закрыть карточку" onClick={()=>closeTask()}><X size={21}/></button>
      </div>
     </div>
     {detail?<><div className="drawer-heading">
@@ -495,6 +549,7 @@ export function App(){
      <h2>{detail.task.title}</h2>
      <p>{[detail.task.branch_id,detail.task.code].filter(Boolean).join(' · ')}</p>
      <TaskMeta task={detail.task}/>
+     {(detail.task.priority==='high'||detail.task.critical)&&<div className="task-flags">{detail.task.priority==='high'&&<Badge state="pending">Высокий приоритет</Badge>}{detail.task.critical&&<Badge state="overdue">Критичная</Badge>}</div>}
     </div>
     {detail.approvalProgress&&drawerTab!=='approvals'&&<section className="task-approval-progress" aria-label="Текущий этап согласования">
      <GitPullRequest size={18} aria-hidden="true"/>
@@ -562,7 +617,16 @@ export function App(){
      <TaskBranchReview key={detail.task.id} task={detail.task} users={data.users} busy={busy} act={act}/>}
      <TaskCardFields task={detail.task} showPlanning={!!data.rules.showPlanning} date={date}/></>}
     {drawerTab==='links'&&<section className="task-card-section">
-     {!viewingEmployee&&detail.task.company_id&&canUseOkb(data.user)&&<CompanyReference key={detail.task.company_id} id={detail.task.company_id} open={id=>{closeTask();go('okb');setOkbCompany(id);}}/>}
+     {!viewingEmployee&&detail.task.company_id&&canUseOkb(data.user)&&<CompanyReference key={detail.task.company_id} id={detail.task.company_id} open={id=>{go('okb');setOkbCompany(id);}}/>}
+     {!viewingEmployee&&detail.task.client_refs?.map(client=><ClientNotes key={detail.task.id+client.id} id={client.id} name={client.name} taskId={detail.task.id}/>)}
+     {!viewingEmployee&&(detail.task.assignee_id===data.user.id||detail.task.creator_id===data.user.id)&&<TaskGroupPicker
+      key={detail.task.id} value={groups.items[detail.task.id]??''} onChange={async groupId=>{
+       await api('/tasks/'+encodeURIComponent(detail.task.id)+'/group','PUT',{groupId:groupId||null});await refreshGroups();
+      }}/>}
+     {detail.task.parent_id&&taskIndex.has(detail.task.parent_id)&&<button type="button" className="text-button" onClick={()=>void openTask(detail.task.parent_id!)}>Родительская задача · #{detail.task.parent_id}</button>}
+     {data.tasks.some(item=>item.parent_id===detail.task.id)&&<div className="task-subtask-list">
+      <h3>Подзадачи</h3>{data.tasks.filter(item=>item.parent_id===detail.task.id).map(item=><button key={item.id} type="button" className="text-button" onClick={()=>void openTask(item.id)}>#{item.id} · {item.title}</button>)}
+     </div>}
      <TaskDelegation readOnly={viewingEmployee} key={detail.task.id} task={detail.task} user={data.user} users={data.users} open={openTask}
       onCreated={()=>{void refreshDetail(detail.task.id).catch(e=>setError(e.message));void refresh().catch(()=>{});}}/>
      <TaskReminders readOnly={viewingEmployee} key={detail.task.id+data.user.id} task={detail.task} user={data.user} users={data.users}/>
@@ -589,7 +653,7 @@ export function App(){
    error={error} close={()=>{setBoardMove(null);setError('');}} submit={async body=>{
     if(await act(`/tasks/${encodeURIComponent(boardMoveTask.id)}/approvals`,body,'POST','Запрос на перенос обработан'))setBoardMove(null);
    }}/>}
-  {editor&&<TaskEditor key={editor.task?.id||editor.copyOf?.id||editor.companyId||'new'} task={editor.task} copyOf={editor.copyOf} companyId={editor.companyId} canLink={canUseOkb(data.user)} availableTasks={data.tasks} showPlanning={!!data.rules.showPlanning} users={data.users} user={data.user} busy={busy} saveError={error} save={(path,body,method,message)=>act(path,body,method,message,editor.copyOf?id=>void openTask(id):undefined)} close={()=>setEditor(null)} onConditional={canUseOkb(data.user)?draft=>{setProcessDraft(draft);setEditor(null);go('processes');}:undefined}/>}
+  {editor&&<TaskEditor key={editor.task?.id||editor.copyOf?.id||editor.parent?.id||editor.companyId||'new'} task={editor.task} copyOf={editor.copyOf} parent={editor.parent} companyId={editor.companyId} canLink={canUseOkb(data.user)} availableTasks={data.tasks} showPlanning={!!data.rules.showPlanning} users={data.users} user={data.user} busy={busy} saveError={error} save={async(path,body,method,message)=>{const saved=await act(path,body,method,message,editor.copyOf||editor.parent?id=>void openTask(id):undefined);if(saved)void refreshGroups().catch(()=>{});return saved;}} close={()=>setEditor(null)} onConditional={canUseOkb(data.user)?draft=>{setProcessDraft(draft);setEditor(null);go('processes');}:undefined}/>}
   {completingTask&&<CompleteTaskDialog key={completingTask.id} task={completingTask} users={data.users} busy={busy} error={error}
    close={()=>setCompletingTask(null)} save={comment=>act('/tasks/'+encodeURIComponent(completingTask.id)+'/review',
     {action:'complete',comment,expectedVersion:completingTask.version},'POST','Задача завершена')}/>}
@@ -642,11 +706,12 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
   creatorApproverId:(taskDetail?.approvalScope??data.approvalScope)?.creatorApproverId
  });
  const revision=`${a.id}:${a.action_revision}:${a.current_step}`;
- const proposed=a.proposed_deadline?moscowDateInput(a.proposed_deadline):'';
+ const suggested=a.approved_deadline??a.proposed_deadline;
+ const proposed=suggested?moscowDateInput(suggested):'';
  const finalDate=deadlineDraft?.revision===revision?deadlineDraft.value:proposed;
  const changedDeadline=editDeadlineInline&&finalDate!==proposed;
- const finalTime=Date.parse(changedDeadline?finalDate+':00+03:00':a.proposed_deadline??'');
- const alreadySet=!changedDeadline&&!!a.proposed_deadline&&a.proposed_deadline===task?.deadline;
+ const finalTime=Date.parse(changedDeadline?finalDate+':00+03:00':suggested??'');
+ const alreadySet=!changedDeadline&&!!suggested&&suggested===task?.deadline;
  const deadlineError=!Number.isFinite(finalTime)?'Укажите дату и время.':
   finalTime<=Date.now()&&!alreadySet?'Укажите срок в будущем.':'';
 
@@ -676,7 +741,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
     {changedDeadline&&proposed&&<button type="button" className="text-button" disabled={busy} onClick={()=>setDeadlineDraft(null)}>Вернуть предложенный</button>}
    </div>}
   </div>}
-  {a.approved_deadline&&a.approved_deadline!==a.proposed_deadline&&<p className="inline-note"><Check size={15}/> Согласованный крайний срок <strong>{date(a.approved_deadline,true)} МСК</strong></p>}
+  {a.approved_deadline&&a.approved_deadline!==a.proposed_deadline&&<p className="inline-note"><Check size={15}/> {a.state==='approved'?'Согласованный крайний срок':'Крайний срок после предыдущего этапа'} <strong>{date(a.approved_deadline,true)} МСК</strong></p>}
   {change&&<aside className="approval-update">
    <strong>{change.source==='bitrix'?'Изменения из Битрикс24':'Изменения в РУСПЭТ'} · {date(change.at,true)} МСК</strong>
    <ul>{approvalChangeLines(change,id=>data.users.find(u=>u.id===id)?.name).map(line=><li key={line}>{line}</li>)}</ul>

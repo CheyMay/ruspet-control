@@ -9,6 +9,7 @@ import {publicOrigin} from './report-content.js';
 import {escapeHtml,workdayReports} from '../shared/report-links.js';
 import {businessDay} from '../shared/queues.js';
 import {visibleControlNotice} from './pending-task-work.js';
+import {approvalNoticeKind,topicOn} from './notifications.js';
 import {groupNotifications} from '../shared/notifications.js';
 import {tickTaskReminders,pendingAlerts} from './reminders.js';
 import {claimTelegramTaskNotice,taskNoticeScreen} from './task-notices.js';
@@ -180,14 +181,15 @@ export async function handlePilotUpdate(update:any){
  }
  await reply(chat,response,started);
 }
-export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:string,limit:number|null=null,now=new Date()){
+export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:string,limit:number|null=null,now=new Date(),approvalOnly=false){
  const included=(await visibleTasks(user)).map(t=>t.id);
- return (await pool.query<{id:string;task_id:string|null;created_at:string;body:string}>(`SELECT o.* FROM outbox o
+ return (await pool.query<{id:string;task_id:string|null;created_at:string;body:string}>(`SELECT o.* FROM outbox o LEFT JOIN notification_preferences p ON p.user_id=o.recipient_id
   WHERE o.withdrawn_at IS NULL AND o.read_at IS NULL AND NOT o.task_assignment AND o.task_notice IS NULL AND o.management_notice IS NULL AND o.dedupe_key NOT LIKE 'staff-review:%' AND o.personal_plan_alert_id IS NULL
    AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[])) AND ${visibleControlNotice}
+   AND CASE WHEN ${approvalNoticeKind} THEN ${topicOn('telegram','approvals')} ELSE NOT $7 AND ${topicOn('telegram','updates')} END
    AND o.created_at BETWEEN greatest($2::timestamptz,$3::timestamptz,$6::timestamptz-interval '2 days') AND $6
    AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text)
-  ORDER BY o.created_at LIMIT $5`,[user.id,enabledAt,pairedAt,included,limit,now.toISOString()])).rows;
+  ORDER BY o.created_at LIMIT $5`,[user.id,enabledAt,pairedAt,included,limit,now.toISOString(),approvalOnly])).rows;
 }
 export async function deliver(now=new Date()){
  const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled)return;
@@ -197,10 +199,15 @@ export async function deliver(now=new Date()){
    AND due_at<=$1 AND expires_at>$1 AND acknowledged_at IS NULL AND canceled_at IS NULL) AS due`,[now.toISOString()])).rows[0];
  const hasAlerts=cfg.delivery||personal?.schedules||personal?.due;
  if(cfg.delivery||personal?.schedules)await tickTaskReminders(now);
- const bindings=(await pool.query(`SELECT b.*,u.name,u.role,u.branch_id,u.position,u.company_branch_access,COALESCE(p.telegram_digest,true) AS telegram_digest
+ const bindings=(await pool.query(`SELECT b.*,u.name,u.role,u.branch_id,u.position,u.company_branch_access,COALESCE(p.telegram_digest,true) AS telegram_digest,
+  ${topicOn('telegram','updates')} AS updates_enabled,${topicOn('telegram','reminders')} AS reminders_enabled,
+  ${topicOn('telegram','approvals')} AS approvals_enabled
   FROM telegram_binding b JOIN users u ON u.id=b.user_id LEFT JOIN notification_preferences p ON p.user_id=u.id
   CROSS JOIN (SELECT staff_work_ids() ids) scope
-  WHERE ($1 OR u.role IN ('admin','branch_manager','sales_head','director') OR $2 AND
+  WHERE ($1 OR u.role IN ('admin','branch_manager','sales_head','director') OR EXISTS(
+    SELECT 1 FROM outbox o WHERE o.recipient_id=u.id AND o.read_at IS NULL AND o.withdrawn_at IS NULL
+     AND o.created_at>now()-interval '2 days' AND (${approvalNoticeKind})
+   ) OR $2 AND
     (scope.ids IS NULL OR u.id=ANY(scope.ids))
    OR $3 AND EXISTS(SELECT 1 FROM outbox o WHERE o.recipient_id=u.id AND o.dedupe_key='workday:'||$4||':'||u.id AND o.created_at>=b.paired_at))
    AND (NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id)
@@ -208,18 +215,19 @@ export async function deliver(now=new Date()){
   ORDER BY b.id`,[!!(hasAlerts||cfg.task_delivery),cfg.deadline_delivery,cfg.workday_delivery,businessDay(now)])).rows;
  for(const binding of bindings){
  const user={...binding,id:binding.user_id} as User;
- if(user.role==='admin'&&binding.telegram_digest)await deliverStaffReview(user,binding.chat_id,binding.paired_at,now);
- const management=['branch_manager','sales_head','director'].includes(user.role)||user.role==='admin'&&binding.telegram_digest;
- if(management||cfg.workday_delivery&&binding.telegram_digest)
-  await deliverManagementNotices(user,binding.chat_id,now,management,cfg.workday_delivery&&binding.telegram_digest,binding.paired_at);
- for(const alert of hasAlerts?await pendingAlerts(user,now,5,cfg.delivery):[]){
+ if(!binding.telegram_digest)continue;
+ if(user.role==='admin'&&binding.updates_enabled)await deliverStaffReview(user,binding.chat_id,binding.paired_at,now);
+ const management=binding.updates_enabled&&['branch_manager','sales_head','director','admin'].includes(user.role);
+ if(management||cfg.workday_delivery&&binding.updates_enabled)
+  await deliverManagementNotices(user,binding.chat_id,now,management,cfg.workday_delivery&&binding.updates_enabled,binding.paired_at);
+ for(const alert of hasAlerts&&binding.reminders_enabled?await pendingAlerts(user,now,5,cfg.delivery):[]){
   const slot=Math.floor((now.getTime()-Date.parse(alert.due_at))/1800000);
   const claimed=await pool.query("INSERT INTO task_alert_deliveries(alert_id,slot,state,created_at) VALUES($1,$2,'sending',$3) ON CONFLICT DO NOTHING",[alert.id,slot,now.toISOString()]);if(!claimed.rowCount)continue;
   try{const result=await send(binding.chat_id,await alertScreen(user,'telegram:'+binding.chat_id,alert));await pool.query("UPDATE task_alert_deliveries SET state='sent',message_id=$3 WHERE alert_id=$1 AND slot=$2",[alert.id,slot,result.message_id]);}
   catch(e){await pool.query('UPDATE task_alert_deliveries SET state=$3 WHERE alert_id=$1 AND slot=$2',[alert.id,slot,e instanceof TelegramRejected?'failed':'uncertain']);}
  }
 
- if((cfg.task_delivery||cfg.deadline_delivery)&&binding.telegram_digest){
+ if(cfg.task_delivery||cfg.deadline_delivery){
   const notice=await claimTelegramTaskNotice(user,binding.chat_id,now);
   if(notice){
    try{
@@ -233,8 +241,8 @@ export async function deliver(now=new Date()){
   }
  }
  const hour=new Date(now.getTime()+10800000).getUTCHours();
- if(!cfg.delivery||!binding.telegram_digest||hour<9||hour>=19)continue;
- const rows=await pendingOutbox(user,cfg.enabled_at,binding.paired_at,60,now);if(!rows.length)continue;
+ if(hour<9||hour>=19||!binding.approvals_enabled&&!(cfg.delivery&&binding.updates_enabled))continue;
+ const rows=await pendingOutbox(user,cfg.enabled_at,binding.paired_at,60,now,!cfg.delivery);if(!rows.length)continue;
  const id=randomUUID(),slot=Math.floor(now.getTime()/1800000);
  const claim=await pool.query(`INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state,batch_slot,created_at)
   SELECT $1,$2,$3,'sending',$4,$5 WHERE NOT EXISTS(

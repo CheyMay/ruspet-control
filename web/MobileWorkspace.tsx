@@ -5,7 +5,7 @@ import type {AnalyticsAccess} from '../shared/team-analytics.js';
 import {canOpenWorkspacePage} from '../shared/workspace-access.js';
 import {BotConversation} from './BotConversation.js';
 import {CapMark} from './CapMark.js';
-import {DeviceNotifications} from './DeviceNotifications.js';
+import {NotificationSettings} from './NotificationCenter.js';
 import {PersonalCalendar} from './PersonalCalendar.js';
 import {WorkspaceGuide,WorkspaceTour} from './WorkspaceGuide.js';
 import type {TourStep} from './WorkspaceTraining.js';
@@ -30,7 +30,7 @@ export function MobileWorkspace({user,refresh,unread,connectionNotice,calendarRe
   {connectionNotice}
   {guide?<WorkspaceGuide user={user} enabled={page=>canOpenWorkspacePage(user,page,analytics)} launch={steps=>showTour(steps,0)} salesOverview={analytics==='sales'} mobile/>:
    calendar&&!user.root_access?<PersonalCalendar refreshKey={calendarRefresh}/>:<>
-   {notices&&<details className="mobile-device-notifications"><summary>Установка приложения и push-уведомления</summary><DeviceNotifications install userId={user.id}/></details>}
+   {notices&&<details className="mobile-device-notifications"><summary>Настройки уведомлений</summary><NotificationSettings userId={user.id}/></details>}
    <BotConversation mobile initial={notices?'notices':lesson==='phoneDecision'?'inbox':'home'} refresh={refresh}/>
   </>}
   {tour&&<WorkspaceTour steps={tour.steps} index={tour.index} change={index=>showTour(tour.steps,index)} end={()=>{setTour(null);setScreen('guide');window.scrollTo(0,0);}}/>}

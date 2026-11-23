@@ -190,11 +190,13 @@ async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Dat
  const {payload,title}=await prepareVoiceAction(u,intent,db);
  const kind=payload.kind as typeof intent.kind|'complete';
  if(intent.values.dueDay)payload.values={dueDay:intent.values.dueDay};
- const fields:Field[]=kind==='complete'&&intent.values.comment?[{key:'comment',label:'Результат',min:1,max:4000}]:
-  !intent.values.comment&&(kind==='accept'||kind==='approve')?[]:taskActionFields(kind,(await config(db)).config.responseMinLength);
+ const submitting=kind==='submit'||kind==='complete';
+ const optionalResult=submitting&&payload.id&&(await detail(u,payload.id,db)).task.result_required===false;
+ const fields:Field[]=optionalResult&&!intent.values.comment||!intent.values.comment&&(kind==='accept'||kind==='approve')?[]:
+  taskActionFields(kind,(await config(db)).config.responseMinLength);
  const values:Record<string,string>={};
  if(kind==='create_task'){
-  if(!intent.values.deadline)values.deadline='none';
+  if(!intent.values.deadline&&!intent.values.dueDay)values.deadline='none';
   if(!intent.values.description)values.description='';
  }
  let client='';
@@ -341,7 +343,8 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;
    if(p.kind?.startsWith('edit_')&&p.kind!=='edit_personal_plan'){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit||p.kind==='edit_price'&&canEditTaskPrice(u,d.task),403,'Нет права редактировать задачу.');}
-   const fields=taskActionFields(p.kind,min,!p.target);
+   const optionalResult=(p.kind==='complete'||p.kind==='submit')&&p.id&&(await detail(u,p.id,db)).task.result_required===false;
+   const fields=optionalResult?[]:taskActionFields(p.kind,min,!p.target);
    const values={...p.values};
    if(p.kind==='deadline')delete values.plan;
    const d:Dialog={payload:p,fields,index:0,values};nextMissing(d);

@@ -46,7 +46,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    const deadline=pending.type==='deadline';
    if(deadline)approvalRows.push([
     button('Согласовать','approval_deadline_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,
-     revision:pending.action_revision,values:pending.proposed_deadline?{deadline:pending.proposed_deadline}:{}}),
+     revision:pending.action_revision,values:pending.approved_deadline||pending.proposed_deadline?{deadline:pending.approved_deadline??pending.proposed_deadline!}:{}}),
     ...(canSetApprovedDeadline(u.id,pending,t,{deadlineApproverId:d.deadlineApproverId,creatorApproverId:d.approvalScope?.creatorApproverId})?[form('Выбрать другой срок','approve_with_deadline',pending.id,pending.current_step)]:[])
    ]);
    if(deadline)approvalRows.push([form('Согласовать с комментарием','approve',pending.id,pending.current_step)]);
@@ -152,7 +152,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const rows:ReturnType<typeof button>[][]=[];
  const plan=d.personalPlan;
  if(plan&&t.status==='active'){
-  if(plan.needsAcceptance)context.push('Новое назначение · примите задачу и укажите плановое время');
+  if(plan.needsAcceptance)context.push('Не принята · примите задачу и укажите плановое время');
   rows.push([button(plan.needsAcceptance?'Принять задачу':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
    {...extra,kind:plan.needsAcceptance?'accept_assignment':'edit_personal_plan',version:plan.epoch,revision:plan.revision})]);
  }
@@ -173,6 +173,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    rows.push([deadlineProposalButton(t,p.list,explained)]);
   }
  }
+ if(!plan?.needsAcceptance&&t.status==='active'&&d.assignmentReceipt?.state==='pending')context.push('Не принята исполнителем');
  if(t.status==='review'&&!pending&&next?.userId)context.push(next.userId===u.id?'Результат ждёт вашей приёмки':'Результат на приёмке у '+name(next.userId));
  if(last||t.status==='review'||d.bitrixLinked)rows.push([button(t.status==='review'&&canReview(u,t,d.approvalScope)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);
  if(control){context.push('Нужно объяснение по проверке');rows.push([form('Дать объяснение','answer',control.id)]);}

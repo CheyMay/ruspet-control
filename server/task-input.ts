@@ -9,6 +9,8 @@ export const taskPriceInput=z.number().finite().min(0).max(999999999999.99).refi
 
 export const taskInput=z.object({
  price:taskPriceInput.optional(),
+ resultRequired:z.boolean().optional(),priority:z.enum(['normal','high']).optional(),critical:z.boolean().optional(),
+ groupId:z.uuid().nullable().optional(),
  title:z.string().trim().min(3).max(500),description:z.string().trim().max(10000),assigneeId:z.string().trim().min(1).max(100),
  branchId:z.string().trim().min(1).max(100).optional(),
  deadline:z.iso.datetime({offset:true}).nullable(),plannedStart:z.iso.datetime({offset:true}).nullable(),plannedEnd:z.iso.datetime({offset:true}).nullable(),

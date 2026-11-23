@@ -20,9 +20,9 @@ export function approvalTurn(approval:Approval){
 export function canSetApprovedDeadline(userId:string,a:Approval,task:Task|undefined,policy:{
  deadlineApproverId?:string|null;creatorApproverId?:string|null;
 }){
- if(a.type!=='deadline'||a.current_step!==a.route.length-1||a.route[a.current_step]?.userId!==userId)return false;
- if(userId===policy.deadlineApproverId)return true;
- return !!task&&a.route.length===1&&userId===policy.creatorApproverId&&task.creator_id===userId&&priceBand(task)==='low';
+ if(a.type!=='deadline'||a.route[a.current_step]?.userId!==userId)return false;
+ if(userId===policy.deadlineApproverId&&a.current_step===a.route.length-1)return true;
+ return !!task&&userId===policy.creatorApproverId&&task.creator_id===userId&&priceBand(task)==='low';
 }
 export function taskNextAction(task:Task,approval?:Approval,_scope?:ApprovalScope|null){
  if(approval&&activeTaskApproval(task,approval)){

@@ -4,7 +4,7 @@ import {businessDay} from '../shared/queues.js';
 import {remind,makeReport,event} from './service.js';
 import type {User} from '../shared/types.js';
 import {nextRuns,jobLabel} from '../shared/schedule.js';
-import {morningManagementReport,remindAboutApprovalBatch,reviewInactivity} from './management-notices.js';
+import {morningManagementReport,reviewInactivity} from './management-notices.js';
 import {prepareWorkdayDigests} from './workday-digests.js';
 export async function operationsStatus(){
  const config=(await pool.query('SELECT * FROM automation_config WHERE id=1')).rows[0];
@@ -40,7 +40,7 @@ export async function tick(now=new Date()){
    await reviewInactivity(day,now);
    return [];
   }});
-  if(workday&&hhmm>='14:45'&&hhmm<'15:00')jobs.push({key:`approval-batch-ready:${day}`,run:async()=>{await remindAboutApprovalBatch(day);return [];}});
+
   if(workday&&hhmm>=cfg.evening)jobs.push({key:`reports-v5:evening:${day}`,run:()=>batch(['daily'],'scheduled-evening')});
   if(workday&&hhmm>=cfg.evening)jobs.push({key:`workday:evening:${day}`,run:()=>prepareWorkdayDigests(now)});
   if(workday&&hhmm>=cfg.morning&&hhmm<cfg.evening)jobs.push({key:`reminders:${day}:${Math.floor(now.getTime()/60000)}`,run:async()=>{await remind(actor);return [];}});

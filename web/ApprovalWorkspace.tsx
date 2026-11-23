@@ -7,33 +7,6 @@ import {EmployeeFilter,matchesFilter} from './SearchFilter.js';
 import {activeTaskApproval,approvalTurn} from '../shared/actions.js';
 
 const approvalKinds=[{id:'deadline',label:'Переносы сроков'},{id:'completion',label:'Закрытие задач'}] as const;
-type BatchStatus={head:{name:string;linked:boolean};total:number;last:{created_at:string;state:string|null}|null;
- rows:{id:string;name:string;processed:number;waiting:number;approved:number;ready:number}[]};
-export function DirectorBatch({stamp}:{stamp:string}){
- const [data,setData]=useState<BatchStatus|null>(null),[busy,setBusy]=useState(false),[message,setMessage]=useState('');
- const load=()=>api<BatchStatus|null>('/director-approval-batches');
- useEffect(()=>{let live=true;void load().then(data=>{if(live)setData(data);}).catch(error=>{if(live)setMessage(error.message);});return()=>{live=false;};},[stamp]);
- async function send(){
-  setBusy(true);setMessage('');
-  try{
-   const result=await api<{count:number}>('/director-approval-batches','POST',{});
-   setMessage('Передано на согласование: '+result.count+'.');
-   setData(await load());
-  }catch(error){setMessage((error as Error).message);}finally{setBusy(false);}
- }
- if(!data)return message?<p role="status">{message}</p>:null;
- const last=data.last?.state;
- return <section className="panel director-approval-panel">
-  <div className="director-approval-heading"><div><h2>Пакет для {data.head.name}</h2>
-   <p>{data.total?`К отправке · ${data.total}. Рабочий ориентир — собрать пакет к 15:00 МСК.`:'Новых запросов для отправки нет.'} {!data.head.linked?'Получатель увидит пакет на сайте. Telegram ещё не привязан.':''}</p>
-  </div><button className="button primary" disabled={!data.total||busy} onClick={()=>void send()}>Отправить пакет</button></div>
-   {data.rows.length>0&&<div className="director-approval-table"><table><thead><tr><th>Сотрудник</th><th>Обработано сегодня</th><th>На первом этапе</th><th>Первый этап пройден сегодня</th><th>В пакете</th></tr></thead>
-   <tbody>{data.rows.map(row=><tr key={row.id}><th scope="row">{row.name}</th><td>{row.processed}</td><td>{row.waiting}</td><td>{row.approved}</td><td>{row.ready}</td></tr>)}</tbody></table></div>}
-  {data.last&&<small>Последний пакет · {last==='sent'?'доставлен в Telegram':last==='failed'?'Telegram отклонил сообщение':last==='uncertain'?'доставка в Telegram не подтверждена':'сохранён в уведомлениях'}</small>}
-  {message&&<p role="status">{message}</p>}
- </section>;
-}
-
 export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}:{data:Bootstrap;render:(a:Approval)=>ReactNode;readOnly?:boolean;startOnMine?:boolean}){
  const taskIndex=new Map(data.tasks.map(task=>[task.id,task]));
  const current=(a:Approval)=>approvalTurn(a).userId;
