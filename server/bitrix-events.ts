@@ -60,17 +60,21 @@ export async function receiveBitrixEvent(input:any){
   const pinned=await db.query(`UPDATE bitrix_event_capture SET member_id=$2,verified_at=coalesce(verified_at,now())
    WHERE id=1 AND enabled AND mode='online' AND portal=$1 AND (member_id IS NULL OR member_id=$2)`,[cfg.portal,memberId]);
   assert(pinned.rowCount,403,'Событие другого портала отклонено.');
-  const known=await db.query(`SELECT 1 FROM tasks WHERE id=$1 AND source_fields->>'ID'=id
-   UNION ALL SELECT 1 FROM bitrix_task_links WHERE external_id=$1::bigint AND NOT live_enabled`,[id]);
-  const adopt=!known.rowCount&&input.event==='ONTASKADD'&&process.env.BITRIX_INBOUND_NEW_TASKS==='true';
-  if(!known.rowCount&&!adopt){
-   const planned=await db.query("SELECT 1 FROM bitrix_refresh_queue WHERE portal=$1 AND resource='task_inbound_new' AND external_id=$2 AND state IN ('pending','failed','blocked')",[cfg.portal,id]);
-   if(!planned.rowCount)return {accepted:false,ignored:true};
+  const {known,pilot}=(await db.query<{known:boolean;pilot:boolean}>(`SELECT
+   EXISTS(SELECT 1 FROM tasks WHERE id=$1 AND source_fields->>'ID'=id)
+    OR EXISTS(SELECT 1 FROM bitrix_task_links WHERE external_id=$1::bigint AND NOT live_enabled) AS known,
+   EXISTS(SELECT 1 FROM bitrix_task_links WHERE external_id=$1::bigint AND live_enabled) AS pilot`,[id])).rows[0];
+  if(!known){
+   const previous=(await db.query<{state:string}>(`SELECT state FROM bitrix_refresh_queue WHERE portal=$1 AND resource='task_inbound_new' AND external_id=$2`,[cfg.portal,id])).rows[0];
+   // An update can bring an older task into scope after its original creation event was missed or ignored.
+   const discover=!pilot&&process.env.BITRIX_INBOUND_NEW_TASKS==='true'&&
+    (input.event==='ONTASKADD'||input.event==='ONTASKUPDATE'||input.event==='ONTASKCOMMENTADD'&&!previous);
+   if(!discover&&(!previous||!['pending','failed','blocked'].includes(previous.state)))return {accepted:false,ignored:true};
   }
   const inserted=await db.query(`INSERT INTO bitrix_event_inbox(portal,dedupe_key,event,data,occurred_at)
    VALUES($1,$2,$3,jsonb_build_object('taskId',$4::text),$5) ON CONFLICT DO NOTHING`,[cfg.portal,key,input.event,id,when]);
   if(inserted.rowCount){
-   await queueRefresh(db,cfg.portal,known.rowCount?'task_inbound':'task_inbound_new',id,input.event==='ONTASKDELETE');
+   await queueRefresh(db,cfg.portal,known?'task_inbound':'task_inbound_new',id,input.event==='ONTASKDELETE');
    if(commentEvents.includes(input.event))await queueRefresh(db,cfg.portal,'task_inbound_comments',id);
    await db.query(`UPDATE bitrix_refresh_queue SET updated_at=least(updated_at,now()-interval '5 minutes')
     WHERE portal=$1 AND resource=$2 AND external_id=$3 AND state='done'`,[cfg.portal,resultsResource,id]);

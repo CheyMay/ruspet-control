@@ -65,12 +65,29 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
  const send=async(auth:Record<string,string>,taskId=id,ts='1793872800')=>api(admin,'/bitrix/events',{
   event:'ONTASKUPDATE',data:{FIELDS_AFTER:{ID:taskId}},ts,auth});
  const auth={domain:portal,member_id:member,application_token:'fixture-event-token-only'};
+ const nativeStat=fsPromises.stat;
+ const tokenStat=process.platform==='win32'?mock.method(fsPromises,'stat',async(path:string)=>{
+  const result=await nativeStat(path);
+  if(path===process.env.BITRIX_EVENT_TOKEN_FILE)result.mode=0o100600;
+  return result;
+ }):null;
+ if(tokenStat)syncBuiltinESMExports();
  const methods:BitrixMethod[]=[];
+ let reassigned=false;
  const inboundRequest:BitrixRequest=Object.assign(async<T>(method:BitrixMethod,params:any):Promise<T>=>{
   methods.push(method);
   if(method==='user.get')return [{ID:'202',NAME:employee.name},{ID:'201',NAME:admin.name}] as T;
+  if(method==='im.dialog.messages.get')return {messages:[{id:1234,date:baseline.created_at,text:'Обсуждение переназначенной задачи'}],users:[]} as T;
+  if(method==='tasks.task.list'){
+   if(params.filter.ID)return {tasks:[{id,changedDate:baseline.created_at}]} as T;
+   if(params.filter['>=CHANGED_DATE']){
+    assert.equal(params.filter['>=CHANGED_DATE'],'2026-11-02T00:00:00Z');
+    return {tasks:[{id:'9006',responsibleId:'202',createdDate:baseline.created_at,changedDate:'2026-11-03T10:00:00Z'}]} as T;
+   }
+   return {tasks:[{id:'9002',responsibleId:'202',createdDate:baseline.created_at}]} as T;
+  }
   assert.equal(method,'tasks.task.get');
-  return {task:{...task(params.taskId),responsibleId:params.taskId==='9004'?'999999':'202',
+  return {task:{...task(params.taskId),responsibleId:params.taskId==='9004'&&!reassigned?'999999':'202',
    title:'Актуальная задача',description:'Из Битрикс24',createdDate:baseline.created_at,changedDate:baseline.created_at}} as T;
  },{portal,mode:'webhook' as const});
  process.env.BITRIX_INBOUND_TASKS='true';
@@ -129,6 +146,18 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9004');
   assert.deepEqual((await db.pool.query("SELECT DISTINCT state FROM bitrix_refresh_queue WHERE external_id='9004'")).rows,[{state:'ignored'}]);
   assert.equal((await db.pool.query("SELECT count(*)::int n FROM tasks WHERE id='9004'")).rows[0].n,0);
+  reassigned=true;
+  assert.equal((await send(auth,'9004','1793872804')).body.accepted,true);
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9004');
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9004');
+  assert.equal((await db.pool.query("SELECT assignee_id FROM tasks WHERE id='9004'")).rows[0].assignee_id,employee.id);
+  assert.equal((await db.pool.query("SELECT count(*)::int n FROM bitrix_task_activity WHERE task_id='9004' AND kind='comment'")).rows[0].n,1);
+  assert.equal((await api(admin,'/bitrix/events',{...discussion,data:{FIELDS_AFTER:{TASK_ID:'9005',MESSAGE_ID:'1235'}}})).body.accepted,true);
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9005');
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9005');
+  assert.equal((await db.pool.query("SELECT count(*)::int n FROM tasks WHERE id='9005'")).rows[0].n,1);
+  assert.deepEqual(await inbound.discoverInboundTasks(inboundRequest,'2026-11-02T00:00:00Z',undefined,'changed'),{owners:2,queued:1});
+  assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9006');
   await db.pool.query(`INSERT INTO bitrix_task_activity(task_id,kind,external_id,occurred_at,author,body)
    VALUES($1,'comment','708',now(),'Сотрудник Битрикса','[B]Текст обсуждения[/B]'),
          ($1,'history','709',now(),'Сотрудник Битрикса','Служебная запись')`,[id]);
@@ -141,13 +170,19 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   }
   const sync=(await db.pool.query("SELECT generation::text,state FROM bitrix_refresh_queue WHERE external_id=$1 AND resource='task_inbound_comments'",[id])).rows;
   assert.deepEqual(sync,[{generation:'1',state:'pending'}]);
+  await db.pool.query(`UPDATE bitrix_refresh_queue SET state='done',done_generation=generation,updated_at=now()-interval '6 minutes'
+   WHERE external_id=$1 AND resource='task_inbound_comments'`,[id]);
+  assert.equal((await api(employee,'/tasks/'+id+'/discussion')).body.state,'pending');
+  assert.deepEqual((await db.pool.query("SELECT generation::text,state FROM bitrix_refresh_queue WHERE external_id=$1 AND resource='task_inbound_comments'",[id])).rows,
+   [{generation:'2',state:'pending'}]);
   assert.equal((await api(employee,'/tasks/'+id)).body.bitrixCommentCount,1);
  }finally{
+  if(tokenStat){tokenStat.mock.restore();syncBuiltinESMExports();}
   delete process.env.BITRIX_INBOUND_TASKS;
   delete process.env.BITRIX_INBOUND_AUTHORITATIVE;
   delete process.env.BITRIX_INBOUND_NEW_TASKS;
-  await db.pool.query('DELETE FROM bitrix_task_activity WHERE task_id=$1',[id]);
-  await db.pool.query("DELETE FROM bitrix_task_links WHERE task_id=ANY($1)",[[id,'9002','9003']]);
+  await db.pool.query('DELETE FROM bitrix_task_activity WHERE task_id=ANY($1)',[[id,'9004','9005']]);
+  await db.pool.query("DELETE FROM bitrix_task_links WHERE task_id=ANY($1)",[[id,'9002','9003','9004','9005','9006']]);
   await db.pool.query('DELETE FROM bitrix_user_links WHERE user_id=ANY($1)',[[admin.id,employee.id]]);
   await db.pool.query("DELETE FROM staff_directory WHERE source_key='fixture-inbound'");
  }

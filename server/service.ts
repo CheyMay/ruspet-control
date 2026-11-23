@@ -159,7 +159,7 @@ export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):
     SELECT 1 FROM bitrix_operations o WHERE o.task_id=a.task_id AND o.payload->>'kind'='comment'
     AND position('[ruspet:'||o.event_id::text||']' IN a.body)>0)
    ORDER BY occurred_at DESC,external_id DESC LIMIT 100`,[id]),
-  pool.query<{external_id:string;state:string|null}>(`SELECT l.external_id::text,q.state FROM bitrix_task_links l
+  pool.query<{external_id:string;state:string|null;stale:boolean|null}>(`SELECT l.external_id::text,q.state,q.updated_at<now()-interval '5 minutes' as stale FROM bitrix_task_links l
    LEFT JOIN bitrix_refresh_queue q ON q.portal=$2 AND q.resource='task_inbound_comments' AND q.external_id=l.external_id::text
    WHERE l.task_id=$1 AND NOT l.live_enabled`,[id,portal??null]),
   loadBitrixResults(id,allowQueue)
@@ -168,9 +168,12 @@ export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):
  let state:BitrixDiscussion['state']='ready';
  if(link?.state==='pending'||link?.state==='failed'||link?.state==='processing')state='pending';
  else if(link?.state==='blocked')state='unavailable';
- else if(link&&!link.state&&allowQueue&&portal&&process.env.BITRIX_INBOUND_TASKS==='true'){
+ else if(link&&(!link.state||link.state==='done'&&link.stale)&&allowQueue&&portal&&process.env.BITRIX_INBOUND_TASKS==='true'){
   await pool.query(`INSERT INTO bitrix_refresh_queue(portal,resource,external_id)
-   VALUES($1,'task_inbound_comments',$2) ON CONFLICT DO NOTHING`,[portal,link.external_id]);
+   VALUES($1,'task_inbound_comments',$2)
+   ON CONFLICT(portal,resource,external_id) DO UPDATE SET generation=bitrix_refresh_queue.generation+1,
+    state='pending',retry_at=NULL,error=NULL,updated_at=now()
+   WHERE bitrix_refresh_queue.state='done' AND bitrix_refresh_queue.updated_at<now()-interval '5 minutes'`,[portal,link.external_id]);
   state='pending';
  }
  return {state,origin,messages:stored.rows,results};

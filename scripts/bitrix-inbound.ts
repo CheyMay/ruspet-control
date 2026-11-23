@@ -11,10 +11,10 @@ import {discoverInboundTasks,enqueueInboundSnapshot,reconcileInboundTasks,tickIn
 let stopped=false;
 for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{stopped=true;});
 try{
- const {positionals,values}=parseArgs({allowPositionals:true,options:{id:{type:'string'},since:{type:'string'},comments:{type:'boolean'},owner:{type:'string'}}});
+ const {positionals,values}=parseArgs({allowPositionals:true,options:{id:{type:'string'},since:{type:'string'},comments:{type:'boolean'},owner:{type:'string'},changed:{type:'boolean'}}});
  const [command]=positionals;
  const id=values.id;
- assert(positionals.length===1&&(!id||bitrixId(id)),400,'Команды: status, prepare, verify --id ID, enqueue [--id ID], discover --since DATE, watch.');
+ assert(positionals.length===1&&(!id||bitrixId(id)),400,'Команды: status, prepare, verify --id ID, enqueue [--id ID], discover --since DATE [--changed], watch.');
  const portal=process.env.BITRIX_PORTAL;
  assert(portal,400,'Укажите BITRIX_PORTAL.');
  if(command==='status'){
@@ -52,7 +52,7 @@ try{
    console.log({queued:await enqueueInboundSnapshot(portal,id,values.comments)});
   }else if(command==='discover'){
    assert(process.env.BITRIX_INBOUND_NEW_TASKS==='true'&&values.since,400,'Включите приём новых задач и укажите --since с часовым поясом.');
-   console.log({discovery:await discoverInboundTasks(request,values.since,values.owner)});
+   console.log({discovery:await discoverInboundTasks(request,values.since,values.owner,values.changed?'changed':'created')});
   }else if(command==='watch'){
    let nextSnapshot=Date.now()+10*60*1000;
    while(!stopped){
@@ -61,7 +61,7 @@ try{
       console.log(JSON.stringify({reconciliation:await reconcileInboundTasks(request)}));
       if(process.env.BITRIX_INBOUND_NEW_TASKS==='true'){
        const since=new Date(Date.now()-2*86400000).toISOString();
-       console.log(JSON.stringify({discovery:await discoverInboundTasks(request,since)}));
+       console.log(JSON.stringify({discovery:await discoverInboundTasks(request,since,undefined,'changed')}));
       }
       nextSnapshot=Date.now()+60*60*1000;
      }catch(error){

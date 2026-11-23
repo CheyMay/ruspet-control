@@ -229,7 +229,7 @@ export async function reconcileInboundTasks(request:BitrixRequest){
  return {tracked:tracked.length,queued};
 }
 
-export async function discoverInboundTasks(request:BitrixRequest,since:string,ownerId?:string){
+export async function discoverInboundTasks(request:BitrixRequest,since:string,ownerId?:string,by:'created'|'changed'='created'){
  const portal=request.portal;
  assert(request.mode==='webhook'&&portal&&Number.isFinite(Date.parse(since)),400,'Укажите дату начала сверки и входящий вебхук.');
  const people=(await pool.query<{id:string}>(`SELECT external_id::text id FROM bitrix_user_links
@@ -237,18 +237,19 @@ export async function discoverInboundTasks(request:BitrixRequest,since:string,ow
   ORDER BY id`)).rows.map(person=>person.id);
  if(ownerId)assert(people.includes(ownerId),409,'Сначала подтвердите связь сотрудника с Битрикс24.');
  const selected=ownerId?[ownerId]:people;
+ const timestampField=by==='changed'?'CHANGED_DATE':'CREATED_DATE';
  let queued=0;
  for(let offset=0;offset<selected.length;offset+=40){
   const owners=selected.slice(offset,offset+40);
   let cursor='0',complete=false;
   for(let page=0;page<20;page++){
    const result=await request<{tasks:Record<string,unknown>[]}>('tasks.task.list',{
-    filter:{RESPONSIBLE_ID:owners,'>=CREATED_DATE':since,'>ID':cursor},select:['ID','RESPONSIBLE_ID','CREATED_DATE',...(ownerId?['STATUS']:[])],order:{ID:'asc'},start:0
+    filter:{RESPONSIBLE_ID:owners,['>='+timestampField]:since,'>ID':cursor},select:['ID','RESPONSIBLE_ID',timestampField,...(ownerId?['STATUS']:[])],order:{ID:'asc'},start:0
    });
    assert(Array.isArray(result.tasks)&&result.tasks.length<=50,502,'Битрикс24 не вернул страницу новых задач.');
    const ids=result.tasks.flatMap(task=>{
-    const id=bitrixId(fieldValue(task,'ID')),owner=bitrixId(fieldValue(task,'RESPONSIBLE_ID')),created=readDate(task,'CREATED_DATE');
-    assert(id&&BigInt(id)>BigInt(cursor)&&owner&&owners.includes(owner)&&created&&Date.parse(created)>=Date.parse(since),502,
+    const id=bitrixId(fieldValue(task,'ID')),owner=bitrixId(fieldValue(task,'RESPONSIBLE_ID')),timestamp=readDate(task,timestampField);
+    assert(id&&BigInt(id)>BigInt(cursor)&&owner&&owners.includes(owner)&&timestamp&&Date.parse(timestamp)>=Date.parse(since),502,
      'Битрикс24 вернул задачу вне заданного периода или состава сотрудников.');
     cursor=id;
     return !ownerId||['2','3','4'].includes(String(fieldValue(task,'STATUS')))?[id]:[];
@@ -258,7 +259,7 @@ export async function discoverInboundTasks(request:BitrixRequest,since:string,ow
     WHERE NOT EXISTS(SELECT 1 FROM tasks t WHERE t.id=x.id) AND
      NOT EXISTS(SELECT 1 FROM bitrix_task_links l WHERE l.external_id=x.id::bigint)
     ON CONFLICT(portal,resource,external_id) DO UPDATE SET generation=bitrix_refresh_queue.generation+1,
-     state='pending',error=NULL,retry_at=NULL,updated_at=now() WHERE bitrix_refresh_queue.state='ignored'`,[portal,newTaskResource,ids])).rowCount??0;
+    state='pending',error=NULL,retry_at=NULL,updated_at=now() WHERE bitrix_refresh_queue.state='ignored'`,[portal,newTaskResource,ids])).rowCount??0;
    if(result.tasks.length<50){complete=true;break;}
   }
   assert(complete,409,'Достигнут предел страниц для поиска новых задач. Сузьте период.');
