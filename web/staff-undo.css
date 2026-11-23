@@ -5,8 +5,8 @@
   border-radius: 8px;
   background: var(--theme-surface-soft, #f6f8f6);
 }
-.staff-undo h3 { margin: 0 0 8px; font-size: 14px; }
-.staff-undo > p { margin: 0; font-size: 12px; }
+.staff-undo h3 { margin: 0 0 8px; font-size: 15px; }
+.staff-undo > p { margin: 0; font-size: 13px; }
 .staff-undo ul { margin: 0; padding: 0; list-style: none; }
 .staff-undo li + li { border-top: 1px solid var(--theme-border, #dce5de); }
 .staff-undo-entry {
@@ -18,8 +18,8 @@
   padding: 9px 0;
 }
 .staff-undo-entry strong, .staff-undo-entry small { display: block; overflow-wrap: anywhere; }
-.staff-undo-entry strong { margin: 3px 0; font-size: 13px; }
-.staff-undo-dialog label { display: grid; gap: 6px; font-size: 13px; font-weight: 550; }
+.staff-undo-entry strong { margin: 3px 0; font-size: 14px; }
+.staff-undo-dialog label { display: grid; gap: 6px; font-size: 14px; font-weight: 550; }
 .staff-undo-dialog textarea {
   width: 100%;
   min-height: 88px;

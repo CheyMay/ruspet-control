@@ -11,7 +11,7 @@
 .personal-metrics button:hover, .personal-metrics button:focus-visible { background: var(--theme-surface-raised); }
 .personal-metrics button > svg:first-child { color: var(--theme-accent); }
 .personal-metrics strong { grid-column: 1; font-size: 25px; font-variant-numeric: tabular-nums; }
-.personal-metrics span { color: var(--theme-text-secondary); font-size: 12px; }
+.personal-metrics span { color: var(--theme-text-secondary); font-size: 13px; }
 .personal-metrics button > svg:last-child { grid-column: 2; grid-row: 2 / 4; }
 .personal-empty { padding: 16px 20px; color: var(--theme-text-secondary); }
 .personal-notices { margin-bottom: 18px; }
@@ -37,7 +37,7 @@
 .task-role-switch { display:inline-flex; gap:3px; padding:3px; border:1px solid var(--theme-border); border-radius:8px; background:var(--theme-surface); }
 .task-role-switch button {
  min-height:38px; padding:6px 10px; border:0; border-radius:5px; background:transparent;
- color:var(--theme-text-secondary); font-size:13px; font-weight:600; white-space:nowrap;
+ color:var(--theme-text-secondary); font-size:14px; font-weight:600; white-space:nowrap;
 }
 .task-role-switch button[aria-pressed="true"] { background:var(--theme-surface-raised); color:var(--theme-text); }
 .task-role-switch button:focus-visible { outline:2px solid var(--theme-accent); outline-offset:1px; }

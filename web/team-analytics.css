@@ -5,21 +5,21 @@
  --bi-soft:var(--theme-surface-soft,#f4f7f4);
  display:grid;gap:14px;min-width:0;
 }
-.bi-workspace h2 {font-size:15px;line-height:1.4}
+.bi-workspace h2 {font-size:16px;line-height:1.4}
 .bi-header,.bi-header-left,.bi-header-actions,.bi-context-line,.bi-context-line nav,.bi-context-line nav span,.bi-segmented {
  display:flex;align-items:center;gap:10px;
 }
 .bi-header {justify-content:space-between;flex-wrap:wrap;padding:16px 18px}
 .bi-header-left > svg,.bi-positive .bi-summary-title > strong {color:var(--bi-accent)}
 .bi-header h1 {font-size:clamp(19px,2vw,25px)}
-.bi-header p,.bi-summary-title p,.bi-coverage {color:var(--bi-muted);font-size:12px;margin-top:4px}
+.bi-header p,.bi-summary-title p,.bi-coverage {color:var(--bi-muted);font-size:13px;margin-top:4px}
 .bi-header p:first-letter {text-transform:uppercase}
 .bi-segmented {gap:2px;padding:3px;border-radius:6px;background:var(--bi-soft);border:1px solid var(--bi-border)}
 .bi-segmented button,.bi-context-line button,.bi-team-name {
  border:0;background:transparent;color:inherit;padding:6px 9px;text-align:left;
 }
 .bi-segmented button[aria-pressed=true] {background:var(--theme-surface,#fff);color:var(--bi-accent);border-radius:4px;font-weight:650}
-.bi-context-line {justify-content:space-between;flex-wrap:wrap;font-size:12px;color:var(--bi-muted);min-height:20px}
+.bi-context-line {justify-content:space-between;flex-wrap:wrap;font-size:13px;color:var(--bi-muted);min-height:20px}
 .bi-context-line nav {flex-wrap:wrap;gap:4px}
 .bi-context-line nav span {gap:4px}
 .bi-context-line button {padding:3px 2px;color:var(--bi-accent);text-decoration:underline;text-underline-offset:3px}
@@ -45,7 +45,7 @@
 .bi-table {width:100%;min-width:650px;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .bi-table th,.bi-table td {padding:9px 8px;text-align:right;vertical-align:middle}
 .bi-table th:first-child {text-align:left;min-width:150px}
-.bi-table thead th {font-size:11px;line-height:1.4;color:var(--bi-muted);background:var(--bi-soft);text-transform:none}
+.bi-table thead th {font-size:12px;line-height:1.4;color:var(--bi-muted);background:var(--bi-soft);text-transform:none}
 .bi-table tbody tr {border-bottom:1px solid var(--bi-border)}
 .bi-table tbody tr:last-child {border-bottom:0}
 .bi-team-name {display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;font-weight:600;padding:2px}
@@ -54,7 +54,7 @@
 .bi-team-name small {display:block;font-weight:400;margin-top:2px}
 .bi-expand {margin-top:12px}
 .bi-chart {display:flex;gap:10px;margin:12px 0 0;padding:0;overflow-x:auto;list-style:none}
-.bi-chart li {display:grid;justify-items:center;gap:5px;flex:1;min-width:47px;font-size:11px;color:var(--bi-muted)}
+.bi-chart li {display:grid;justify-items:center;gap:5px;flex:1;min-width:47px;font-size:12px;color:var(--bi-muted)}
 .bi-chart li > strong {color:var(--theme-text,#26362d)}
 .bi-bar-track {height:90px;width:min(42px,90%);display:flex;align-items:end;background:var(--bi-soft);border-radius:4px;overflow:hidden}
 .bi-bar-track span {width:100%;background:var(--bi-accent);border-radius:4px}

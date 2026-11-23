@@ -16,4 +16,5 @@ import './mobile-workspace.css';
 import './task-card.css';
 import './search-filter.css';
 import './workspace-guide.css';
+import './task-kanban.css';
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

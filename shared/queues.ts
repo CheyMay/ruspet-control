@@ -1,13 +1,13 @@
 import type { Task } from './types.js';
 export function businessDay(value:Date|string):string { return new Date(new Date(value).getTime()+10800000).toISOString().slice(0,10); }
 /** GAS overdue/main.ts uses the start of the day and excludes waiting-control tasks. */
-export function taskQueue(t:Task, now=new Date()):'overdue'|'today'|'upcoming'|'no_deadline'|'review'|'completed' {
+export function taskQueue(t:Pick<Task,'status'|'deadline'>, now=new Date()):'overdue'|'today'|'upcoming'|'no_deadline'|'review'|'completed' {
  if(t.status==='completed'||t.status==='review')return t.status;
  if(!t.deadline)return 'no_deadline';
  const due=businessDay(t.deadline),today=businessDay(now);
  return due<today?'overdue':due===today?'today':'upcoming';
 }
-export const elapsedToday=(t:Task,now=new Date())=>taskQueue(t,now)==='today'&&new Date(t.deadline!)<now;
+export const elapsedToday=(t:Pick<Task,'status'|'deadline'>,now=new Date())=>taskQueue(t,now)==='today'&&new Date(t.deadline!)<now;
 export function plannedToday(t:Task,now=new Date()){
  if(t.status!=='active')return false;
  const raw=t.planned_start!==undefined?t.planned_start:t.source_fields?.['Планируемая дата начала'];if(!raw||!t.planned_end)return false;

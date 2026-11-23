@@ -1,7 +1,7 @@
 .search-filter { position:relative; min-width:0; color:var(--theme-text); }
 .panel:has(.search-filter-menu) { overflow:visible; }
 .filters > .search-filter { flex:0 1 220px; }
-.search-filter-caption { display:block; margin-bottom:5px; color:var(--muted); font-size:12px; }
+.search-filter-caption { display:block; margin-bottom:5px; color:var(--muted); font-size:13px; }
 .search-filter-control {
  display:flex; align-items:center; min-width:0; border:1px solid var(--line); border-radius:6px;
  background:var(--theme-surface);
@@ -10,7 +10,7 @@
 .search-filter-control input,
 .filters .search-filter-control input {
  flex:1; min-width:0; width:100%; min-height:35px; padding:7px 8px 7px 10px; border:0;
- outline:0; color:var(--theme-text); background:transparent; font-size:12px; text-overflow:ellipsis;
+ outline:0; color:var(--theme-text); background:transparent; font-size:13px; text-overflow:ellipsis;
 }
 .search-filter-button {
  display:grid; place-items:center; flex:none; width:27px; min-height:35px; border:0;
@@ -24,7 +24,7 @@
  background:var(--theme-surface); box-shadow:0 7px 22px var(--theme-shadow);
 }
 .search-filter-menu ul { position:relative; list-style:none; max-height:242px; overflow:auto; overscroll-behavior:contain; margin:0; padding:4px; }
-.search-filter-menu li { display:grid; gap:2px; padding:7px 9px; border-radius:4px; cursor:pointer; font-size:12px; }
+.search-filter-menu li { display:grid; gap:2px; padding:7px 9px; border-radius:4px; cursor:pointer; font-size:13px; }
 .search-filter-menu li:hover,.search-filter-menu li.highlighted { background:var(--theme-surface-soft); }
 .search-filter-menu li[aria-selected=true] > span { font-weight:650; }
 .search-filter-menu li > span > small { display:block; margin-top:2px; font-weight:400; }
@@ -34,7 +34,7 @@
  margin-top:1px; color:var(--theme-on-accent,#fff);
 }
 .search-filter-multi-option[aria-selected=true] .search-filter-check { background:var(--green); border-color:var(--green); }
-.search-filter-menu small,.search-filter-empty { color:var(--muted); font-size:11px; }
+.search-filter-menu small,.search-filter-empty { color:var(--muted); font-size:12px; }
 .search-filter-empty { margin:0; padding:8px 10px 12px; }
 .access-filter-tabs { margin:0 0 12px; }
 .access-filter-tabs button[aria-pressed=true] { background:var(--theme-surface-soft); color:var(--theme-text); }

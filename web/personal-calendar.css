@@ -27,11 +27,11 @@
 .calendar-days button { display: grid; place-content: center; min-height: 42px; position: relative; border: 1px solid transparent; border-radius: 6px; color: inherit; background: var(--theme-surface-soft,#f6f8f6); }
 .calendar-days button.selected { border-color: var(--theme-accent,#4e745f); background: var(--theme-surface-raised,#eef5ee); }
 .calendar-days button[aria-current] > span { font-weight: 700; text-decoration: underline; }
-.calendar-days button small { color: var(--theme-accent,#4e745f); font-size: 10px; }
+.calendar-days button small { color: var(--theme-accent,#4e745f); font-size: 11px; }
 .calendar-days button i { position: absolute; bottom: 4px; right: 4px; width: 4px; height: 4px; border-radius: 50%; background: var(--theme-accent,#4e745f); }
-.calendar-month-total { margin: 12px 0 0; color: var(--theme-text-secondary,#666); font-size: 12px; }
+.calendar-month-total { margin: 12px 0 0; color: var(--theme-text-secondary,#666); font-size: 13px; }
 .calendar-work-log { margin-top: 18px; padding-top: 15px; border-top: 1px solid var(--theme-border,#dce5de); }
-.calendar-work-log label, .personal-task-plan label { display: grid; gap: 5px; margin: 9px 0; font-size: 12px; }
+.calendar-work-log label, .personal-task-plan label { display: grid; gap: 5px; margin: 9px 0; font-size: 13px; }
 .calendar-work-log input, .calendar-work-log textarea, .personal-task-plan input { width: 100%; max-width: 100%; min-width: 0; padding: 8px; border: 1px solid var(--theme-border,#dce5de); border-radius: 5px; color: inherit; background: var(--theme-surface,#fff); font: inherit; }
 .calendar-warning { color: var(--theme-danger,#993828); }
 .personal-task-plan p { margin: 6px 0 10px; }

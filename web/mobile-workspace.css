@@ -20,14 +20,14 @@
 .mobile-workspace-header a { display: inline-flex; gap: 4px; align-items: center; flex-shrink: 0; }
 .mobile-conversation .bot-preview { padding: 14px 12px 0; margin: 0; }
 .mobile-conversation .bot-message {
- max-width: 100%; padding: 16px; font-size: 14px; line-height: 1.55; overflow-wrap: anywhere;
+ max-width: 100%; padding: 16px; font-size: 15px; line-height: 1.55; overflow-wrap: anywhere;
  border: 1px solid var(--theme-border); background: var(--theme-surface); border-radius: 12px;
 }
 .mobile-conversation .bot-buttons > div { display: grid; grid-auto-flow: column; grid-auto-columns: minmax(0,1fr); gap: 7px; }
-.mobile-conversation .bot-buttons button { min-height: 44px; padding: 8px; font-size: 13px; overflow-wrap: anywhere; }
+.mobile-conversation .bot-buttons button { min-height: 44px; padding: 8px; font-size: 14px; overflow-wrap: anywhere; }
 .mobile-conversation .bot-compose { margin-top: 15px; display: grid; gap: 8px; }
 .bot-compose-actions { display: flex; justify-content: flex-end; flex-wrap: wrap; gap: 8px; align-items: center; }
-.mobile-conversation .bot-compose textarea { width: 100%; min-height: 58px; font-size: 16px; }
+.mobile-conversation .bot-compose textarea { width: 100%; min-height: 58px; font-size: 17px; }
 .mobile-bot-nav {
  position: fixed; bottom: 0; left: 50%; transform: translateX(-50%); z-index: 20;
  display: grid; grid-auto-flow: column; grid-auto-columns: 1fr; gap: 2px; width: min(700px,100%);
@@ -36,7 +36,7 @@
 }
 .mobile-bot-nav > button {
  display: grid; place-content: center; justify-items: center; gap: 4px; min-height: 49px; border: 0;
- border-radius: 9px; background: transparent; color: var(--theme-text); padding: 3px; font-size: 11px;
+ border-radius: 9px; background: transparent; color: var(--theme-text); padding: 3px; font-size: 12px;
 }
 .mobile-bot-nav > button:disabled { opacity: .55; }
 .mobile-bot-nav > .mobile-mic { background: var(--theme-accent-solid); color: var(--theme-on-accent, white); }
@@ -65,7 +65,7 @@
 }
 .mobile-workspace-links { display:flex; align-items:center; gap:8px; }
 .mobile-device-notifications { border:1px solid var(--line); border-radius:8px; margin:0 0 10px; padding:9px 12px; background:var(--theme-surface); }
-.mobile-device-notifications summary { cursor:pointer; font-size:13px; font-weight:600; }
+.mobile-device-notifications summary { cursor:pointer; font-size:14px; font-weight:600; }
 .device-notifications { margin-top:12px; }
 .device-notification-row { display:flex; justify-content:space-between; align-items:center; gap:12px; padding:10px 0; border-top:1px solid var(--line); }
 .device-notification-row small { display:block; margin-top:4px; line-height:1.45; }

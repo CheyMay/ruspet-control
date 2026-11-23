@@ -9,13 +9,13 @@
 .guide-intro > svg { margin-top: 3px; flex: none; color: var(--theme-accent); }
 .guide-intro h1 { margin: 0; font-size: clamp(24px,4vw,33px); }
 .guide-intro h2 { margin: 5px 0 0; font-size: 17px; }
-.guide-track-label { display: grid; gap: 5px; margin-top: 10px; max-width: 385px; font-size: 13px; }
+.guide-track-label { display: grid; gap: 5px; margin-top: 10px; max-width: 385px; font-size: 14px; }
 .guide-track-label select { min-width: 0; padding: 7px; }
 .guide-intro p,.guide-card p { margin: 7px 0 0; line-height: 1.5; color: var(--theme-text-secondary); }
 .guide-intro-actions { margin-top: 16px; display: flex; flex-wrap: wrap; align-items: center; gap: 12px; }
 .guide-card { padding: 18px 22px; scroll-margin-top: 84px; }
 .guide-card h2 { margin: 0 0 12px; font-size: 19px; }
-.guide-card h3 { margin: 0; font-size: 15px; }
+.guide-card h3 { margin: 0; font-size: 16px; }
 .guide-steps { margin: 12px 0 0; }
 .guide-steps div { padding: 10px 0; border-top: 1px solid var(--theme-border); }
 .guide-steps dt { font-weight: 700; }
@@ -46,12 +46,12 @@
  background: var(--theme-surface); box-shadow: 0 10px 36px #10221a55; }
 .tour-above .tour-caption { bottom: auto; top: calc(14px + env(safe-area-inset-top)); }
 .tour-top,.tour-actions { display: flex; justify-content: space-between; align-items: center; gap: 8px; }
-.tour-top { color: var(--theme-text-muted); font-size: 13px; font-weight: 650; }
+.tour-top { color: var(--theme-text-muted); font-size: 14px; font-weight: 650; }
 .tour-caption h2 { margin: 0; font-size: 19px; line-height: 1.2; }
 .tour-caption h2:focus { outline: 0; }
 .tour-caption p { margin: 7px 0 13px; color: var(--theme-text-secondary); line-height: 1.45; }
 .tour-exercise { min-width: 0; padding: 2px 10px 10px; margin: 0 0 12px; border: 1px solid var(--theme-border); border-radius: 8px; }
-.tour-exercise legend { padding-inline: 4px; font-weight: 650; font-size: 13px; }
+.tour-exercise legend { padding-inline: 4px; font-weight: 650; font-size: 14px; }
 .tour-exercise p { margin: 4px 0 8px; }
 .tour-exercise button { margin: 2px 5px 3px 0; text-align: left; white-space: normal; }
 .tour-exercise button[aria-pressed="true"] { border-color: var(--theme-accent); }
