@@ -22,13 +22,20 @@ function Summary({title,total,children,caption,bar,positive=false}:{
 
 const deadlineParts=['overdue','today','nextWorkday'] as const;
 type DeadlinePart=typeof deadlineParts[number];
+const completedParts=['overdue','today','nextWorkday','later','withoutDeadline'] as const;
+type CompletedTone=`done-${typeof completedParts[number]}`;
 
 function DeadlineBar({work}:{work:RemainingWork}){
  return <div className="bi-deadline-bar" aria-hidden="true">
   {deadlineParts.filter(part=>work[part]>0).map(part=><span key={part} data-tone={part} style={{flexGrow:work[part]}}/>)}
  </div>;
 }
-function Measure({label,value,urgent=false,tone}:{label:string;value:number;urgent?:boolean;tone?:DeadlinePart}){
+function CompletedBar({work}:{work:CompletedWork}){
+ return <div className="bi-deadline-bar bi-completed-bar" aria-hidden="true">
+  {completedParts.filter(part=>work[part]>0).map(part=><span key={part} data-tone={'done-'+part} style={{flexGrow:work[part]}}/>)}
+ </div>;
+}
+function Measure({label,value,urgent=false,tone}:{label:string;value:number;urgent?:boolean;tone?:DeadlinePart|CompletedTone}){
  return <div className={urgent&&value?'bi-urgent':undefined}><dt>{tone&&<i className="bi-deadline-dot" data-tone={tone} aria-hidden="true"/>}{label}</dt><dd>{value}</dd></div>;
 }
 function Remaining({work,nextLabel,horizon}:{work:RemainingWork;nextLabel:string;horizon:string}){
@@ -40,12 +47,12 @@ function Remaining({work,nextLabel,horizon}:{work:RemainingWork;nextLabel:string
 }
 function Completed({work,period,nextLabel}:{work:CompletedWork;period:Period;nextLabel:string}){
  const week=period==='week';
- return <Summary title={week?'Выполнено за неделю':'Выполнено сегодня'} total={work.total} positive>
-  <Measure label="После крайнего срока" value={work.overdue}/>
-  <Measure label={week?'Со сроком в день выполнения':'Крайний срок сегодня'} value={work.today}/>
-  <Measure label={week?'Со сроком до следующего рабочего дня':nextLabel} value={work.nextWorkday}/>
-  {work.later>0&&<Measure label="С более поздним сроком" value={work.later}/>}
-  {work.withoutDeadline>0&&<Measure label="Без крайнего срока" value={work.withoutDeadline}/>}
+ return <Summary title={week?'Выполнено за неделю':'Выполнено сегодня'} total={work.total} bar={<CompletedBar work={work}/>} positive>
+  <Measure label="После крайнего срока" value={work.overdue} tone="done-overdue"/>
+  <Measure label={week?'Со сроком в день выполнения':'Крайний срок сегодня'} value={work.today} tone="done-today"/>
+  <Measure label={week?'Со сроком до следующего рабочего дня':nextLabel} value={work.nextWorkday} tone="done-nextWorkday"/>
+  {work.later>0&&<Measure label="С более поздним сроком" value={work.later} tone="done-later"/>}
+  {work.withoutDeadline>0&&<Measure label="Без крайнего срока" value={work.withoutDeadline} tone="done-withoutDeadline"/>}
  </Summary>;
 }
 
@@ -66,6 +73,7 @@ function Teams({rows,period,nextLabel,onGroup}:{rows:AnalyticsRow[];period:Perio
  const shown=expanded?rows:rows.slice(0,8);
  const columns=['Осталось к выполнению','Просрочено','Срок сегодня',nextLabel,
   period==='week'?'Выполнено за неделю':'Выполнено сегодня','На согласовании','На приёмке'];
+ const tones=[null,'overdue','today','nextWorkday','completed'];
  return <section className="panel bi-section">
   <h2>По подразделениям и сотрудникам</h2>
   <div className="bi-table-wrap"><table className="bi-table">
@@ -77,8 +85,8 @@ function Teams({rows,period,nextLabel,onGroup}:{rows:AnalyticsRow[];period:Perio
      <th scope="row"><button type="button" className="bi-team-name" onClick={()=>onGroup(row.key)}>
       <span>{row.label}{row.caption&&<small>{row.caption}</small>}</span><ChevronRight size={16} aria-hidden="true"/>
      </button></th>
-     {values.map((value,index)=><td key={columns[index]} className={index===1&&value?'bi-urgent':undefined}>
-      {value}{index===0&&<DeadlineBar work={remaining}/>}
+     {values.map((value,index)=><td key={columns[index]} data-metric={value?tones[index]??undefined:undefined}>
+      {value}{index===0&&<DeadlineBar work={remaining}/>}{index===4&&<CompletedBar work={completed}/>}
      </td>)}
     </tr>;
    })}</tbody>

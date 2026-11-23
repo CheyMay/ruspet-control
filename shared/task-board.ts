@@ -12,16 +12,34 @@ export const taskLanes=[
  {id:'review',title:'На приёмке'},
  {id:'completed',title:'Завершены'},
 ] as const;
-type LaneId=(typeof taskLanes)[number]['id'];
+export type TaskLaneId=(typeof taskLanes)[number]['id'];
+const dayMs=86400000;
+const dayAt=(stamp:number)=>new Date(stamp).toISOString().slice(0,10);
+function boardWeek(now:Date){
+ const today=new Date(businessDay(now)+'T00:00:00Z');
+ return {today:+today,sunday:+today+((7-today.getUTCDay())%7)*dayMs};
+}
+
+export function suggestedBoardDeadline(lane:TaskLaneId,now:Date){
+ const {today,sunday}=boardWeek(now);
+ if(lane==='week'&&today<sunday)return dayAt(today+dayMs)+'T18:00';
+ if(lane==='nextWeek')return dayAt(sunday+dayMs)+'T18:00';
+ if(lane==='later')return dayAt(sunday+8*dayMs)+'T18:00';
+ if(lane!=='today')return undefined;
+ const evening=Date.parse(dayAt(today)+'T18:00:00+03:00');
+ const lastMinute=Date.parse(dayAt(today)+'T23:59:00+03:00');
+ const candidate=Math.min(lastMinute,Math.max(evening,Math.ceil((+now+3600000)/60000)*60000));
+ if(candidate<=+now)return undefined;
+ return new Date(candidate+10800000).toISOString().slice(0,16);
+}
 
 export function taskBoard<T extends Pick<Task,'id'|'status'|'deadline'>>(tasks:readonly T[],now:Date,pending:ReadonlySet<string>){
- const today=new Date(businessDay(now)+'T00:00:00Z');
- const untilSunday=(7-today.getUTCDay())%7;
- const endOfWeek=new Date(+today+untilSunday*86400000).toISOString().slice(0,10);
- const endOfNextWeek=new Date(+today+(untilSunday+7)*86400000).toISOString().slice(0,10);
- const groups=new Map<LaneId,T[]>(taskLanes.map(({id})=>[id,[]]));
+ const {sunday}=boardWeek(now);
+ const endOfWeek=dayAt(sunday);
+ const endOfNextWeek=dayAt(sunday+7*dayMs);
+ const groups=new Map<TaskLaneId,T[]>(taskLanes.map(({id})=>[id,[]]));
 
- function lane(task:T):LaneId{
+ function lane(task:T):TaskLaneId{
   if(task.status==='completed')return 'completed';
   if(pending.has(task.id))return 'pending';
   if(task.status==='review')return 'review';

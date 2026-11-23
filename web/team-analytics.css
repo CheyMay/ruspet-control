@@ -3,14 +3,19 @@
  --bi-muted:var(--theme-text-secondary,#617267);
  --bi-border:var(--theme-border,#dde7e0);
  --bi-soft:var(--theme-surface-soft,#f4f7f4);
+ --bi-today:#a5651d;
+ --bi-next:#3d72ab;
+ --bi-done:#2a784c;
  display:grid;gap:14px;min-width:0;
 }
+:root[data-theme="dark"] .bi-workspace { --bi-today:#e7bc71;--bi-next:#91bef2;--bi-done:#88ca9d; }
 .bi-workspace h2 {font-size:16px;line-height:1.4}
 .bi-header,.bi-header-left,.bi-header-actions,.bi-context-line,.bi-context-line nav,.bi-context-line nav span,.bi-segmented {
  display:flex;align-items:center;gap:10px;
 }
 .bi-header {justify-content:space-between;flex-wrap:wrap;padding:16px 18px}
-.bi-header-left > svg,.bi-positive .bi-summary-title > strong {color:var(--bi-accent)}
+.bi-header-left > svg {color:var(--bi-accent)}
+.bi-positive .bi-summary-title > strong,.bi-table [data-metric=completed] {color:var(--bi-done)}
 .bi-header h1 {font-size:clamp(19px,2vw,25px)}
 .bi-header p,.bi-summary-title p,.bi-coverage {color:var(--bi-muted);font-size:13px;margin-top:4px}
 .bi-header p:first-letter {text-transform:uppercase}
@@ -25,6 +30,7 @@
 .bi-context-line button {padding:3px 2px;color:var(--bi-accent);text-decoration:underline;text-underline-offset:3px}
 .bi-summaries {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .bi-summary,.bi-section {padding:16px 18px;min-width:0}
+.bi-summary-title {min-height:80px}
 .bi-summary-title > strong {display:block;font-size:34px;line-height:1.15;margin-top:6px;font-variant-numeric:tabular-nums}
 .bi-summary dl {display:grid;margin:12px 0 0;padding:0}
 .bi-summary dl > div,.bi-waiting > div {display:flex;justify-content:space-between;align-items:baseline;gap:12px}
@@ -36,10 +42,17 @@
 .bi-deadline-bar span + span {box-shadow:inset 1px 0 var(--theme-surface,#fff)}
 .bi-deadline-dot {display:inline-block;width:8px;height:8px;border-radius:50%;margin-right:7px;vertical-align:1px}
 .bi-workspace [data-tone=overdue] {background:var(--theme-danger,#af4740)}
-.bi-workspace [data-tone=today] {background:var(--theme-warning,#a5792e)}
-.bi-workspace [data-tone=nextWorkday] {background:var(--bi-accent)}
+.bi-workspace [data-tone=today] {background:var(--bi-today)}
+.bi-workspace [data-tone=nextWorkday] {background:var(--bi-next)}
+.bi-workspace [data-tone=done-overdue] {background:color-mix(in srgb,var(--bi-done) 78%,var(--theme-text))}
+.bi-workspace [data-tone=done-today] {background:var(--bi-done)}
+.bi-workspace [data-tone=done-nextWorkday] {background:color-mix(in srgb,var(--bi-done) 75%,var(--theme-surface))}
+.bi-workspace [data-tone=done-later] {background:color-mix(in srgb,var(--bi-done) 55%,var(--theme-surface))}
+.bi-workspace [data-tone=done-withoutDeadline] {background:color-mix(in srgb,var(--bi-done) 35%,var(--theme-surface))}
 .bi-table .bi-deadline-bar {height:5px;margin:4px 0 0 auto;width:min(100%,9rem);min-width:55px}
-.bi-workspace .bi-urgent {color:var(--theme-danger,#af4740)}
+.bi-workspace .bi-urgent,.bi-table [data-metric=overdue] {color:var(--theme-danger,#af4740)}
+.bi-table [data-metric=today] {color:var(--bi-today)}
+.bi-table [data-metric=nextWorkday] {color:var(--bi-next)}
 .bi-waiting {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;padding:12px 18px;margin:0}
 .bi-table-wrap {overflow:auto;margin-top:8px}
 .bi-table {width:100%;min-width:650px;border-collapse:collapse;font-variant-numeric:tabular-nums}
@@ -57,9 +70,10 @@
 .bi-chart li {display:grid;justify-items:center;gap:5px;flex:1;min-width:47px;font-size:12px;color:var(--bi-muted)}
 .bi-chart li > strong {color:var(--theme-text,#26362d)}
 .bi-bar-track {height:90px;width:min(42px,90%);display:flex;align-items:end;background:var(--bi-soft);border-radius:4px;overflow:hidden}
-.bi-bar-track span {width:100%;background:var(--bi-accent);border-radius:4px}
+.bi-bar-track span {width:100%;background:var(--bi-done);border-radius:4px}
 @media(max-width:620px) {
  .bi-summaries,.bi-waiting {grid-template-columns:1fr}
+ .bi-summary-title {min-height:0}
  .bi-waiting {gap:8px}
  .bi-header,.bi-summary,.bi-section,.bi-waiting {padding:12px}
 }

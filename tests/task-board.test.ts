@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
-import {taskBoard} from '../shared/task-board.js';
+import {suggestedBoardDeadline,taskBoard} from '../shared/task-board.js';
 import type {Task} from '../shared/types.js';
 
 const task=(id:string,deadline:string|null,status:Task['status']='active')=>({id,deadline,status});
@@ -34,4 +34,16 @@ test('paused, reviewing and completed tasks keep their own lanes and are counted
  assert.deepEqual(lanes.noDeadline,['none','invalid']);
  assert.deepEqual(lanes.overdue,[]);
  assert.equal(Object.values(lanes).flat().length,tasks.length);
+});
+
+test('drop suggestions are Moscow local times inside the target lane',()=>{
+ const sunday=new Date('2026-11-22T19:30:00Z');
+ assert.equal(suggestedBoardDeadline('today',sunday),'2026-11-22T23:30');
+ assert.equal(suggestedBoardDeadline('today',new Date('2026-11-22T20:59:00Z')),undefined);
+ assert.equal(suggestedBoardDeadline('week',sunday),undefined);
+ assert.equal(suggestedBoardDeadline('week',new Date('2026-11-21T12:00:00Z')),'2026-11-22T18:00');
+ assert.equal(suggestedBoardDeadline('nextWeek',sunday),'2026-11-23T18:00');
+ assert.equal(suggestedBoardDeadline('later',sunday),'2026-11-30T18:00');
+ assert.equal(suggestedBoardDeadline('review',sunday),undefined);
+ assert.equal(suggestedBoardDeadline('noDeadline',sunday),undefined);
 });
