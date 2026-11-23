@@ -131,9 +131,10 @@ export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHisto
    deferredUntil:current.deferred_until,
   };
  }
- const imported=(await db.query<{count:number;linked:boolean}>(`SELECT
+ const imported=(await db.query<{count:number;linked:boolean;exchangeState:string|null}>(`SELECT
   (SELECT count(*)::int FROM bitrix_task_activity WHERE task_id=$1 AND kind='comment') AS count,
-  EXISTS(SELECT 1 FROM bitrix_task_links WHERE task_id=$1) AS linked`,[id])).rows[0];
+  EXISTS(SELECT 1 FROM bitrix_task_links WHERE task_id=$1) AS linked,
+  (SELECT state FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 1) AS "exchangeState"`,[id])).rows[0];
  const hierarchy=await approvalHierarchy(db);
  const deadlineHistory=includeDeadlineHistory&&approvals.length?(await loadDeadlineHistories(db,[id]))[id]??[]:[];
  const personalPlan=includePrivate?await taskPersonalPlan(user,task,db):null;
@@ -141,7 +142,7 @@ export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHisto
   task,personalPlan,assignmentReceipt:await taskAssignmentReceipt(task,personalPlan,db),deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
   comments:(await db.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,
-  bitrixCommentCount:imported.count,bitrixLinked:imported.linked,
+  bitrixCommentCount:imported.count,bitrixLinked:imported.linked,bitrixExchangeState:imported.exchangeState,
   events:(await db.query('SELECT * FROM task_events WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows,
   approvals,
   decisions:(await db.query('SELECT d.*,EXISTS(SELECT 1 FROM decision_retractions r WHERE r.decision_id=d.id) retracted FROM decisions d JOIN approvals a ON a.id=d.approval_id WHERE a.task_id=$1 ORDER BY d.created_at',[id])).rows,

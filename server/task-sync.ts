@@ -22,7 +22,17 @@ export async function processTaskSync(adapter:TaskSyncAdapter,now=new Date(),lim
 export async function taskSyncStatus(){
  const counts=(await pool.query(`SELECT (SELECT count(*)::int FROM bitrix_task_snapshots) AS staged,
   count(*)::int AS linked,count(*) FILTER(WHERE conflict IS NOT NULL)::int AS conflicts,
-  max(checked_at) AS "lastCheck", (SELECT last_success_at FROM bitrix_rest_gate WHERE id=1) AS "lastSuccess" FROM bitrix_task_links`)).rows[0];
+  max(checked_at) AS "lastCheck", (SELECT last_success_at FROM bitrix_rest_gate WHERE id=1) AS "lastSuccess",
+  (SELECT enabled FROM bitrix_event_capture WHERE id=1) AS "eventsEnabled",
+  (SELECT max(received_at) FROM bitrix_event_inbox) AS "lastEvent",
+  (SELECT max(updated_at) FROM bitrix_refresh_queue WHERE resource LIKE 'task_inbound%' AND state='done') AS "lastInbound",
+  (SELECT count(*)::int FROM bitrix_refresh_queue WHERE resource LIKE 'task_inbound%' AND state IN ('pending','processing')) AS "inboundWaiting",
+  (SELECT count(*)::int FROM bitrix_refresh_queue WHERE resource LIKE 'task_inbound%' AND state IN ('failed','blocked')) AS "inboundErrors",
+  (SELECT enabled FROM bitrix_live_config WHERE id=1) AS "writesEnabled",
+  (SELECT count(*)::int FROM bitrix_operations WHERE state IN ('pending','processing')) AS "outboundWaiting",
+  (SELECT count(*)::int FROM bitrix_operations WHERE state IN ('failed','uncertain','blocked')) AS "outboundErrors",
+  (SELECT max(finished_at) FROM bitrix_operations WHERE state='sent') AS "lastWrite"
+  FROM bitrix_task_links`)).rows[0];
  return {provider:counts.linked?'bitrix-pilot':'mock',connected:!!counts.lastSuccess&&Date.now()-Date.parse(counts.lastSuccess)<600000,bitrix:counts,
   queue:(await pool.query('SELECT state,count(*)::int count FROM task_sync_queue GROUP BY state')).rows};
 }

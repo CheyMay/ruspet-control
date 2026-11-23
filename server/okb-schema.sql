@@ -43,6 +43,35 @@ ALTER TABLE companies ADD COLUMN IF NOT EXISTS bitrix_deleted_at timestamptz;
 CREATE UNIQUE INDEX IF NOT EXISTS company_bitrix_identity ON companies(bitrix_portal,bitrix_id) WHERE bitrix_id IS NOT NULL;
 ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_status_check;
 ALTER TABLE companies ADD CONSTRAINT companies_status_check CHECK(status IN ('prospect','active','former','unclassified'));
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS kpp text;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS ogrn text;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS legal_address text;
+ALTER TABLE companies ADD COLUMN IF NOT EXISTS registry_status text;
+
+CREATE TABLE IF NOT EXISTS company_people (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ company_id uuid NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+ name text NOT NULL,
+ position text NOT NULL DEFAULT '',
+ phone text NOT NULL DEFAULT '',
+ email text NOT NULL DEFAULT '',
+ notes text NOT NULL DEFAULT '',
+ archived_at timestamptz,
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS company_people_by_company ON company_people(company_id,name) WHERE archived_at IS NULL;
+
+CREATE TABLE IF NOT EXISTS product_catalog (
+ id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+ sku text NOT NULL UNIQUE,
+ name text NOT NULL,
+ category text NOT NULL CHECK(category IN ('preform','cap','other')),
+ specs text NOT NULL DEFAULT '',
+ active boolean NOT NULL DEFAULT true,
+ version integer NOT NULL DEFAULT 1,
+ updated_at timestamptz NOT NULL DEFAULT now()
+);
+
 CREATE TABLE IF NOT EXISTS company_responsibility_events (
  id uuid PRIMARY KEY,company_id uuid NOT NULL REFERENCES companies,actor_id text,
  source text NOT NULL CHECK(source IN ('manual','bitrix')),before_value jsonb,after_value jsonb,

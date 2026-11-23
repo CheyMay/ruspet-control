@@ -1,4 +1,4 @@
-import {ArrowUpRight,Bell,BookOpen,CalendarDays,ChartNoAxesCombined,ArrowLeft} from 'lucide-react';
+import {ArrowUpRight,Bell,BookOpen,CalendarDays,ChartNoAxesCombined,ArrowLeft,Users} from 'lucide-react';
 import {useState,type ReactNode} from 'react';
 import type {User} from '../shared/types.js';
 import type {AnalyticsAccess} from '../shared/team-analytics.js';
@@ -20,6 +20,7 @@ export function MobileWorkspace({user,refresh,unread,connectionNotice,calendarRe
   <header className="mobile-workspace-header">
    <div className="mobile-workspace-name">{(calendar||guide)&&<a href="/mobile" className="icon-button mobile-menu-link" aria-label="К рабочему боту"><ArrowLeft size={20}/></a>}<CapMark/><div><strong>РУСПЭТ</strong><small>{user.name}</small></div></div>
    <div className="mobile-workspace-links">
+    {!guide&&<a href="/?view=okb&full=1" className="icon-button" aria-label="Клиенты"><Users size={18}/></a>}
     {!guide&&analytics&&<a href="/?view=analytics" className="icon-button mobile-analytics-link" aria-label="Аналитика"><ChartNoAxesCombined size={18}/></a>}
     {!calendar&&<a href={user.root_access?'/time':'/mobile?view=calendar'} className="icon-button" aria-label="Мой календарь"><CalendarDays size={18}/></a>}
     <a href="/mobile?view=notifications" className="icon-button notification-button" aria-label="Уведомления"><Bell size={18}/>{unread&&<i/>}</a>

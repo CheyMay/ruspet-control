@@ -58,7 +58,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   const rows=list.slice(page*tasksPerPage,(page+1)*tasksPerPage);
   const heading=awaiting?'Нужно принять':day===today?'Мой план на сегодня':day===tomorrow?'Мой план на завтра':'Мой план · '+day.split('-').reverse().join('.');
   const text=rows.map(task=>[
-   task.plan.plannedAt?moscowClock(task.plan.plannedAt).slice(11)+' МСК':null,'#'+task.id,compactTaskTitle(task.title,105),
+   task.plan.plannedAt?moscowClock(task.plan.plannedAt).slice(11)+' МСК':null,'#'+task.id,compactTaskTitle(task.title,105),task.plan.nextStep?'Шаг: '+task.plan.nextStep.slice(0,120):null,
    task.status==='completed'?'Завершена':task.status==='review'?'На приёмке':null
   ].filter(Boolean).join(' · '));
   const origin={op:p.op,filter:awaiting?'awaiting':day,page};

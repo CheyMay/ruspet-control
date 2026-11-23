@@ -107,6 +107,7 @@ export async function findDelegationClients(task:Task,available:User[],query:str
   .slice(0,12).map(({id,name})=>({id,name}));
 }
 export async function companyResponsibility(actor:User,id:string){
+ requireOkbAccess(actor);
  const company=await getCompany(actor,id);
  const local=company.manager_source==='bitrix'&&company.bitrix_manager_id?(await pool.query('SELECT user_id FROM bitrix_user_links WHERE external_id=$1',[company.bitrix_manager_id])).rows[0]?.user_id:company.manager_id;
  const manager=local?(await pool.query('SELECT id,name,role FROM users WHERE id=$1',[local])).rows[0]:null;

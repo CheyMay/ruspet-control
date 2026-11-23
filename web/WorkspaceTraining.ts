@@ -24,6 +24,7 @@ const locations:Record<LessonId,Location>={
  place:{page:'tasks',anchor:'.heading-actions .button.primary',fallback:'.task-scope-switches'},
  created:review,
  voice:{page:'bot',anchor:'.bot-compose'},
+ clients:{page:'okb',anchor:'[aria-label="Поиск по ОКБ"]'},
  team,teamAnalytics:analytics,branchDecision:approvals,review,teamReport:{...reports,scope:'team'},
  salesAnalytics:analytics,companyAnalytics:analytics,week:{...analytics,anchor:'[aria-label="Период аналитики"]',fallback:'.bi-header'},
  directorDecision:approvals,companyReport:{...reports,scope:'company'},

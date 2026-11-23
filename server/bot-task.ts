@@ -155,6 +155,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   if(plan.needsAcceptance)context.push('Не принята · примите задачу и укажите плановое время');
   rows.push([button(plan.needsAcceptance?'Принять задачу':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
    {...extra,kind:plan.needsAcceptance?'accept_assignment':'edit_personal_plan',version:plan.epoch,revision:plan.revision})]);
+  if(!plan.needsAcceptance)rows.push([button('Запланировать шаг','form',{...extra,kind:'personal_step',version:plan.epoch,revision:plan.revision})]);
  }
  const control=!pending&&d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));
  const overdue=taskQueue(t,now)==='overdue'||elapsedToday(t,now);
@@ -185,6 +186,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  facts.push(...taskFacts);
  if(!plan&&d.assignmentReceipt)facts.push(d.assignmentReceipt.state==='accepted'?'Исполнитель принял задачу':'Исполнитель ещё не принял задачу');
  if(plan?.plannedAt)facts.push('Мой план '+date(plan.plannedAt)+' МСК');
+ if(plan?.nextStep)facts.push('Следующий шаг: '+botExcerpt(plan.nextStep,160));
  if(t.status==='review'&&!pending&&canComplete(u,t,d.approvalScope))rows.push([form('Завершить задачу','complete')]);
  facts.push('Исполнитель · '+name(t.assignee_id),'Постановщик · '+name(t.creator_id));
  const preview=botExcerpt(t.description,155);

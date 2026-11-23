@@ -104,6 +104,7 @@ test('analytics totals reconcile by deadline, show Monday on Friday and count ap
  assert.deepEqual(today.numbers.completed,{total:5,overdue:1,today:1,nextWorkday:1,later:1,withoutDeadline:1});
  assert.equal(today.numbers.approvals,2);
  assert.equal(today.numbers.review,1);
+ assert.equal(today.numbers.outside,2);
  assert.equal(today.rows.length,0);
 
  const week=await analytics.analyticsOverview(person('deputy'),group,'week',now);

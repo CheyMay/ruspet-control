@@ -1,3 +1,5 @@
+import {ClientPortfolio} from './Crm.js';
+import {HelpHint} from './Management.js';
 import {useEffect,useState} from 'react';
 import {ChartNoAxesCombined,ChevronRight,RefreshCw} from 'lucide-react';
 import type {AnalyticsDay,AnalyticsOverview,AnalyticsRow,CompletedWork,RemainingWork} from '../shared/team-analytics.js';
@@ -72,15 +74,15 @@ function Teams({rows,period,nextLabel,onGroup}:{rows:AnalyticsRow[];period:Perio
  const [expanded,setExpanded]=useState(false);
  const shown=expanded?rows:rows.slice(0,8);
  const columns=['Осталось к выполнению','Просрочено','Срок сегодня',nextLabel,
-  period==='week'?'Выполнено за неделю':'Выполнено сегодня','На согласовании','На приёмке'];
+  period==='week'?'Выполнено за неделю':'Выполнено сегодня','На согласовании','На приёмке','Позже или без срока'];
  const tones=[null,'overdue','today','nextWorkday','completed'];
  return <section className="panel bi-section">
   <h2>По подразделениям и сотрудникам</h2>
   <div className="bi-table-wrap"><table className="bi-table">
    <thead><tr><th scope="col">Сотрудник или подразделение</th>{columns.map(label=><th scope="col" key={label}>{label}</th>)}</tr></thead>
    <tbody>{shown.map(row=>{
-    const {remaining,completed,approvals,review}=row.numbers;
-    const values=[remaining.total,remaining.overdue,remaining.today,remaining.nextWorkday,completed.total,approvals,review];
+    const {remaining,completed,approvals,review,outside}=row.numbers;
+    const values=[remaining.total,remaining.overdue,remaining.today,remaining.nextWorkday,completed.total,approvals,review,outside??0];
     return <tr key={row.key}>
      <th scope="row"><button type="button" className="bi-team-name" onClick={()=>onGroup(row.key)}>
       <span>{row.label}{row.caption&&<small>{row.caption}</small>}</span><ChevronRight size={16} aria-hidden="true"/>
@@ -155,9 +157,13 @@ export function TeamAnalytics(){
    </div>
    <dl className="panel bi-waiting" aria-label="Задачи, по которым ждут решения">
     <Measure label="На согласовании" value={data.numbers.approvals}/><Measure label="На приёмке" value={data.numbers.review}/>
+    <Measure label="Позже или без срока" value={data.numbers.outside??0}/>
+    <HelpHint text="Остаток к выполнению охватывает сроки до конца следующего рабочего дня. Более дальние задачи, задачи без срока, согласования и приёмка показаны отдельно."/>
    </dl>
    {period==='week'&&<WeekChart days={data.days} date={data.date}/>}
    {data.rows.length>0&&<Teams key={key} rows={data.rows} period={period} nextLabel={nextLabel} onGroup={part=>setSelection([...selection,part])}/>}
+   {data.rows.length===0&&data.path.length===0&&<p className="panel bi-section muted">В вашей области сейчас нет задач для этой сводки.</p>}
+   {data.path.length===0&&<ClientPortfolio/>}
    {period==='week'&&data.partialHistory&&<small className="bi-coverage">История за неделю покрыта частично{data.historyFrom?' · учёт с '+dateShort.format(new Date(data.historyFrom)):''}.</small>}
   </>}
  </div>;

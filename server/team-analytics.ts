@@ -13,7 +13,7 @@ const mondayOf=(day:string)=>offsetDay(day,-((new Date(day+'T12:00:00+03:00').ge
 const blank=():AnalyticsNumbers=>({
  remaining:{total:0,overdue:0,today:0,nextWorkday:0},
  completed:{total:0,overdue:0,today:0,nextWorkday:0,later:0,withoutDeadline:0},
- approvals:0,review:0
+ approvals:0,review:0,outside:0
 });
 
 type DeadlineBucket=Exclude<keyof CompletedWork,'total'>;
@@ -86,6 +86,7 @@ export async function analyticsOverview(user:User,selection:string[],period:'day
    const kind=deadlineBucket(task.deadline,date,nextWorkday,now);
    count(task,n=>{
     if(kind==='overdue'||kind==='today'||kind==='nextWorkday'){n.remaining[kind]++;n.remaining.total++;}
+   else n.outside=(n.outside??0)+1;
    });
   }
 
@@ -101,7 +102,7 @@ export async function analyticsOverview(user:User,selection:string[],period:'day
    if(day===date||!source.tracking||Date.parse(source.tracking)<+localDayStart(day)+dayMs||dayCounts.has(day))
     days.push({date:day,completed:dayCounts.get(day)??0});
   }
-  const rows=[...groups.values()].filter(({numbers:n})=>n.remaining.total||n.completed.total||n.approvals||n.review)
+  const rows=[...groups.values()].filter(({numbers:n})=>n.remaining.total||n.completed.total||n.approvals||n.review||n.outside)
    .sort((a,b)=>b.numbers.remaining.overdue-a.numbers.remaining.overdue||b.numbers.remaining.total-a.numbers.remaining.total||a.label.localeCompare(b.label,'ru'));
   return {access:scope.access,scope:scope.label,path,rows,numbers,days,
    generatedAt:now.toISOString(),date,nextWorkday,historyFrom:source.tracking,

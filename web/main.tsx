@@ -18,4 +18,5 @@ import './search-filter.css';
 import './workspace-guide.css';
 import './task-kanban.css';
 import './task-options.css';
+import './crm.css';
 createRoot(document.getElementById('root')!).render(<React.StrictMode><App/></React.StrictMode>);

@@ -1,0 +1,10 @@
+.crm-fieldset { border:1px solid var(--line,#dbe0e5); border-radius:8px; padding:.75rem; display:grid; gap:.55rem; }
+.crm-fieldset legend { font-weight:600; }
+.crm-registry-match { display:grid; gap:.15rem; text-align:left; padding:.55rem; font:inherit; color:inherit; background:transparent; border:1px solid var(--line,#dbe0e5); border-radius:6px; cursor:pointer; overflow-wrap:anywhere; }
+.crm-registry-match:hover,.crm-registry-match:focus-visible { background:var(--surface-muted,#eef0f2); color:var(--text,#232a34); }
+.crm-contacts { margin-block:1rem; }
+.crm-portfolio { padding:1rem; }
+.crm-portfolio h2 { margin:0 0 .3rem; }
+.crm-portfolio dl { display:grid; grid-template-columns:repeat(auto-fit,minmax(130px,1fr)); gap:.75rem; margin-bottom:0; }
+.crm-portfolio dd { font-weight:650; font-size:1.4rem; margin:.25rem 0 0; }
+.crm-portfolio dt { overflow-wrap:anywhere; }

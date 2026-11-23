@@ -172,8 +172,8 @@ async function editTaskCore(u:User,id:string,input:TaskInput,version:number,reas
  const owner=await validateTaskAssignment(db,u,input,id,before.assignee_id,before.creator_id);
  const companyId=input.companyId===undefined?before.company_id??null:input.companyId;
  if(companyId!==(before.company_id??null)){
-  assert(globalAccess(u),403,'Связь с ОКБ меняет руководство.');
   if(companyId)await getCompany(u,companyId);
+  else if(before.company_id&&!globalAccess(u))await getCompany(u,before.company_id);
  }
  const branch=await resolveTaskBranch(db,u,owner,input.branchId,before);
  const after=(await db.query('UPDATE tasks SET title=$2,description=$3,assignee_id=$4,branch_id=$5,planned_start=$6,planned_end=$7,important=$8,customer_risk=$9,parent_id=$10,code=$11,price=COALESCE($12,price),custom_fields=COALESCE($13,custom_fields),company_id=$14,result_required=COALESCE($15,result_required),priority=COALESCE($16,priority),critical=COALESCE($17,critical),version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.title,input.description,owner.id,branch,input.plannedStart,input.plannedEnd,input.important,input.customerRisk,input.parentId,input.title.split(/\s/)[0],input.price??null,input.customFields===undefined?null:JSON.stringify(input.customFields),companyId,input.resultRequired??null,input.priority??null,input.critical??null])).rows[0];

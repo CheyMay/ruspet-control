@@ -577,9 +577,11 @@ test('an assigned task stays unaccepted until the manager sets a plan, with sepa
  assert.equal(pending?.assignment_pending,true);
  const {personalPlan}=await service.detail(actor,id);
  assert.equal(personalPlan?.needsAcceptance,true);
- await calendar.saveTaskPlan(actor,id,{epoch:personalPlan!.epoch,revision:personalPlan!.revision,plannedAt:personal.toISOString(),accept:true});
+ await calendar.saveTaskPlan(actor,id,{epoch:personalPlan!.epoch,revision:personalPlan!.revision,plannedAt:personal.toISOString(),accept:true,nextStep:'Отправить клиенту расчёт'});
  assert.equal((await service.visibleTasks(actor)).find(task=>task.id===id)?.assignment_pending,false);
  const month=await calendar.personalCalendar(actor,'2035-03');
  assert.equal(Date.parse(month.deadlines?.find(task=>task.id===id)?.deadline??''),+stamp);
  assert.equal(Date.parse(month.scheduled.find(task=>task.id===id)!.plan.plannedAt!),+personal);
+ assert.equal(month.scheduled.find(task=>task.id===id)!.plan.nextStep,'Отправить клиенту расчёт');
+ assert.match((await db.pool.query('SELECT body FROM task_alerts WHERE task_id=$1',[id])).rows[0].body,/Следующий шаг: Отправить клиенту расчёт/);
 });

@@ -103,13 +103,15 @@ mv "$stage/next/node_modules" "$app/node_modules"
 runuser -u ruspet -- env PGOPTIONS='-c lock_timeout=5000' node --import tsx --input-type=module <<'JS'
 import {pool} from './server/db.ts';
 import {migrate} from './scripts/migrate.ts';
+import {migrateOkb,okbConfigured,closeOkb} from './server/okb.ts';
 import {createApp} from './server/app.ts';
 try {
  const status=(await pool.query("SELECT enabled FROM bitrix_live_config WHERE id=1")).rows[0]?.enabled;
  await migrate();
+ if(okbConfigured())await migrateOkb();
  createApp();
  if((await pool.query("SELECT enabled FROM bitrix_live_config WHERE id=1")).rows[0]?.enabled!==status)throw Error('Bitrix exchange switch changed during migration.');
-} finally {await pool.end();}
+} finally {await closeOkb();await pool.end();}
 JS
 mv "$app/dist" "$stage/previous/dist"
 mv "$stage/next/dist" "$app/dist"

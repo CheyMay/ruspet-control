@@ -93,7 +93,7 @@ export async function loadAnalyticsScope(user:User,db:Db){
   const [department]=branch.split(' / ');
   return [{key:'department:'+department,label:department===unassignedBranch?'Подразделение на сверку':department},employee];
  }
- return {access,label:access==='company'?'Вся компания':access==='sales'?'Продажи':'Моя команда',visible,path,byId};
+ return {access,label:access==='company'?'Вся компания':access==='sales'?'Продажи':'Моя команда',visible,path,byId,salesIds:sales};
 }
 
 export type AnalyticsScope=Awaited<ReturnType<typeof loadAnalyticsScope>>;

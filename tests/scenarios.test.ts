@@ -1283,7 +1283,7 @@ test('separate OKB database stores companies and triggers only active BPM rules 
  try{
   await okb.migrateOkb();
   const path='/okb/companies',work='/work-design/processes';
-  assert.equal((await request('anna',path)).status,403);
+  assert.deepEqual((await request('anna',path)).data,[]);
   const input={name:'Тестовая компания',taxId:'0000000001',status:'prospect',contact:'',notes:''};
   const company=await request('director',path,input);
   assert.equal(company.status,201);
@@ -1313,10 +1313,10 @@ test('separate OKB database stores companies and triggers only active BPM rules 
   assert.equal((await db.pool.query("SELECT to_regclass('companies') IS NULL AS isolated")).rows[0].isolated,true);
   const companyId=company.data.id,companyPath=path+'/'+companyId;
   assert.equal((await request('director',companyPath+'/work')).data.tasks[0].id,runs[0].task_id);
-  assert.equal((await request('anna',companyPath+'/work')).status,403);
+  assert.equal((await request('anna',companyPath+'/work')).status,404);
   const task={title:'Проверить тестовый заказ',description:'Ожидается результат',price:0,assigneeId:'anna',
    deadline:null,plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null,companyId};
-  assert.equal((await request('anna','/tasks',task)).status,403);
+  assert.equal((await request('anna','/tasks',task)).status,404);
   const make=await request('director','/tasks',task);
   assert.equal(make.status,201);
   const taskPath='/tasks/'+make.data.id;

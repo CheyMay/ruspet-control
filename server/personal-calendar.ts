@@ -8,14 +8,14 @@ import {compactTaskTitle} from '../shared/task-title.js';
 import {canLogStaffWork,isSalesManager,type CalendarTask,type PersonalCalendarMonth,type StaffWorkDay,type TaskPersonalPlan} from '../shared/personal-calendar.js';
 import type {Task,User} from '../shared/types.js';
 
-type PlanRow={assignment_epoch:number;revision:number;requires_acceptance:boolean;accepted_at:string|null;planned_at:string|null};
+type PlanRow={assignment_epoch:number;revision:number;requires_acceptance:boolean;accepted_at:string|null;planned_at:string|null;next_step:string};
 const taskEpoch=(task:Task)=>task.assignment_epoch??1;
 const planReminderTime=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
 const emptyPlan=(task:Task):TaskPersonalPlan=>({epoch:taskEpoch(task),revision:0,needsAcceptance:false,acceptedAt:null,plannedAt:null});
 const ownPlan=(p:PlanRow):TaskPersonalPlan=>({epoch:p.assignment_epoch,revision:p.revision,
- needsAcceptance:p.requires_acceptance&&!p.accepted_at,acceptedAt:p.accepted_at,plannedAt:p.planned_at});
+ needsAcceptance:p.requires_acceptance&&!p.accepted_at,acceptedAt:p.accepted_at,plannedAt:p.planned_at,nextStep:p.next_step});
 export const taskPlanInput=z.object({epoch:z.number().int().positive(),revision:z.number().int().nonnegative(),
- plannedAt:z.iso.datetime({offset:true}),accept:z.boolean()});
+ plannedAt:z.iso.datetime({offset:true}),accept:z.boolean(),nextStep:z.string().trim().max(500).optional()});
 export const staffWorkInput=z.object({minutes:z.number().int().min(0).max(1440).nullable(),
  note:z.string().trim().max(2000),revision:z.number().int().nonnegative()});
 
@@ -66,15 +66,16 @@ export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof task
   assert(Number.isFinite(+when),400,'Укажите корректную дату и время.');
   const plannedAt=when.toISOString();
   // Repeating an already saved form is harmless after a lost response.
-  if(current.plannedAt===plannedAt&&(!input.accept||current.acceptedAt))return current;
+  const nextStep=input.nextStep??current.nextStep??'';
+  if(current.plannedAt===plannedAt&&nextStep===(current.nextStep??'')&&(!input.accept||current.acceptedAt))return current;
   assert(current.revision===input.revision,409,'План уже изменился. Обновите карточку.');
   assert(current.needsAcceptance===input.accept,409,current.needsAcceptance?'Сначала примите задачу.':'Назначение уже принято.');
   assert(+when>now,400,'Выберите будущее плановое время.');
-  const row=(await db.query<PlanRow>(`INSERT INTO personal_task_plans AS p(task_id,assignment_epoch,user_id,planned_at,revision)
-   VALUES($1,$2,$3,$4,1) ON CONFLICT(task_id,assignment_epoch) DO UPDATE SET
-   planned_at=excluded.planned_at,revision=p.revision+1,
+  const row=(await db.query<PlanRow>(`INSERT INTO personal_task_plans AS p(task_id,assignment_epoch,user_id,planned_at,revision,next_step)
+   VALUES($1,$2,$3,$4,1,$6) ON CONFLICT(task_id,assignment_epoch) DO UPDATE SET
+   planned_at=excluded.planned_at,next_step=excluded.next_step,revision=p.revision+1,
    accepted_at=CASE WHEN $5 THEN clock_timestamp() ELSE p.accepted_at END RETURNING *`,
-  [id,current.epoch,user.id,plannedAt,input.accept])).rows[0];
+  [id,current.epoch,user.id,plannedAt,input.accept,nextStep])).rows[0];
   await db.query(`UPDATE task_alerts SET canceled_at=now() WHERE task_id=$1 AND recipient_id=$2
    AND personal_plan_epoch=$3 AND acknowledged_at IS NULL AND canceled_at IS NULL`,[id,user.id,current.epoch]);
   await db.query(`UPDATE outbox SET withdrawn_at=now() WHERE task_id=$1 AND recipient_id=$2
@@ -82,7 +83,7 @@ export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof task
   const lead=+when-now>30*60000?30:+when-now>10*60000?10:0;
   const due=new Date(+when-lead*60000),expires=new Date(+when+60*60000);
   const time=planReminderTime.format(when);
-  const body=`Ваш план на ${time} МСК\n#${id} · ${compactTaskTitle(task.title,160)}`;
+  const body=`Ваш план на ${time} МСК\n#${id} · ${compactTaskTitle(task.title,160)}${nextStep?'\nСледующий шаг: '+nextStep:''}`;
   await db.query(`INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,kind,body,due_at,expires_at,personal_plan_epoch)
    VALUES($1,$2,$3,$4,'task',$5,$6,$7,$8)`,[randomUUID(),`personal-plan:${id}:${current.epoch}:${row.revision}`,
    user.id,id,body,due.toISOString(),expires.toISOString(),current.epoch]);
@@ -98,7 +99,7 @@ export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof task
 export const calendarMonthInput=z.string().regex(/^20\d{2}-(0[1-9]|1[0-2])$/);
 export async function personalCalendar(user:User,month:string,db:Db=pool,now=new Date()):Promise<PersonalCalendarMonth>{
  const first=calendarMonthInput.parse(month)+'-01';
- const plans=(await db.query<Task&PlanRow>(`SELECT t.*,p.requires_acceptance,p.accepted_at,p.planned_at,p.revision
+ const plans=(await db.query<Task&PlanRow>(`SELECT t.*,p.requires_acceptance,p.accepted_at,p.planned_at,p.revision,p.next_step
   FROM personal_task_plans p JOIN tasks t ON t.id=p.task_id AND t.assignment_epoch=p.assignment_epoch AND t.assignee_id=p.user_id
   WHERE p.user_id=$1 AND (p.planned_at >= $2::date::timestamp AT TIME ZONE 'Europe/Moscow'
    AND p.planned_at < ($2::date+interval '1 month') AT TIME ZONE 'Europe/Moscow'

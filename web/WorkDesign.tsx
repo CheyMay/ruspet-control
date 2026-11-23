@@ -1,9 +1,10 @@
 import {metricPreset,premiumPreset} from '../shared/process-metrics.js';
 import {ProcessGraphEditor,seedGraph,seedMonitor} from './ProcessGraph.js';
 import {graphErrors,type ProcessGraph,type Trace} from '../shared/process-graph.js';
+import {RegistryLookup} from './Crm.js';
 import {CompanyWork} from './CompanyWork.js';
 import {CompanyPicker} from './TaskComposeTools.js';
-import {useEffect,useState,type FormEvent} from 'react';
+import {Fragment,useEffect,useState,type FormEvent} from 'react';
 import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import type {User} from '../shared/types.js';
@@ -11,22 +12,27 @@ import type {User} from '../shared/types.js';
 export const companyStates={prospect:'Потенциальный клиент',active:'В работе',former:'Бывший клиент',unclassified:'Не указан'} as const;
 type CompanyState=keyof typeof companyStates;
 const okbSourceFields={name1c:'Название в 1С',manager:'Менеджер в выгрузке',address:'Адрес',region:'Регион',type:'Тип компании',branch:'Филиал отгрузки'} as const;
-type Company={manager_id:string|null;manager_source:'manual'|'bitrix'|null;bitrix_manager_id?:string|null;bitrix_synced_at?:string|null;xlsx_source?:Partial<Record<keyof typeof okbSourceFields,string>>|null;id:string;name:string;tax_id:string|null;status:CompanyState;contact:string;notes:string;version:number;updated_at:string};
+type Company={manager_id:string|null;manager_source:'manual'|'bitrix'|null;bitrix_manager_id?:string|null;bitrix_synced_at?:string|null;xlsx_source?:Partial<Record<keyof typeof okbSourceFields,string>>|null;id:string;name:string;tax_id:string|null;status:CompanyState;contact:string;notes:string;version:number;updated_at:string;kpp?:string|null;ogrn?:string|null;legal_address?:string|null;registry_status?:string|null};
 export const canUseOkb=(user:User)=>['admin','director','sales_head'].includes(user.role);
 const errorText=(error:unknown)=>error instanceof Error?error.message:'Не удалось выполнить запрос.';
 
-export function Okb({initialId,users,openTask,createTask}:{initialId:string|null;users:User[];openTask:(id:string)=>void;createTask:(companyId:string)=>void}){
+export function Okb({initialId,users,user,openTask,createTask}:{initialId:string|null;users:User[];user:User;openTask:(id:string)=>void;createTask:(companyId:string)=>void}){
  const [rows,setRows]=useState<Company[]|null>(null),[query,setQuery]=useState(''),[reload,setReload]=useState(0);
+ const [scope,setScope]=useState<'mine'|'unassigned'|'accessible'>(user.role==='employee'?'mine':'accessible');
+ const own=scope==='mine';
+ const elevated=canUseOkb(user);
  const [editor,setEditor]=useState<Company|'new'|null>(null),[busy,setBusy]=useState(false),[error,setError]=useState('');
+ const [registry,setRegistry]=useState<{name:string;taxId:string;kpp:string|null;ogrn:string|null;legalAddress:string|null;registryStatus:string|null}|null>(null);
  useEffect(()=>{
   let current=true;
-  const timer=setTimeout(()=>void api<Company[]>('/okb/companies?q='+encodeURIComponent(query.trim())).then(v=>{
+  const timer=setTimeout(()=>void api<Company[]>('/okb/companies?q='+encodeURIComponent(query.trim())+'&scope='+scope).then(v=>{
    if(current){setRows(v);setError('');}
   }).catch(e=>{if(current)setError(errorText(e));}),200);
   return()=>{current=false;clearTimeout(timer);};
- },[query,reload]);
+ },[query,reload,scope]);
  useEffect(()=>{
   if(!initialId)return;
+  setRegistry(null);
   let active=true;
   void api<Company>('/okb/companies/'+initialId).then(row=>{if(active)setEditor(row);}).catch(e=>{if(active)setError(e.message);});
   return()=>{active=false;};
@@ -36,33 +42,44 @@ export function Okb({initialId,users,openTask,createTask}:{initialId:string|null
   const f=new FormData(event.currentTarget),existing=editor&&editor!=='new'?editor:null;
   try{
    await api('/okb/companies'+(existing?'/'+existing.id:''),existing?'PUT':'POST',{
-    name:f.get('name'),taxId:String(f.get('taxId')||'').trim()||null,status:f.get('status'),contact:f.get('contact'),notes:f.get('notes'),...(String(f.get('managerId')||'')!==(existing?.manager_id||'')?{managerId:String(f.get('managerId')||'')||null}:{}),version:existing?.version
+    name:f.get('name'),taxId:String(f.get('taxId')||'').trim()||null,status:f.get('status'),contact:f.get('contact'),notes:f.get('notes'),...(elevated&&String(f.get('managerId')||'')!==(existing?.manager_id||'')?{managerId:String(f.get('managerId')||'')||null}:{}),version:existing?.version,
+    kpp:String(f.get('kpp')||'')||null,ogrn:String(f.get('ogrn')||'')||null,legalAddress:String(f.get('legalAddress')||'')||null,registryStatus:registry?.registryStatus??existing?.registry_status??null
    });
    setEditor(null);setReload(n=>n+1);
   }catch(e){setError(errorText(e));}finally{setBusy(false);}
  }
  const company=editor&&editor!=='new'?editor:null;
+ const editable=!company||elevated||company.manager_id===user.id;
  return <>
-  <section className="panel automation-settings"><div className="automation-heading"><div><h2>Реестр компаний</h2><p className="muted">До 100 карточек в текущей выборке. Уточните поиск, чтобы найти компанию.</p></div><button className="button primary" onClick={()=>{setError('');setEditor('new');}}>Добавить компанию</button></div>
+  <section className="panel automation-settings"><div className="automation-heading"><div><h2>{own?'Мои клиенты':'Клиенты'}</h2><p className="muted">До 100 карточек в текущей выборке. Уточните поиск, чтобы найти компанию.</p></div><button className="button primary" onClick={()=>{setError('');setRegistry(null);setEditor('new');}}>Добавить компанию</button></div>
+   {user.role!=='employee'&&<div className="tabs" aria-label="Клиенты по ответственному"><button type="button" aria-pressed={scope==='accessible'} className={scope==='accessible'?'selected':''} onClick={()=>setScope('accessible')}>Доступные клиенты</button><button type="button" aria-pressed={own} className={own?'selected':''} onClick={()=>setScope('mine')}>Мои клиенты</button>{elevated&&<button type="button" aria-pressed={scope==='unassigned'} className={scope==='unassigned'?'selected':''} onClick={()=>setScope('unassigned')}>Без ответственного</button>}</div>}
    <div className="filters"><input aria-label="Поиск по ОКБ" placeholder="Название, ИНН, регион или менеджер" value={query} onChange={e=>setQuery(e.target.value)}/><button className="button secondary" onClick={()=>setReload(n=>n+1)}>Обновить</button></div>
    {!editor&&error&&<p className="alert error" role="alert">{error}</p>}
    {!rows&&!error&&<p role="status">Загружаем компании…</p>}
    {rows?.length===0&&<p>В выборке нет компаний.</p>}
    {!!rows?.length&&<div className="table-scroll"><table><thead><tr><th>Компания</th><th>ИНН</th><th>Статус</th><th>Ответственный менеджер</th><th>Контакт</th><th>Обновлена</th></tr></thead><tbody>{rows.map(row=><tr key={row.id}>
-    <td><button className="text-button" onClick={()=>{setError('');setEditor(row);}}>{row.name}</button>{row.xlsx_source?.region&&<small>{row.xlsx_source.region}</small>}</td><td>{row.tax_id||'—'}</td><td>{companyStates[row.status]}</td><td>{users.find(u=>u.id===row.manager_id)?.name||(row.manager_source==='bitrix'&&row.bitrix_manager_id?'Не сопоставлен с Битрикс24':row.xlsx_source?.manager?<>{row.xlsx_source.manager}<small>Из Excel</small></>:'Не указан')}</td><td>{row.contact||'—'}</td><td>{moscowTimestamp(row.updated_at)}</td>
+    <td><button className="text-button" onClick={()=>{setError('');setRegistry(null);setEditor(row);}}>{row.name}</button>{row.xlsx_source?.region&&<small>{row.xlsx_source.region}</small>}</td><td>{row.tax_id||'—'}</td><td>{companyStates[row.status]}</td><td>{users.find(u=>u.id===row.manager_id)?.name||(row.manager_source==='bitrix'&&row.bitrix_manager_id?'Не сопоставлен с Битрикс24':row.xlsx_source?.manager?<>{row.xlsx_source.manager}<small>Из Excel</small></>:'Не указан')}</td><td>{row.contact||'—'}</td><td>{moscowTimestamp(row.updated_at)}</td>
    </tr>)}</tbody></table></div>}
   </section>
   {editor&&<div className="modal-backdrop"><div className="modal task-editor" role="dialog" aria-modal="true" aria-label="Карточка компании"><form key={company?.id||'new'} className="work-design-form" onSubmit={save}>
    <div className="panel-heading"><h2>{company?'Карточка компании':'Новая компания'}</h2><button className="text-button" type="button" disabled={busy} onClick={()=>setEditor(null)}>Закрыть</button></div>
    {error&&<p className="alert error" role="alert">{error}</p>}
-   <label>Название<input name="name" required minLength={2} maxLength={250} defaultValue={company?.name}/></label>
-   <div className="editor-grid"><label>ИНН<input name="taxId" inputMode="numeric" pattern="[0-9]{10}|[0-9]{12}" maxLength={12} defaultValue={company?.tax_id??''}/></label><label>Статус<select name="status" defaultValue={company?.status??'prospect'}>{Object.entries(companyStates).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label></div>
-   <label>Ответственный менеджер<select name="managerId" defaultValue={company?.manager_id||''}><option value="">Не указан</option>{users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label>
+   {editable&&<RegistryLookup currentId={company?.id} apply={setRegistry} open={id=>{if(id===company?.id)return;void api<Company>('/okb/companies/'+id).then(row=>{setRegistry(null);setEditor(row);}).catch(e=>setError(e.message));}}/>}
+   <Fragment key={[registry?.taxId,registry?.kpp,registry?.name].join(':')}>
+   <label>Название<input name="name" required minLength={2} maxLength={250} defaultValue={registry?.name??company?.name} readOnly={!editable}/></label>
+   <label>ИНН<input name="taxId" inputMode="numeric" pattern="[0-9]{10}|[0-9]{12}" maxLength={12} defaultValue={registry?.taxId??company?.tax_id??''} readOnly={!editable}/></label>
+   <div className="editor-grid"><label>КПП<input name="kpp" inputMode="numeric" pattern="[0-9]{9}" maxLength={9} defaultValue={registry?.kpp??company?.kpp??''} readOnly={!editable}/></label>
+    <label>ОГРН<input name="ogrn" inputMode="numeric" pattern="[0-9]{13}|[0-9]{15}" maxLength={15} defaultValue={registry?.ogrn??company?.ogrn??''} readOnly={!editable}/></label></div>
+   <label>Юридический адрес<input name="legalAddress" maxLength={1000} defaultValue={registry?.legalAddress??company?.legal_address??''} readOnly={!editable}/></label>
+   </Fragment>
+   <label>Состояние работы с клиентом<select name="status" disabled={!editable} defaultValue={company?.status??'prospect'}>{Object.entries(companyStates).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
+   {(registry?.registryStatus??company?.registry_status)&&<p className="muted">Статус по реестру · {({ACTIVE:'Действует',LIQUIDATING:'Ликвидируется',LIQUIDATED:'Ликвидирована',BANKRUPT:'Банкротство',REORGANIZING:'Реорганизация'} as Record<string,string>)[registry?.registryStatus??company?.registry_status??'']??'Требует сверки'}</p>}
+   {elevated&&<label>Ответственный менеджер<select name="managerId" defaultValue={company?.manager_id||''}><option value="">Не указан</option>{users.map(u=><option key={u.id} value={u.id}>{u.name}</option>)}</select></label>}
    {company?.manager_source==='bitrix'&&<p className="muted">Ответственный загружен из Битрикс24{company.bitrix_synced_at?' · '+moscowTimestamp(company.bitrix_synced_at):''}. Следующая синхронизация обновит его по данным портала.</p>}
    {company?.xlsx_source&&<details className="source-fields"><summary>Поля из выгрузки ОКБ</summary><dl>{Object.entries(okbSourceFields).map(([field,label])=><div key={field} style={{display:'contents'}}><dt>{label}</dt><dd>{company.xlsx_source?.[field as keyof typeof okbSourceFields]||'—'}</dd></div>)}</dl></details>}
-   <label>Контакт<input name="contact" maxLength={500} defaultValue={company?.contact}/></label>
-   <label>Заметки<textarea name="notes" maxLength={4000} defaultValue={company?.notes}/></label>
-   <button className="button primary" disabled={busy}>Сохранить компанию</button>
+   {company?.contact&&<label>Контакт из прежней карточки<input name="contact" maxLength={500} defaultValue={company.contact} readOnly={!editable}/></label>}<input type="hidden" name="contact" value=""/>
+   {company?.notes&&<label>Примечание из прежней карточки<textarea name="notes" maxLength={4000} defaultValue={company.notes} readOnly={!editable}/></label>}<input type="hidden" name="notes" value=""/>
+   {editable&&<button className="button primary" disabled={busy}>Сохранить компанию</button>}
   </form>
   {company&&<CompanyWork key={company.id} id={company.id} users={users}
     openTask={id=>{setEditor(null);openTask(id);}} createTask={()=>{setEditor(null);createTask(company.id);}}

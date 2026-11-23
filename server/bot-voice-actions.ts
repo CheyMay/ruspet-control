@@ -33,6 +33,7 @@ export function taskActionFields(kind:string|undefined,min:number,withAssignee=t
   case 'reminder_once':
   case 'accept_assignment':
   case 'edit_personal_plan':return [deadlineField];
+  case 'personal_step':return [field('nextStep','Какой конкретный шаг запланировать?',2,500),deadlineField];
   case 'reminder':return [field('days','Дни недели, например «понедельник и среда»',1),field('times','Время по Москве, например 09:00 или 09:00, 15:30',4),field('weeks','Число недель от 1 до 52',1)];
   case 'edit_price':return [priceField,reasonField];
   case 'edit_title':return [field('value','Новое название задачи',3,500),reasonField];

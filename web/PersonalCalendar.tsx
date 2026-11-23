@@ -18,33 +18,36 @@ export function PersonalTaskPlan({task,plan,busy,error,act}:{task:Task;plan:Task
  const [editing,setEditing]=useState(false);
  const [submitted,setSubmitted]=useState(false);
  const [value,setValue]=useState(plan.plannedAt?moscowClock(plan.plannedAt):'');
+ const [nextStep,setNextStep]=useState(plan.nextStep??'');
  const when=value?Date.parse(value+':00+03:00'):NaN;
  const laterThanDeadline=task.deadline&&when>Date.parse(task.deadline);
  return <section className="task-card-section personal-task-plan" aria-label="Мой план задачи">
   <h3><CalendarDays size={16}/> Мой план</h3>
   {plan.plannedAt&&<p><strong>{planTime.format(new Date(plan.plannedAt))} МСК</strong>{plan.acceptedAt?' · задача принята':''}</p>}
-  {plan.needsAcceptance&&<p>Примите назначение и выберите, к какому времени планируете выполнить задачу.</p>}
+  {plan.nextStep&&<p>Следующий шаг · <strong>{plan.nextStep}</strong></p>}
+  {plan.needsAcceptance&&<p>Примите задачу и назначьте время для следующего шага.</p>}
   {!plan.plannedAt&&!plan.needsAcceptance&&task.status==='active'&&<p>Добавьте задачу в личный календарь.</p>}
   {task.status==='active'&&(editing?<form onSubmit={async e=>{
    e.preventDefault();
    if(!Number.isFinite(when))return;
    setSubmitted(true);
    if(await act('/tasks/'+encodeURIComponent(task.id)+'/personal-plan',
-    {epoch:plan.epoch,revision:plan.revision,plannedAt:new Date(when).toISOString(),accept:plan.needsAcceptance},'PUT',
+    {epoch:plan.epoch,revision:plan.revision,plannedAt:new Date(when).toISOString(),accept:plan.needsAcceptance,nextStep},'PUT',
     plan.needsAcceptance?'Задача принята и добавлена в календарь.':'Время в календаре обновлено.'))setEditing(false);
   }}>
-   <label>Плановая дата и время · МСК
+   <label>Следующий шаг<input value={nextStep} maxLength={500} onChange={e=>setNextStep(e.target.value)} placeholder="Например, отправить клиенту расчёт"/></label>
+   <label>Дата и время шага · МСК
     <input type="datetime-local" required value={value} onChange={e=>setValue(e.target.value)}/>
    </label>
    <p className="muted">Это ваш личный план. Крайний срок задачи сохраняется.</p>
-   {laterThanDeadline&&<p className="calendar-warning">По вашему плану задача будет готова позже крайнего срока.</p>}
+   {laterThanDeadline&&<p className="calendar-warning">Шаг запланирован позже крайнего срока задачи.</p>}
    {submitted&&error&&<p className="calendar-warning" role="alert">{error}</p>}
    <div className="calendar-actions">
     <button type="submit" className="button primary" disabled={busy||!value}>{plan.needsAcceptance?'Принять и запланировать':'Сохранить план'}</button>
     <button type="button" className="button secondary" disabled={busy} onClick={()=>setEditing(false)}>Отмена</button>
    </div>
   </form>:<button type="button" className={'button '+(plan.needsAcceptance?'primary':'secondary')} disabled={busy}
-   onClick={()=>{setSubmitted(false);setValue(plan.plannedAt?moscowClock(plan.plannedAt):'');setEditing(true)}}>{plan.needsAcceptance?'Принять задачу':plan.plannedAt?'Изменить план':'Запланировать'}</button>)}
+   onClick={()=>{setSubmitted(false);setNextStep(plan.nextStep??'');setValue(plan.plannedAt?moscowClock(plan.plannedAt):'');setEditing(true)}}>{plan.needsAcceptance?'Принять задачу':plan.plannedAt?'Изменить план':'Запланировать'}</button>)}
  </section>;
 }
 
@@ -150,6 +153,7 @@ export function PersonalCalendar({open,refreshKey}:{open?:(id:string)=>void;refr
     <ul className="calendar-task-list">{scheduledByDay.get(day)?.map(task=><li key={task.id}>
      <time>{moscowClock(task.plan.plannedAt!).slice(11)}</time>
      <div>{taskLink(task,'#'+task.id+' · '+task.title)}
+      {task.plan.nextStep&&<strong>{task.plan.nextStep}</strong>}
       <small>{task.status==='completed'?'Завершена':task.status==='review'?'На приёмке':
        task.deadline?'Крайний срок '+planTime.format(new Date(task.deadline))+' МСК':'Без крайнего срока'}</small></div>
     </li>)}</ul>

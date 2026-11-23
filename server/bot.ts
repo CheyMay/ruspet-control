@@ -2,6 +2,7 @@ import {button,date,screen,type BotScreen,type Payload} from './bot-ui.js';
 import {deadlineProposalButton,renderBotTask} from './bot-task.js';
 import {renderBotNavigation} from './bot-navigation.js';
 import {readNotifications} from './notifications.js';
+import {confirmClientNote,draftClientNote,parseClientNote,saveBotClientNote} from './bot-client-notes.js';
 import {findVoiceTasks} from './voice-task-search.js';
 import {botDue,botTaskStatus} from './bot-presentation.js';
 import {parseVoiceIntent,type VoiceIntent} from './voice-intent.js';
@@ -45,7 +46,7 @@ export async function clearBotDraft(u:User,ch:string){await transaction(async db
 export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<BotScreen>{
  const result=await renderView(u,ch,p);
  if(p.id&&(taskScreens.includes(p.op)||p.op==='task_reminders'))await saveDialog(pool,u,ch,{payload:{op:'context',id:p.id},fields:[],index:0,values:{}},15);
- if(p.op==='home'&&process.env.PUBLIC_ORIGIN)result.links=[...(result.links||[]),{text:'Войти на сайт',url:new URL('/',process.env.PUBLIC_ORIGIN).href}];
+ if(p.op==='home'&&process.env.PUBLIC_ORIGIN)result.links=[...(result.links||[]),{text:'Войти на сайт',url:new URL('/',process.env.PUBLIC_ORIGIN).href},{text:'Клиенты',url:new URL('/?view=okb&full=1',process.env.PUBLIC_ORIGIN).href}];
  if(p.op==='home'||p.op==='task')result.timingKind=p.op==='home'?'menu':'task';
  return result;
 }
@@ -272,10 +273,12 @@ export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:s
   const cached=await savedVoiceDraft(u,ch,inputId,db);if(cached)return cached;
   const existing=(await db.query('SELECT data FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now()',[u.id,ch])).rows[0]?.data as Dialog|undefined;
   const context=existing?.payload.op==='context'?existing.payload.id:undefined;
-  const intent=parseVoiceIntent(transcript,at,context);
-  if(!intent&&existing&&!['context','search'].includes(existing.payload.op))return handleBotText(db,u,ch,transcript,'voice:'+inputId);
+  const note=parseClientNote(transcript);
+  const intent=note?null:parseVoiceIntent(transcript,at,context);
+  if(!note&&!intent&&existing&&!['context','search'].includes(existing.payload.op))return handleBotText(db,u,ch,transcript,'voice:'+inputId);
   let response:BotScreen;
-  if(!intent){
+  if(note)response=await draftClientNote(u,ch,note,db);
+  else if(!intent){
    response=await screen(u,ch,'Распознал: '+transcript.slice(0,600)+'\n\nНазовите действие и клиента или номер задачи. Например: «'+voiceExample+'»',[[button('Мои задачи','tasks'),button('Меню','home')]],db);
   }else if(intent.id||intent.kind==='create_task'){
    response=await voiceActionDraft(u,ch,intent,db,at);
@@ -303,10 +306,16 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   return botView(u,ch,{op:'notices'});
  }
  if(p.op==='approval_watch'){await setApprovalWatch(u,p.id!,p.values?.enabled==='true');return botView(u,ch,{op:'task_more',id:p.id,list:p.list});}
- if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','approval_deadline_prepare','assignee_prepare','undo_prepare','voice_select','voice_page'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
+ if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','approval_deadline_prepare','assignee_prepare','undo_prepare','voice_select','voice_page','client_note_pick'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
   const record=(await db.query('SELECT * FROM bot_buttons WHERE token=$1 FOR UPDATE',[token])).rows[0];if(record.receipt)return record.receipt as BotScreen;assert(!record.revoked,409,'Этот ввод отменён или заменён новым. Откройте актуальную задачу.');
+  if(p.op==='client_note_pick'){
+   await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND token<>$3 AND receipt IS NULL AND payload->>'op' IN ('client_note_pick','confirm')",[u.id,ch,token]);
+   const response=await confirmClientNote(u,ch,p,db);
+   await db.query('UPDATE bot_buttons SET receipt=$2 WHERE token=$1',[token,JSON.stringify(response)]);
+   return response;
+  }
   if(p.op==='voice_select'||p.op==='voice_page'){
    const current=(await db.query('SELECT data FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now()',[u.id,ch])).rows[0]?.data as Dialog|undefined;
    const selection=current?.voice;
@@ -359,11 +368,12 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    const created=await createTask(u,input);resultTask=created.id;
    result='Задача #'+created.id+' поставлена.';
   }
+  else if(p.kind==='client_note'){await saveBotClientNote(u,p,db);result='Заметка сохранена в карточке клиента.';}
   else if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}
-  else if(p.kind==='accept_assignment'||p.kind==='edit_personal_plan'){
+  else if(p.kind==='accept_assignment'||p.kind==='edit_personal_plan'||p.kind==='personal_step'){
    const accept=p.kind==='accept_assignment';
-   const saved=await saveTaskPlan(u,p.id!,{epoch:p.version!,revision:p.revision!,plannedAt:v.deadline,accept});
-   result=(accept?'Задача принята. ':'')+'В личном календаре · '+date(saved.plannedAt)+' МСК. Крайний срок задачи не менялся.';
+   const saved=await saveTaskPlan(u,p.id!,{epoch:p.version!,revision:p.revision!,plannedAt:v.deadline,accept,nextStep:v.nextStep});
+   result=(accept?'Задача принята. ':'')+'В личном календаре · '+date(saved.plannedAt)+' МСК.'+(saved.nextStep?'\nСледующий шаг: '+saved.nextStep:'');
    nextActions.push([button('Мой календарь','personal_plan',{filter:moscowClock(saved.plannedAt!).slice(0,10)})]);
   }
   else if(p.kind==='delegate'){
@@ -433,6 +443,12 @@ export async function botText(u:User,ch:string,text:string,inputId:string):Promi
 }
 async function handleBotText(db:Db,u:User,ch:string,text:string,inputId:string):Promise<BotScreen>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);const old=(await db.query('SELECT screen FROM bot_inputs WHERE actor_id=$1 AND channel=$2 AND input_id=$3',[u.id,ch,inputId])).rows[0];if(old)return old.screen;
+  const note=parseClientNote(text);
+  if(note){
+   const response=await draftClientNote(u,ch,note,db);
+   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,inputId,JSON.stringify(response)]);
+   return response;
+  }
   const row=(await db.query('SELECT * FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now() FOR UPDATE',[u.id,ch])).rows[0];
   const d=row?.data as Dialog|undefined;
   if(d?.voice){

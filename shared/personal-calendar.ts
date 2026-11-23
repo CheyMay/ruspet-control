@@ -1,7 +1,7 @@
 import type {Task,User} from './types.js';
 
 export type TaskPersonalPlan={
- epoch:number;revision:number;needsAcceptance:boolean;acceptedAt:string|null;plannedAt:string|null;
+ epoch:number;revision:number;needsAcceptance:boolean;acceptedAt:string|null;plannedAt:string|null;nextStep?:string;
 };
 export type CalendarDeadline=Pick<Task,'id'|'title'|'deadline'|'status'>;
 export type CalendarTask=CalendarDeadline & {plan:TaskPersonalPlan};

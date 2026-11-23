@@ -1,4 +1,4 @@
-import {pool} from './db.js';
+import {pool,type Db} from './db.js';
 import {assert,canSee} from './domain.js';
 import {getCompany} from './okb.js';
 import {withTaskClients} from './task-clients.js';
@@ -20,9 +20,9 @@ export async function clientNotes(actor:User,scope:NoteScope,before?:string){
   ORDER BY n.created_at DESC,n.id DESC LIMIT 21`,[scope.companyId,before??null])).rows;
  return {notes:rows.slice(0,20),more:rows.length>20};
 }
-export async function addClientNote(actor:User,scope:NoteScope,body:string){
+export async function addClientNote(actor:User,scope:NoteScope,body:string,db:Db=pool){
  await checkScope(actor,scope);
- const {rows}=await pool.query<Note>(`INSERT INTO client_notes(company_id,author_id,body)
+ const {rows}=await db.query<Note>(`INSERT INTO client_notes(company_id,author_id,body)
   VALUES($1,$2,$3) RETURNING id,body,created_at,$4::text AS author`,[scope.companyId,actor.id,body,actor.name]);
  return rows[0];
 }

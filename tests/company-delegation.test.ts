@@ -279,3 +279,58 @@ test('a personal group, subtasks and task options are saved atomically',async()=
  assert.equal((await request(anna,'/tasks/'+task.id+'/group',{groupId:group.data.id},'PUT')).status,404);
  assert.equal((await workflow.reviewTask(anna,task.id,'submit','',task.version)).state,'review');
 });
+
+test('clients, contacts, catalog and voice notes respect company ownership',async()=>{
+ const client=await company(anna.id);
+ const path='/okb/companies/'+client.id;
+ const own=await request(anna,'/okb/companies?scope=mine&q='+encodeURIComponent(client.name.toLocaleLowerCase('ru')));
+ assert(own.data.some((row:{id:string})=>row.id===client.id));
+ assert.equal((await request(ivan,path)).status,404);
+ const contact=await request(anna,path+'/people',{name:'Тестовый технолог',position:'Проверяет образцы',phone:'',email:'',notes:''});
+ assert.equal(contact.status,201);
+ assert.equal((await request(ivan,path+'/people/'+contact.data.id,{name:'Чужой контакт'},'PUT')).status,404);
+ assert.equal((await request(director,path+'/people')).data[0].position,'Проверяет образцы');
+ const bot=await import('../server/bot.js'),ch='crm-fixture';
+ const body='сейчас на стопе до января из-за ремонта';
+ // An INN uniquely identifies the company even when similar names appear in the registry.
+ await okb.okbPool().query("UPDATE companies SET tax_id='9990000001' WHERE id=$1",[client.id]);
+ const draft=await bot.botVoiceDraft(anna,ch,'Клиент 9990000001 '+body,'crm-note-fixture');
+ const confirm=draft.buttons.flat().find(button=>button.text==='Сохранить заметку');
+ assert(confirm);
+ assert.equal((await request(anna,path+'/notes')).data.notes.length,0);
+ await bot.botClick(anna,ch,confirm.token);
+ await bot.botClick(anna,ch,confirm.token);
+ const notes=await request(anna,path+'/notes');
+ assert.deepEqual(notes.data.notes.map((n:{body:string})=>n.body),[body]);
+ assert.equal((await request(ivan,path+'/notes')).status,404);
+ const product={sku:'FIXTURE-P01',name:'Преформа для проверки',category:'preform',specs:'Тестовая запись'};
+ assert.equal((await request(anna,'/catalog',product)).status,403);
+ const saved=await request(director,'/catalog',product);
+ assert.equal(saved.status,201);
+ assert.equal((await request(anna,'/catalog?q=FIXTURE-P01')).data[0].id,saved.data.id);
+ assert.equal((await request(director,'/catalog/'+saved.data.id,{...product,active:false,version:saved.data.version},'PUT')).status,200);
+ assert.equal((await request(anna,'/catalog?q=FIXTURE-P01')).data.length,0);
+});
+
+test('DaData fills a focused set of registry fields and keeps its key on the server',async()=>{
+ const fetchBefore=globalThis.fetch;
+ process.env.DADATA_API_KEY='fixture-api-token';
+ globalThis.fetch=async(input,init)=>{
+  if(!String(input).startsWith('https://suggestions.dadata.ru/'))return fetchBefore(input,init);
+  assert(String(input).endsWith('/findById/party'));
+  assert.equal(new Headers(init?.headers).get('Authorization'),'Token fixture-api-token');
+  return Response.json({suggestions:[{value:'Тестовое предприятие',data:{inn:'9990000002',kpp:'999001001',
+   ogrn:'1234567890123',address:{value:'Тестовый адрес'},state:{status:'ACTIVE'},management:{name:'Не нужен для карточки'}}}]});
+ };
+ try{
+  const result=await request(anna,'/okb/registry/search',{query:'9990000002'});
+  assert.equal(result.status,200);
+  assert.equal(result.data[0].taxId,'9990000002');
+  assert.equal(result.data[0].legalAddress,'Тестовый адрес');
+  assert.equal(result.data[0].management,undefined);
+  const saved=await request(anna,'/okb/companies',{...result.data[0],status:'prospect',contact:'',notes:''});
+  assert.equal(saved.status,201);
+  assert.equal(saved.data.manager_id,anna.id);
+  assert.equal(saved.data.kpp,'999001001');
+ }finally{globalThis.fetch=fetchBefore;delete process.env.DADATA_API_KEY;}
+});
