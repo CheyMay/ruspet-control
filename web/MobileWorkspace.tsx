@@ -7,13 +7,15 @@ import {BotConversation} from './BotConversation.js';
 import {CapMark} from './CapMark.js';
 import {DeviceNotifications} from './DeviceNotifications.js';
 import {PersonalCalendar} from './PersonalCalendar.js';
-import {WorkspaceGuide,WorkspaceTour,mobileTour} from './WorkspaceGuide.js';
+import {WorkspaceGuide,WorkspaceTour} from './WorkspaceGuide.js';
+import type {TourStep} from './WorkspaceTraining.js';
 
 export function MobileWorkspace({user,refresh,unread,connectionNotice,calendarRefresh,analytics}:{user:User;refresh:()=>Promise<unknown>;unread:boolean;connectionNotice?:ReactNode;calendarRefresh:string;analytics?:AnalyticsAccess|null}){
  const [screen,setScreen]=useState(()=>{const view=new URLSearchParams(location.search).get('view');return view==='notifications'||view==='calendar'||view==='guide'?view:'bot';});
- const [tourIndex,setTourIndex]=useState<number|null>(null);
- const steps=mobileTour(user),notices=screen==='notifications',calendar=screen==='calendar',guide=screen==='guide';
- function showTour(index:number){setScreen(steps[index].page);setTourIndex(index);}
+ const [tour,setTour]=useState<{steps:TourStep[];index:number}|null>(null);
+ const notices=screen==='notifications',calendar=screen==='calendar',guide=screen==='guide';
+ const lesson=tour?.steps[tour.index].id;
+ function showTour(steps:TourStep[],index:number){setScreen(steps[index].page==='calendar'?'calendar':'bot');setTour({steps,index});}
  return <main className="mobile-workspace">
   <header className="mobile-workspace-header">
    <div className="mobile-workspace-name">{(calendar||guide)&&<a href="/mobile" className="icon-button mobile-menu-link" aria-label="К рабочему боту"><ArrowLeft size={20}/></a>}<CapMark/><div><strong>РУСПЭТ</strong><small>{user.name}</small></div></div>
@@ -26,11 +28,11 @@ export function MobileWorkspace({user,refresh,unread,connectionNotice,calendarRe
    </div>
   </header>
   {connectionNotice}
-  {guide?<WorkspaceGuide user={user} enabled={page=>canOpenWorkspacePage(user,page,analytics)} launch={()=>showTour(0)} mobile/>:
+  {guide?<WorkspaceGuide user={user} enabled={page=>canOpenWorkspacePage(user,page,analytics)} launch={steps=>showTour(steps,0)} salesOverview={analytics==='sales'} mobile/>:
    calendar&&!user.root_access?<PersonalCalendar refreshKey={calendarRefresh}/>:<>
    {notices&&<details className="mobile-device-notifications"><summary>Установка приложения и push-уведомления</summary><DeviceNotifications install userId={user.id}/></details>}
-   <BotConversation mobile initial={notices?'notices':'home'} refresh={refresh}/>
+   <BotConversation mobile initial={notices?'notices':lesson==='phoneDecision'?'inbox':'home'} refresh={refresh}/>
   </>}
-  {tourIndex!==null&&<WorkspaceTour steps={steps} index={tourIndex} change={showTour} end={()=>{setTourIndex(null);setScreen('guide');window.scrollTo(0,0);}}/>}
+  {tour&&<WorkspaceTour steps={tour.steps} index={tour.index} change={index=>showTour(tour.steps,index)} end={()=>{setTour(null);setScreen('guide');window.scrollTo(0,0);}}/>}
  </main>;
 }

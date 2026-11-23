@@ -32,7 +32,8 @@ import {canOpenWorkspacePage,type WorkspacePage as Page} from '../shared/workspa
 import {TaskReminders} from './TaskReminders.js';
 import {QualityWorkspace} from './QualityWorkspace.js';
 import {WrittenRules} from './WrittenRules.js';
-import {WorkspaceGuide,WorkspaceTour,desktopTour,type TourStep} from './WorkspaceGuide.js';
+import {WorkspaceGuide,WorkspaceTour} from './WorkspaceGuide.js';
+import type {TourStep} from './WorkspaceTraining.js';
 import {TrainingDownloads} from './TrainingDownloads.js';
 import {Login} from './Login.js';
 import {ThemeToggle} from './ThemeToggle.js';
@@ -341,7 +342,9 @@ export function App(){
   return <MobileWorkspace key={data.user.id} user={data.user} refresh={refresh} calendarRefresh={data.serverTime} analytics={data.analyticsAccess} unread={data.notifications.some(item=>!item.read_at)} connectionNotice={connectionNotice}/>;
  }
  const company=hasCompanyOverview(data.user),teamAllowed=managed(data.user);
- const currentScope=taskView==='company'&&!company?'mine':taskView==='team'&&!teamAllowed?'mine':taskView??'mine';
+ const trainingStep=tour?.steps[tour.index];
+ const requestedScope=trainingStep?.page==='tasks'?trainingStep.scope??taskView:taskView;
+ const currentScope=requestedScope==='company'&&!company?'mine':requestedScope==='team'&&!teamAllowed?'mine':requestedScope??'mine';
  const members=new Set(data.teamIds);
  const scopedTasks=linkedIds?data.tasks.filter(t=>linkedIds.includes(t.id)):currentScope==='mine'?data.tasks.filter(t=>t.assignee_id===data.user.id):
   currentScope==='created'?data.tasks.filter(t=>t.creator_id===data.user.id):
@@ -350,7 +353,7 @@ export function App(){
  const ownerSelection=readFilterSelection(owner),selectedOwners=new Set(ownerSelection);
  const scopedOwners=new Set(scopedTasks.map(task=>task.assignee_id));
  const ownerNames=data.users.filter(person=>selectedOwners.has(person.id)).map(person=>person.name).join(', ');
- const teamDirectory=currentScope==='team'&&!linkedIds&&!selectedOwners.size&&filter==='all'&&!workDay;
+ const teamDirectory=currentScope==='team'&&(trainingStep?.scope==='team'||!linkedIds&&!selectedOwners.size&&filter==='all'&&!workDay);
  const pending=data.approvals.filter(a=>{const task=taskIndex.get(a.task_id);return !!task&&activeTaskApproval(task,a);});
  const pendingTasks=new Set(pending.map(a=>a.task_id));
  const matchingTasks=scopedTasks.filter(t=>(priceFilter==='all'||priceBand(t)===priceFilter)&&(branch==='all'||t.branch_id===branch)&&(currentScope==='mine'&&!linkedIds||!selectedOwners.size||selectedOwners.has(t.assignee_id))&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.trim().replace(/^#\s*/,'').toLowerCase()));
@@ -366,14 +369,15 @@ export function App(){
  const guideEnabled=(area:Page)=>(!viewingEmployee||previewSections.has(area))&&canOpenWorkspacePage(user,area,data.analyticsAccess);
  function showTourStep(step:TourStep,taskId?:string){
   if(selected&&!step.card)closeTask();
-  if(step.settings)openSettings(step.settings);
-  else if(step.page==='tasks')setPage('tasks');
+  if(step.page==='tasks')setPage('tasks');
   else if(page!==step.page)go(step.page);
-  if(step.card&&taskId)void openTask(taskId);
+  if(step.card&&taskId){
+   if(selected===taskId)setDrawerTab(step.card);
+   else void openTask(taskId,step.card);
+  }
  }
- function startTour(){
-  const taskId=data?.tasks.find(task=>task.assignee_id===user.id&&task.status!=='completed')?.id;
-  const steps=desktopTour(user,guideEnabled,!!taskId,viewingEmployee);
+ function startTour(steps:TourStep[]){
+  const taskId=data?.tasks.find(task=>task.assignee_id===user.id&&task.status==='active')?.id;
   setTour({steps,index:0,taskId});showTourStep(steps[0],taskId);
  }
  function openGuide(){if(selected)closeTask();go('guide');}
@@ -382,8 +386,8 @@ export function App(){
   <div className="workspace-main"><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-toggle" aria-label="Меню" onClick={()=>setMobileMenu(!mobileMenu)}><PanelLeftClose size={19}/></button><span>Рабочее пространство</span><ChevronRight size={14}/><strong>{title}</strong></div><div className="topbar-right"><button type="button" className="button secondary guide-entry" onClick={openGuide} aria-current={page==='guide'?'page':undefined}><BookOpen size={17}/> Гайд</button><ThemeToggle/>{demo&&<span className="demo-label">ДЕМО</span>}<button className="icon-button notification-button" aria-label="Уведомления" onClick={()=>go('notifications')}><Bell size={19}/>{data.notifications.some(item=>!item.read_at)&&<i/>}</button><div className="user-switch"><Avatar user={data.user}/>{demo?<div><label htmlFor="persona">Демонстрационная роль</label><select id="persona" value={data.user.id} disabled={busy} onChange={e=>void login(e.target.value)}>{users.map(u=><option key={u.id} value={u.id}>{u.name} · {roles[u.role]}</option>)}</select></div>:<div><strong>{data.user.name}</strong><small>{data.user.root_access?'Владелец · root':data.user.position.trim()||roles[data.user.role]}</small></div>}{!demo&&!viewingEmployee&&<button className="text-button" disabled={busy} onClick={()=>void logout()}>Выйти</button>}</div></div></header>
   <main>{viewingEmployee&&<div className="source-banner view-as-banner"><div><strong>Просмотр от имени {data.user.name}</strong><p>Данные и задачи доступны по роли сотрудника. Режим только для чтения.</p></div><a className="button secondary" href="/">В админскую панель</a></div>}{page!=='analytics'&&page!=='guide'&&<div className="page-heading"><div>{page==='overview'&&<div className="eyebrow">{new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'long',year:'numeric',weekday:'long'}).format(now)}</div>}<h1>{title}</h1>{page!=='overview'&&<p>{({org:'Руководители команд и временные замещения.',delegations:'Выданные поручения, сроки и приёмка.',processes:'Условия создания задач и расписания повторений.',okb:'Компании, контакты и состояние работы с ними.',actions:'Просрочки, оставшиеся сроки на сегодня и задачи, где нужен следующий шаг.',bot:'Личные чаты и действия по задачам.',overview:'',tasks:'Сроки, исполнители и полная история каждой задачи.',approvals:'Запросы на перенос крайнего срока и закрытие задач.',checks:'Нарушения по задачам и ответы сотрудников.',reports:'Сохранённые снимки состояния. Часовой пояс — Москва.',people:'Нагрузка и состояние задач в вашей области доступа.',journal:'История действий, ответов и решений без перезаписи.',settings:'Правила контроля, маршруты и состояние подключений.',notifications:'Уведомления по задачам, проверкам и решениям.'} as Record<Page,string>)[page]}</p>}</div><div className="heading-actions">{page!=='bot'&&<button className="button secondary square" aria-label="Обновить данные" disabled={busy} onClick={()=>{setBusy(true);refresh().then(()=>showToast('Данные обновлены')).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}><RefreshCw size={16}/></button>}{page==='bot'&&<button className="button secondary" onClick={()=>openSettings('notices')}>Уведомления и Telegram</button>}{!viewingEmployee&&page==='tasks'&&<button className="button primary" disabled={busy} onClick={()=>setEditor({task:null})}>Создать задачу</button>}{!viewingEmployee&&managed(data.user)&&page==='checks'&&<button className="button primary" disabled={busy} onClick={()=>void act('/checks/run',undefined,'POST','Проверка завершена. Нарушения и запросы обновлены.')} ><ShieldCheck size={17}/> Проверить задачи</button>}</div></div>}
   {connectionNotice}
-  {page==='guide'&&<WorkspaceGuide user={user} enabled={guideEnabled} launch={startTour}
-   open={(area,id)=>id==='admin'?openSettings('staff'):id==='owner'?openSettings('system'):go(area)}/>}
+  {page==='guide'&&<WorkspaceGuide user={user} enabled={guideEnabled} launch={startTour} preview={viewingEmployee} salesOverview={data.analyticsAccess==='sales'}
+   open={area=>go(area)}/>}
   {error&&<div className="alert error" role="alert"><AlertCircle size={18}/><span>{error}</span><button className="icon-button" aria-label="Скрыть ошибку" onClick={()=>setError('')}><X size={16}/></button></div>}
   {!viewingEmployee&&!selected&&page!=='analytics'&&page!=='guide'&&<UndoAction refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}
   {page==='actions'&&<ActionWorkspace key={data.user.id+':'+workEntry.visit} data={data} initial={workEntry.bucket} queue={myWork} open={openTask} complete={viewingEmployee?undefined:task=>{setError('');setCompletingTask(task);}} busy={busy}/>}
@@ -410,9 +414,9 @@ export function App(){
     </details>}</>}
   </details>}{teamDirectory?<TeamTasks tasks={scopedTasks} users={data.users} now={now} paused={pendingTasks} onSelect={(id,f)=>{go('tasks',f,'team');setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">Выборка из сохранённого отчёта · показано текущее состояние доступных задач.<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={setFilter} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel"><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label><SearchFilter label="Филиал" value={branch} onChange={setBranch} empty={{value:'all',label:'Все филиалы'}} placeholder="Название подразделения" options={[...new Set(data.tasks.map(t=>t.branch_id))].sort((a,b)=>a.localeCompare(b,'ru')).map(value=>({value,label:value}))}/>{(currentScope!=='mine'||linkedIds)&&<EmployeeFilter label="Исполнители" values={ownerSelection} onChange={ids=>setOwner(writeFilterSelection(ids))} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>selectedOwners.has(u.id)||scopedOwners.has(u.id))}/>}<label className="date-filter">Крайний срок от<input aria-label="Крайний срок от" type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></label><label className="date-filter">до<input aria-label="Крайний срок до" type="date" min={fromDate} value={toDate} onChange={e=>setToDate(e.target.value)}/></label><select aria-label="Категория цены" value={priceFilter} onChange={e=>{setPriceFilter(e.target.value);setTablePage(0)}}><option value="all">Любая цена</option>{Object.entries(priceLabels).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select><select aria-label="Сортировка" value={sort} onChange={e=>setSort(e.target.value)}><option value="deadline">По сроку</option><option value="price_desc">По цене: сначала дороже</option><option value="work_priority">Порядок работы: просрочки и цена</option><option value="title">По названию</option><option value="transfers">По переносам</option></select></div>{(search||(currentScope!=='mine'||linkedIds)&&!!selectedOwners.size||branch!=='all'||fromDate||toDate||priceFilter!=='all'||workDay)&&<div className="active-filter"><span>{[search&&'Поиск: '+search,(currentScope!=='mine'||linkedIds)&&ownerNames,branch!=='all'&&branch,fromDate&&'С '+fromDate,toDate&&'По '+toDate,priceFilter!=='all'&&priceLabels[priceFilter as keyof typeof priceLabels],workDay&&'На '+workDay].filter(Boolean).join(' · ')}</span><button className="text-button" onClick={()=>go('tasks','all')}>Сбросить фильтры</button></div>}{renderTaskTable(visible)}{visible.length>50&&<div className="pagination"><button className="button secondary" disabled={tablePage===0} onClick={()=>setTablePage(p=>p-1)}>Назад</button><span>{tablePage+1} / {Math.ceil(visible.length/50)}</span><button className="button secondary" disabled={(tablePage+1)*50>=visible.length} onClick={()=>setTablePage(p=>p+1)}>Далее</button></div>}<div className="panel-footer"><span>Найдено {visible.length} из {scopedTasks.length}</span></div></section></>}</>}
   {page==='approvals'&&data.user.role==='admin'&&!viewingEmployee&&!tour&&<DirectorBatch stamp={data.serverTime}/>}
-  {page==='approvals'&&<ApprovalWorkspace readOnly={viewingEmployee||!!tour} data={data} render={a=><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask}/>}/>}
+  {page==='approvals'&&<ApprovalWorkspace readOnly={viewingEmployee||!!tour} startOnMine={!!tour} data={data} render={a=><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask}/>}/>}
   {page==='checks'&&<QualityWorkspace key={data.user.id} data={data} open={(id,tab)=>void openTask(id,tab)} settings={viewingEmployee?undefined:()=>openSettings('rules')}/>}
-  {page==='reports'&&<WorkspaceSection label="Загружаем отчёты…"><Reports key={data.user.id+':'+(reportView??'default')} initialView={reportView??undefined} initialReport={reportOpen} downloadPdf={reportPdf} readOnly={viewingEmployee} data={data} refresh={refresh} openAutomation={company&&!viewingEmployee?()=>openSettings('automation'):undefined}/></WorkspaceSection>}
+  {page==='reports'&&<WorkspaceSection label="Загружаем отчёты…"><Reports key={data.user.id+':'+(trainingStep?.scope??reportView??'default')} initialView={trainingStep?.scope??reportView??undefined} initialReport={reportOpen} downloadPdf={reportPdf} readOnly={viewingEmployee} data={data} refresh={refresh} openAutomation={company&&!viewingEmployee?()=>openSettings('automation'):undefined}/></WorkspaceSection>}
   {page==='people'&&managed(data.user)&&<Performance data={data} open={openTask} canObserve={company&&!viewingEmployee}/>}
   {page==='journal'&&<Journal data={data} open={openTask}/>}
   {page==='notifications'&&<>

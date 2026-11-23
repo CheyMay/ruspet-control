@@ -34,7 +34,7 @@ export function DirectorBatch({stamp}:{stamp:string}){
  </section>;
 }
 
-export function ApprovalWorkspace({data,render,readOnly=false}:{data:Bootstrap;render:(a:Approval)=>ReactNode;readOnly?:boolean}){
+export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}:{data:Bootstrap;render:(a:Approval)=>ReactNode;readOnly?:boolean;startOnMine?:boolean}){
  const taskIndex=new Map(data.tasks.map(task=>[task.id,task]));
  const current=(a:Approval)=>approvalTurn(a).userId;
  const active=(approval:Approval)=>{
@@ -42,7 +42,7 @@ export function ApprovalWorkspace({data,render,readOnly=false}:{data:Bootstrap;r
   return !!task&&activeTaskApproval(task,approval);
  };
  const mine=data.approvals.filter(a=>active(a)&&current(a)===data.user.id).length;
- const [section,setTab]=useState<'mine'|'open'|'requests'|'history'>(()=>mine?'mine':data.user.role==='employee'?'requests':'open');
+ const [section,setTab]=useState<'mine'|'open'|'requests'|'history'>(()=>mine||startOnMine?'mine':data.user.role==='employee'?'requests':'open');
  const [query,setQuery]=useState('');
  const [owner,setOwner]=useState('all'),[actor,setActor]=useState('all'),[type,setType]=useState<'deadline'|'completion'|null>(null);
  const [from,setFrom]=useState(''),[to,setTo]=useState(''),[status,setStatus]=useState('all'),[limit,setLimit]=useState(12);
@@ -83,7 +83,7 @@ export function ApprovalWorkspace({data,render,readOnly=false}:{data:Bootstrap;r
    (!from||businessDay(a.created_at)>=from)&&(!to||businessDay(a.created_at)<=to)&&
    matchesFilter(`${a.task_id} ${task?.title||''} ${a.reason}`,query.replace(/#/g,''));
  });
- const selectedType=type??(items.some(a=>a.type==='deadline')?'deadline':'completion');
+ const selectedType=type??(startOnMine||items.some(a=>a.type==='deadline')?'deadline':'completion');
  const queue=items.filter(a=>a.type===selectedType);
  const filtered=!!(query||owner!=='all'||actor!=='all'||from||to||status!=='all');
  const openStates=section==='mine'||section==='open';

@@ -96,21 +96,28 @@ def save_handbook(out, guide):
     return path
 
 
-def save_roles(out, guide):
+def save_roles(out, guide, training):
     roles_dir = out / 'Памятки'
     roles_dir.mkdir(exist_ok=True)
     files = []
     for role in guide['roles']:
-        path = roles_dir / f'{role["title"]}.pdf'
+        title = 'Менеджер' if role['id'] == 'employee' else role['title']
+        path = roles_dir / f'{title}.pdf'
         canvas = Canvas(str(path), pagesize=A4)
         canvas.setAuthor('РУСПЭТ')
-        canvas.setTitle(f'Памятка — {role["title"]}')
-        page = GuidePage(canvas, role['title'], 'Памятка по работе в системе', 1, 1)
-        page.text(role['lead'], size=13, color=MUTED, gap=17)
-        page.steps(role['steps'])
+        canvas.setTitle(f'Памятка — {title}')
+        page = GuidePage(canvas, title, 'Памятка по работе в системе', 1, 1)
+        track = training['tracks'].get(role['id'])
+        page.text(track['summary'] if track else role['lead'], size=12, color=MUTED, gap=14)
+        if track:
+            for lesson_id in track['desktop']:
+                lesson = training['lessons'][lesson_id]
+                page.steps([{'name': lesson['title'], 'text': lesson['action']}])
+        else:
+            page.steps(role['steps'])
         page.y -= 8
         page.rule()
-        page.text('Если нужно посмотреть, где находится кнопка, откройте «Гайд» в верхней панели и нажмите «Начать тур».',
+        page.text('Чтобы потренироваться на примерах, откройте «Гайд» в верхней панели и нажмите «Начать обучение».',
                   size=10, color=MUTED)
         canvas.save()
         files.append(path)
@@ -146,10 +153,11 @@ def main():
     args.output.mkdir(parents=True, exist_ok=True)
     shared = Path(__file__).resolve().parents[1] / 'shared'
     guide = json.loads((shared / 'workspace-guide.json').read_text(encoding='utf-8'))
+    training = json.loads((shared / 'workspace-training.json').read_text(encoding='utf-8'))
     briefing = json.loads((shared / 'workspace-briefing.json').read_text(encoding='utf-8'))
     register_fonts()
     handbook = save_handbook(args.output, guide)
-    roles, role_files = save_roles(args.output, guide)
+    roles, role_files = save_roles(args.output, guide, training)
     owner = save_briefing(args.output, briefing)
     complete = args.output / 'РУСПЭТ — комплект для обучения.zip'
     with ZipFile(complete, 'w', ZIP_DEFLATED) as archive:

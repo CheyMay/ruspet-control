@@ -3,6 +3,7 @@ import {ArrowDown,ArrowRight,BookOpen,Play} from 'lucide-react';
 import handbook from '../shared/workspace-guide.json';
 import type {WorkspacePage} from '../shared/workspace-access.js';
 import type {User} from '../shared/types.js';
+import {tracks,trainingSteps,type TrainingTrack,type TourStep} from './WorkspaceTraining.js';
 
 const pages:Record<string,WorkspacePage>={
  home:'actions',tasks:'tasks',planning:'calendar',posting:'tasks',approvals:'approvals',bot:'bot',
@@ -10,23 +11,32 @@ const pages:Record<string,WorkspacePage>={
 };
 const modules=new Map(handbook.modules.map(section=>[section.id,section]));
 
-export function WorkspaceGuide({user,enabled,launch,open,mobile=false}:{user:User;enabled:(page:WorkspacePage)=>boolean;
- launch:()=>void;open?:(page:WorkspacePage,moduleId:string)=>void;mobile?:boolean}){
- const role=handbook.roles.find(item=>item.id===(user.root_access?'owner':user.role))??handbook.roles[0];
+export function WorkspaceGuide({user,enabled,launch,open,mobile=false,preview=false,salesOverview=false}:{user:User;enabled:(page:WorkspacePage)=>boolean;
+ launch:(steps:TourStep[])=>void;open?:(page:WorkspacePage,moduleId:string)=>void;mobile?:boolean;preview?:boolean;salesOverview?:boolean}){
+ const [track,setTrack]=useState<TrainingTrack>(()=>user.role==='admin'?'director':user.role==='employee'&&salesOverview?'sales_head':user.role);
+ const role=handbook.roles.find(item=>item.id===track)??handbook.roles[0];
  const poster=handbook.roles.find(item=>item.id==='poster')!;
- const show=(id:string)=>enabled(pages[id])&& (id!=='admin'||user.role==='admin')&&(id!=='owner'||!!user.root_access)&&
+ const show=(id:string)=>!['admin','owner'].includes(id)&&enabled(pages[id])&&
    (id!=='planning'||!user.root_access);
  const [section,setSection]=useState<string>();
+ const trackOptions=(user.role==='admin'?Object.keys(tracks):user.role==='employee'&&salesOverview?['sales_head','employee']:[track]) as TrainingTrack[];
+ const steps=trainingSteps(track,mobile,enabled,preview).filter(step=>(user.role!=='employee'||step.scope!=='team')&&
+  (!user.root_access||step.page!=='calendar'));
  function jump(id:string){setSection(id);requestAnimationFrame(()=>document.getElementById('guide-'+id)?.scrollIntoView({block:'start'}));}
  return <div className="guide-workspace">
   <section className="panel guide-intro"><BookOpen size={24} aria-hidden="true"/><div>
-   <h1>Гайд по РУСПЭТ</h1><p>Как работать с задачами, планировать день и пользоваться доступными разделами.</p>
-   <div className="guide-intro-actions"><button type="button" className="button primary" onClick={launch}><Play size={16}/> Начать тур</button>
+   <h1>Обучение РУСПЭТ</h1>
+   {trackOptions.length>1&&<label className="guide-track-label">Рабочий сценарий<select value={track} onChange={event=>setTrack(event.target.value as TrainingTrack)}>
+    {trackOptions.map(id=><option key={id} value={id}>{tracks[id].title}</option>)}
+   </select></label>}
+   {trackOptions.length===1&&<h2>{tracks[track].title}</h2>}
+   <p>{tracks[track].summary} Ответы в примерах не меняют задачи.</p>
+   <div className="guide-intro-actions"><button type="button" className="button primary" disabled={!steps.length} onClick={()=>launch(steps)}><Play size={16}/> Начать обучение</button>
     {mobile&&<a className="text-button" href="/?view=guide">Гайд по полной версии <ArrowRight size={15}/></a>}
    </div>
   </div></section>
-  <section className="panel guide-card"><h2>Памятка для вашей роли</h2><h3>{role.title}</h3><p>{role.lead}</p>
-   <dl className="guide-steps">{role.steps.map(item=><div key={item.name}><dt>{item.name}</dt><dd>{item.text}</dd></div>)}</dl>
+  <section className="panel guide-card"><h2>Памятка · {role.title.toLowerCase()}</h2>
+   <dl className="guide-steps">{steps.map(step=><div key={step.id}><dt>{step.title}</dt><dd>{step.action}</dd></div>)}</dl>
    <details className="guide-topic"><summary>{poster.title}</summary>
     <dl className="guide-steps">{poster.steps.map(item=><div key={item.name}><dt>{item.name}</dt><dd>{item.text}</dd></div>)}</dl>
    </details>

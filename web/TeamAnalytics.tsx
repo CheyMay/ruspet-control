@@ -136,7 +136,7 @@ export function TeamAnalytics(){
      {i<data.path.length-1?<button type="button" onClick={()=>setSelection(selection.slice(0,i+1))}>{group.label}</button>:group.label}
     </span>)}
    </nav>}
-   <span className={data.bitrixDelay||error?'bi-urgent':''}>{data.bitrixDelay?'Есть задержка Битрикса · ':''}Данные на {clock.format(new Date(data.generatedAt))} МСК</span>
+   <span>Данные на {clock.format(new Date(data.generatedAt))} МСК</span>
   </div>}
   {error&&<p className="alert error" role="alert">{error}{selection.length>0&&<button type="button" className="text-button" onClick={()=>setSelection([])}>К общей сводке</button>}</p>}
   {!data&&!error&&<p className="panel bi-section" role="status">Загружаем аналитику…</p>}
