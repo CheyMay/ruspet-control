@@ -86,6 +86,30 @@ test('manager sections, employee profile edits and owner-only integration respec
  cookies.set('anna',login.headers.getSetCookie().find(cookie=>cookie.startsWith('ruspet_session='))!.split(';')[0]);
 });
 
+test('moving a sales deputy from admin to team lead preserves their own pending result reviews',async()=>{
+ const {rows:[owner]}=await db.pool.query<User>("SELECT * FROM users WHERE id='owner-root'");
+ const {rows:[deputy]}=await db.pool.query<User&{version:number}>(`INSERT INTO users(id,name,role,branch_id,position,sales_analytics_access)
+  VALUES('fixture-deputy','Заместитель','admin','Головной офис / Продажи','Заместитель руководителя',true) RETURNING *`);
+ const {rows:[rule]}=await db.pool.query('SELECT version FROM rule_versions ORDER BY version DESC LIMIT 1');
+ const decisions=[];
+ for(const type of ['completion','deadline'] as const){
+  const taskId='fixture-deputy-'+type;
+  const approvalId=randomUUID();
+  await db.pool.query(`INSERT INTO tasks(id,title,description,branch_id,assignee_id,creator_id,status,priority,code)
+   VALUES($1,'Проверка смены роли','','Не указан','anna',$2,$3,'normal','РЗМ*')`,[taskId,deputy.id,type==='completion'?'review':'active']);
+  await db.pool.query(`INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,task_version,state,route,route_version)
+   VALUES($1,$2,'anna',$3,'Проверка маршрута','',1,'pending',$4,$5)`,[approvalId,taskId,type,
+    JSON.stringify([{userId:deputy.id,label:'Постановщик'}]),rule.version]);
+  decisions.push(approvalId);
+ }
+ const {updateEmployeeProfile}=await import('../server/employee-profiles.js');
+ const {user}=await updateEmployeeProfile(owner,deputy.id,{name:deputy.name,position:deputy.position,branchId:deputy.branch_id,
+  role:'branch_manager',expectedVersion:deputy.version});
+ assert.equal(user.sales_analytics_access,true);
+ const {rows}=await db.pool.query('SELECT type,state FROM approvals WHERE id=ANY($1::uuid[]) ORDER BY type',[decisions]);
+ assert.deepEqual(rows,[{type:'completion',state:'pending'},{type:'deadline',state:'stale'}]);
+});
+
 test('personal read state is shared with the bot and Telegram sends at most one batch in 30 minutes',async()=>{
  const bot=await import('../server/bot.js'),pilot=await import('../server/telegram-pilot.js');
  await db.pool.query('UPDATE outbox SET read_at=now()');

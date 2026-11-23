@@ -161,3 +161,13 @@ test('analytics API enforces scopes and returns aggregate figures without task d
  assert(!JSON.stringify(sales).includes('Задача для проверки'));
  assert.equal((await fetch(base+'/analytics/overview',{headers:{Cookie:deputy,'X-Ruspet-View-As':'head-crimea'}})).status,403);
 });
+
+test('a sales branch shows the shared director from the reporting tree when no local lead is assigned',async()=>{
+ await db.pool.query("UPDATE users SET branch_id='AQUAS',position='Сотрудник AQUAS' WHERE id='head-crimea'");
+ await db.pool.query("UPDATE org_reporting SET manager_id='director' WHERE employee_id='rep-crimea'");
+ const overview=await analytics.analyticsOverview({...person('deputy'),role:'branch_manager'},[],'day',now);
+ assert.equal(overview.access,'sales');
+ assert.equal(overview.rows.find(row=>row.key==='branch:Крым')?.caption,'Руководитель · Директор');
+ assert(!overview.rows.some(row=>row.label==='Закупки'));
+ assert.equal((await db.pool.query("SELECT manager_id FROM org_reporting WHERE employee_id='rep-aquas'")).rows[0].manager_id,'head-crimea');
+});

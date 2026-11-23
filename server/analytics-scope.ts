@@ -51,6 +51,13 @@ export async function loadAnalyticsScope(user:User,db:Db){
   const existing=leadershipByBranch.get(p.branch_id);
   if(!existing||(reports.get(p.id)?.length??0)>(reports.get(existing.id)?.length??0))leadershipByBranch.set(p.branch_id,p);
  }
+ for(const branch of salesBranches){
+  if(leadershipByBranch.has(branch))continue;
+  const managers=new Set(people.filter(p=>p.branch_id===branch&&sales.has(p.id)&&p.manager_id).map(p=>p.manager_id!));
+  if(managers.size!==1)continue;
+  const manager=byId.get([...managers][0]);
+  if(manager&&!manager.root_access&&(manager.role==='director'||manager.role==='sales_head'))leadershipByBranch.set(branch,manager);
+ }
  const directBranches=new Set([user.branch_id]);
  if(salesLead)for(const p of immediate.values())if(sales.has(p.id)&&salesUnit(p.branch_id))directBranches.add(p.branch_id);
  const companyTask=(t:Task)=>!byId.get(t.assignee_id)?.root_access&&t.branch_id!=='Учебный доступ';

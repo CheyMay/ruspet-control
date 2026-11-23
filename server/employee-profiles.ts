@@ -75,7 +75,10 @@ export async function updateEmployeeProfile(actor:User,id:string,body:unknown){
   const related:Record<string,unknown>={};
   if(before.role!==value.role||before.branch_id!==value.branchId){
    related.substitutionsRevoked=(await db.query('UPDATE org_substitutions SET revoked_at=now() WHERE revoked_at IS NULL AND ends_at>now() AND (manager_id=$1 OR deputy_id=$1) RETURNING id',[id])).rows;
-   related.approvalsStale=(await db.query("UPDATE approvals SET state='stale' WHERE state='pending' AND EXISTS(SELECT 1 FROM jsonb_array_elements(route) s WHERE s->>'userId'=$1) RETURNING id",[id])).rows;
+   related.approvalsStale=(await db.query(`UPDATE approvals a SET state='stale' FROM tasks t
+    WHERE a.task_id=t.id AND a.state='pending' AND EXISTS(SELECT 1 FROM jsonb_array_elements(a.route) s WHERE s->>'userId'=$1)
+    AND NOT(a.type='completion' AND t.creator_id=$1 AND t.assignee_id<>$1 AND jsonb_array_length(a.route)=1)
+    RETURNING a.id`,[id])).rows;
   }
   const reason=value.reason||'Администратор обновил данные сотрудника';
   const auditId=randomUUID();
