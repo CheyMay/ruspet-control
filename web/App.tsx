@@ -709,7 +709,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
  const [comment,setComment]=useState(''),[thread,setThread]=useState('');
  const [answer,setAnswer]=useState('');
  const task=taskDetail?.task??data.tasks.find(t=>t.id===a.task_id);
- const [deadlineDraft,setDeadlineDraft]=useState<{revision:string;value:string}|null>(null);
+ const [deadlineDraft,setDeadlineDraft]=useState<{revision:string;value:string;comment:string}|null>(null);
  const transfers=taskDetail?.deadlineHistory??data.deadlineHistory?.[a.task_id]??[];
  const turn=approvalTurn(a);
  const actor=data.users.find(u=>u.id===a.route[a.current_step]?.userId);
@@ -729,7 +729,8 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
  const revision=`${a.id}:${a.action_revision}:${a.current_step}`;
  const suggested=a.approved_deadline??a.proposed_deadline;
  const proposed=suggested?moscowDateInput(suggested):'';
- const finalDate=deadlineDraft?.revision===revision?deadlineDraft.value:proposed;
+ const draft=deadlineDraft?.revision===revision?deadlineDraft:null;
+ const finalDate=draft?.value??proposed;
  const changedDeadline=editDeadlineInline&&finalDate!==proposed;
  const finalTime=Date.parse(changedDeadline?finalDate+':00+03:00':suggested??'');
  const alreadySet=!changedDeadline&&!!suggested&&suggested===task?.deadline;
@@ -737,7 +738,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
   finalTime<=Date.now()&&!alreadySet?'Укажите срок в будущем.':'';
 
  const approve=()=>void act(`/approvals/${a.id}/decision`,{
-  decision:'approve',comment,expectedRevision:a.action_revision,expectedStep:a.current_step,
+  decision:'approve',comment:changedDeadline?draft?.comment??'':comment,expectedRevision:a.action_revision,expectedStep:a.current_step,
   ...(changedDeadline?{approvedDeadline:new Date(finalTime).toISOString()}:{})
  });
  return <section className={`panel approval-card ${inDrawer?'in-drawer':''}`}>
@@ -752,8 +753,12 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
   {editDeadlineInline&&<div className="approval-deadline-editor">
    <label>Итоговый крайний срок · МСК
     <input type="datetime-local" value={finalDate} min={moscowDateInput(new Date().toISOString())}
-     aria-invalid={!!deadlineError} disabled={busy} onChange={e=>setDeadlineDraft({revision,value:e.target.value})}/>
+     aria-invalid={!!deadlineError} disabled={busy} onChange={e=>setDeadlineDraft({revision,value:e.target.value,comment:draft?.comment??''})}/>
    </label>
+   {changedDeadline&&<label className="approval-deadline-comment">Почему выбран этот срок? (необязательно)
+    <textarea rows={2} maxLength={4000} value={draft?.comment??''} disabled={busy}
+     onChange={e=>setDeadlineDraft({revision,value:finalDate,comment:e.target.value})}/>
+   </label>}
    <button type="button" className="button primary" disabled={busy||!!deadlineError} onClick={approve}>
     <Check size={16}/>{changedDeadline?'Согласовать с новым сроком':'Согласовать перенос'}
    </button>
@@ -777,7 +782,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
 
   {a.deferred_until&&a.state==='pending'&&<p className="inline-note"><Clock3 size={14}/> Решение отложено до {date(a.deferred_until,true)} МСК</p>}
   {a.state==='stale'&&!a.canceled_at&&<p className="inline-note red-text">Задача изменилась. Нужен новый запрос с актуальными данными.</p>}
-  <details className="approval-discussion" open={a.clarification_question?true:undefined}>
+  <details className="approval-discussion" open={a.clarification_question||discussion.some(c=>c.kind==='deadline_override')?true:undefined}>
    <summary>Обсуждение запроса · {discussion.length}</summary>
    {discussion.map(c=><article className="comment" key={c.id}><div><strong>{data.users.find(u=>u.id===c.author_id)?.name}<small>{date(c.created_at,true)}</small></strong><p>{c.body}</p></div></article>)}
    {a.clarification_question&&!discussion.some(c=>c.kind==='clarification'&&c.body==='Уточнение по согласованию: '+a.clarification_question)&&<p>Уточнение по согласованию: {a.clarification_question}</p>}

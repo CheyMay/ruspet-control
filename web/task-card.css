@@ -157,6 +157,8 @@
 .approval-deadline-editor { display:flex; flex-wrap:wrap; gap:8px 12px; align-items:end; padding:12px; margin:-8px 0 14px; border:1px solid var(--line); border-radius:8px; }
 .approval-deadline-editor label { display:grid; gap:5px; flex:1 1 14rem; min-width:0; font-size:13px; font-weight:600; }
 .approval-deadline-editor input { width:100%; min-width:0; }
+.approval-deadline-editor .approval-deadline-comment { flex-basis:100%; }
+.approval-deadline-comment textarea { width:100%; resize:vertical; }
 .approval-deadline-feedback { flex-basis:100%; display:flex; flex-wrap:wrap; align-items:center; gap:4px 12px; }
 @media(max-width:520px){ .approval-deadline-editor > .button { width:100%; justify-content:center; } }
 .approval-card.in-drawer .approval-body { grid-template-columns:1fr; }

@@ -154,8 +154,12 @@ function missingLabel(d:Dialog){
  return field.label;
 }
 async function prompt(u:User,ch:string,d:Dialog,db:Db){
- return screen(u,ch,(d.payload.id?'Задача #'+d.payload.id:'Новая задача')+'\n'+missingLabel(d),
-  [...(d.payload.kind==='create_task'&&d.fields[d.index]?.key==='assignee'?
+ const deadlineComment=d.payload.kind==='approve_with_deadline'&&d.fields[d.index]?.key==='comment';
+ const heading=d.payload.id?'Задача #'+d.payload.id:'Новая задача';
+ return screen(u,ch,heading+(deadlineComment?'\nИтоговый крайний срок: '+date(d.values.deadline)+' МСК':'')+'\n'+missingLabel(d),
+  [...(deadlineComment?
+   [[button('Согласовать без комментария','confirm',{...d.payload,op:'confirm',values:{...d.values,comment:''}})]]:[]),
+   ...(d.payload.kind==='create_task'&&d.fields[d.index]?.key==='assignee'?
    [[button('Себе','form',{...d.payload,values:{...d.values,assignee:u.id}})]]:[]),
    [button('Отменить ввод','cancel',{id:d.payload.id,list:d.payload.list})]],db);
 }
@@ -171,14 +175,15 @@ async function draftSummary(d:Dialog,db:Db){
   if(f.key==='assignee'||f.key==='days')continue;
   const value=d.values[f.key];
   if(!value)continue;
- if(f.key==='deadline')result.push((d.payload.kind==='accept_assignment'||d.payload.kind==='edit_personal_plan'?'Мой план: ':'Дата: ')+(value==='none'?'Без срока':date(value)+' МСК'));
+ if(f.key==='deadline')result.push((d.payload.kind==='accept_assignment'||d.payload.kind==='edit_personal_plan'?'Мой план: ':d.payload.kind==='approve_with_deadline'?'Итоговый крайний срок: ':'Дата: ')+(value==='none'?'Без срока':date(value)+' МСК'));
+  else if(f.key==='comment'&&d.payload.kind==='approve_with_deadline')result.push('Комментарий\n'+value);
   else result.push(f.label+'\n'+value);
  }
  return result.join('\n\n');
 }
 async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string){
  const summary=await draftSummary(d,db);
- const action=d.payload.kind==='accept_assignment'?'Принять и запланировать':d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
+ const action=d.payload.kind==='accept_assignment'?'Принять и запланировать':d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='approve_with_deadline'?'Согласовать с новым сроком':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
  const title=heading??(d.payload.id?action+' · #'+d.payload.id:'Проверьте новую задачу');
  const redo={...d.payload,values:d.payload.kind==='reminder'?{days:d.values.days}:undefined};
  return screen(u,ch,`${title}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
@@ -482,6 +487,7 @@ async function handleBotText(db:Db,u:User,ch:string,text:string,inputId:string):
   d.index++;nextMissing(d);
   let response:BotScreen;if(d.index<d.fields.length){await db.query('UPDATE bot_sessions SET data=$3 WHERE actor_id=$1 AND channel=$2',[u.id,ch,JSON.stringify(d)]);response=await prompt(u,ch,d,db)}else{
    // The draft is now immutable and bound to a one-time confirmation button.
+   if(d.payload.kind==='approve_with_deadline')await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op'='confirm'",[u.id,ch]);
    await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);response=await confirmation(u,ch,d,db);
   }
   await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,inputId,JSON.stringify(response)]);return response;

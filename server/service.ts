@@ -311,6 +311,9 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
    }),403,'Для этого запроса итоговый крайний срок изменить нельзя.');
    assert(Date.parse(input.approvedDeadline)>Date.now(),400,'Итоговый крайний срок должен быть в будущем.');
   }
+  const deadlineOverride=input.approvedDeadline&&Date.parse(input.approvedDeadline)!==Date.parse(a.approved_deadline??a.proposed_deadline??'')?
+   new Date(input.approvedDeadline).toISOString():null;
+  let deadlineComment=deadlineOverride?input.comment.trim():'';
   if(input.decision==='reject'||input.decision==='clarify')
    assert(input.comment.trim().length>=5,400,'Комментарий к решению обязателен, минимум 5 символов.');
   await db.query(`UPDATE outbox SET read_at=now() WHERE recipient_id=$1 AND task_id=$2 AND read_at IS NULL
@@ -325,6 +328,9 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
    await adapters.telegram.dispatch(db);return {state:'pending',clarification:'requested'};
   }
   await db.query('INSERT INTO decisions(id,approval_id,actor_id,step_index,decision,comment) VALUES($1,$2,$3,$4,$5,$6)',[randomUUID(),id,user.id,a.current_step,input.decision,input.comment]);
+  if(deadlineOverride&&deadlineComment)
+   await db.query("INSERT INTO comments(id,task_id,author_id,body,kind,approval_id) VALUES($1,$2,$3,$4,'deadline_override',$5)",
+    [randomUUID(),task.id,user.id,'Комментарий к сроку '+moscowDeadline(deadlineOverride)+' МСК: '+deadlineComment,id]);
   if(a.type==='completion'&&input.comment.trim()&&(input.decision==='approve'||input.decision==='reject'))
    await db.query("INSERT INTO comments(id,task_id,author_id,body,kind,approval_id) VALUES($1,$2,$3,$4,'review',$5)",[randomUUID(),task.id,user.id,input.comment,id]);
   if(input.decision==='later') {
@@ -346,7 +352,7 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
   } else if(a.current_step<a.route.length-1) {
    await db.query(`UPDATE approvals SET current_step=current_step+1,deferred_until=NULL,approved_deadline=COALESCE($2,approved_deadline),
     clarification_question=NULL,clarification_answer=NULL,clarification_requested_at=NULL,clarification_answered_at=NULL WHERE id=$1`,[id,input.approvedDeadline??null]);
-   await event(db,task.id,user.id,'step_approved',`Этап согласован: ${a.route[a.current_step].label}`,{approvalId:id,comment:input.comment,approvedDeadline:input.approvedDeadline??a.approved_deadline});
+   await event(db,task.id,user.id,'step_approved',`Этап согласован: ${a.route[a.current_step].label}`,{approvalId:id,comment:input.comment,approvedDeadline:input.approvedDeadline??a.approved_deadline,deadlineOverride});
    const next=a.route[a.current_step+1];
    await notify(db,task.id,next.userId,`Требуется ваше решение по задаче #${task.id}`,`approval:${id}:${a.current_step+1}`);
   } else {
@@ -367,10 +373,17 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
    await db.query("UPDATE findings SET status='resolved' WHERE task_id=$1 AND NOT(rule=ANY($2))",[task.id,remaining.map(f=>f.rule)]);
    if(!remaining.length) await db.query("UPDATE control_requests SET state='resolved' WHERE task_id=$1 AND state<>'resolved'",[task.id]);
    if(approvedDeadline){
-    const msk=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:'Europe/Moscow'});
-    const original=a.proposed_deadline?msk.format(new Date(a.proposed_deadline)):null;
-    const text=`Перенос задачи #${task.id} согласован. Итоговый крайний срок — ${msk.format(new Date(approvedDeadline))} МСК.`
-     +(deadlineChangedByApprover&&original?` В запросе был указан ${original} МСК.`:'');
+    if(deadlineChangedByApprover&&!deadlineOverride&&a.approved_deadline){
+     const prior=(await db.query<{comment:string}>(`SELECT e.data->>'comment' AS comment FROM task_events e
+      WHERE e.task_id=$1 AND e.kind='step_approved' AND e.data->>'approvalId'=$2 AND e.data->>'deadlineOverride'=$3
+      AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id)
+      ORDER BY e.created_at DESC,e.id DESC LIMIT 1`,[task.id,id,new Date(approvedDeadline).toISOString()])).rows[0];
+     deadlineComment=prior?.comment.trim()??'';
+    }
+    const original=a.proposed_deadline?moscowDeadline(a.proposed_deadline):null;
+    const text=`Перенос задачи #${task.id} согласован. Итоговый крайний срок — ${moscowDeadline(approvedDeadline)} МСК.`
+     +(deadlineChangedByApprover&&original?` В запросе был указан ${original} МСК.`:'')
+     +(deadlineComment?`\nКомментарий: ${deadlineComment}`:'');
     await notify(db,task.id,a.requester_id,text,`approved:${id}`);
     if(deadlineChangedByApprover&&task.assignee_id!==a.requester_id)
      await notify(db,task.id,task.assignee_id,text,`approved-assignee:${id}`);
@@ -379,6 +392,8 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
   await adapters.telegram.dispatch(db); return {state:input.decision==='reject'?'rejected':a.current_step===a.route.length-1?'approved':'pending'};
  });
 }
+const deadlineClock=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:'Europe/Moscow'});
+function moscowDeadline(value:string){return deadlineClock.format(new Date(value));}
 async function answerClarificationCore(user:User,id:string,answer:string,expectedRevision?:number){
  return transaction(async db=>{
   const found=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[id])).rows[0];assert(found,404,'Согласование не найдено.');

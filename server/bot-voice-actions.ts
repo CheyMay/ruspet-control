@@ -48,7 +48,7 @@ export function taskActionFields(kind:string|undefined,min:number,withAssignee=t
   case 'delegate_client':return [field('client','Введите название клиента или ИНН',2,150)];
   case 'answer':return [field('reason','Что помешало выполнить задачу?',min),field('progress','Что уже сделано?',min),field('plan','Что будете делать дальше?',min)];
   case 'deadline':return [deadlineField,field('reason','Почему нужен новый срок?',min)];
-  case 'approve_with_deadline':return [deadlineField];
+  case 'approve_with_deadline':return [deadlineField,field('comment','Почему выбран этот срок? Можно оставить без комментария.',1)];
   case 'clarification':return [field('answer','Ответьте на вопрос согласующего')];
   case 'comment':return [field('comment','Комментарий к задаче')];
   case 'submit':return [field('comment','Опишите готовый результат')];
@@ -131,7 +131,7 @@ export async function normalizeActionField(actor:User,payload:Payload,f:Field,in
   assert(/^\d{1,2}$/.test(weeks)&&Number(weeks)>=1&&Number(weeks)<=52,400,'Введите число недель от 1 до 52.');
   return weeks;
  }
- if((f.key==='description'||f.key==='instruction')&&/^пропустить$/iu.test(value))return '';
+ if((f.key==='description'||f.key==='instruction'||f.key==='comment'&&payload.kind==='approve_with_deadline')&&/^пропустить$/iu.test(value))return '';
  return value;
 }
 

@@ -404,8 +404,10 @@ test('pricing controls deadline approvals and only the creator accepts completio
  assert.equal(original.plan,'');
  assert.equal((await api(liza,decidePath,'POST',{...first,decision:'reject'})).status,400);
  assert.equal((await api(liza,decidePath,'POST',{...first,decision:'clarify'})).status,400);
- assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve',approvedDeadline:earlier})).body.state,'pending');
+ const lizaComment='Расчёт нужен до отгрузки.';
+ assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve',approvedDeadline:earlier,comment:lizaComment})).body.state,'pending');
  assert.equal((await approval(maksim)).approved_deadline,earlier);
+ assert((await api(director,'/tasks/'+maksim)).body.comments.some((item:any)=>item.approval_id===original.id&&item.author_id===liza.id&&item.body.includes(lizaComment)));
  assert.equal(await deadline(maksim),old);assert.equal(await writeCount(),0);
  const final={expectedStep:1,expectedRevision:original.action_revision};
  assert.equal((await api(director,decidePath,'POST',{...final,decision:'approve',approvedDeadline:'2000-01-01T12:00:00+03:00'})).status,400);
@@ -416,6 +418,7 @@ test('pricing controls deadline approvals and only the creator accepts completio
  assert.equal(history.deadlineHistory[0].from,old);assert.equal(history.deadlineHistory[0].to,earlier);
  const notice=(await db.pool.query('SELECT body FROM outbox WHERE dedupe_key=$1',['approved:'+original.id])).rows[0]?.body;
  assert.match(notice,/22\.01\.2035, 17:00 МСК.*23\.01\.2035, 12:00 МСК/);
+ assert.match(notice,/Комментарий: Расчёт нужен до отгрузки\./);
  const bot=await import('../server/bot.js');
  const lowCard=await bot.botView(liza,'deadline-creator-fixture',{op:'task_approval',id:low});
  const upperCard=await bot.botView(liza,'deadline-creator-fixture',{op:'task_approval',id:boundary});
@@ -426,7 +429,16 @@ test('pricing controls deadline approvals and only the creator accepts completio
   decision:'approve',expectedStep:0,expectedRevision:request.action_revision,approvedDeadline:earlier
  });
  assert.equal((await lizaDecision(boundaryRequest)).status,403);
- assert.equal((await lizaDecision(lowRequest)).body.state,'approved');
+ const click=async(actor:User,channel:string,screen:Awaited<ReturnType<typeof bot.botView>>,label:string)=>{
+  const selected=screen.buttons.flat().find(button=>button.text===label);
+  assert(selected,label);
+  return bot.botClick(actor,channel,selected.token);
+ };
+ const lowChannel='deadline-creator-fixture';
+ await click(liza,lowChannel,lowCard,'Выбрать другой срок');
+ const lowPrompt=await bot.botText(liza,lowChannel,'22.01.2035 17:00','low-date');
+ assert.match(lowPrompt.text,/Почему выбран этот срок/);
+ assert.match((await click(liza,lowChannel,lowPrompt,'Согласовать без комментария')).text,/Срок согласован/);
  assert.equal(await deadline(low),earlier);
  const lowHistory=(await api(liza,'/tasks/'+low)).body;
  assert.equal(lowHistory.approvals[0].proposed_deadline,next);
@@ -434,6 +446,20 @@ test('pricing controls deadline approvals and only the creator accepts completio
  assert.equal(lowHistory.deadlineHistory[0].to,earlier);
  const lowNotice=(await db.pool.query('SELECT body FROM outbox WHERE dedupe_key=$1',['approved:'+lowRequest.id])).rows[0]?.body;
  assert.match(lowNotice,/22\.01\.2035, 17:00 МСК.*23\.01\.2035, 12:00 МСК/);
+ assert.doesNotMatch(lowNotice,/Комментарий:/);
+
+ await allow(boundary,liza);
+ const directorChannel='deadline-director-fixture';
+ const directorCard=await bot.botView(director,directorChannel,{op:'task_approval',id:boundary});
+ await click(director,directorChannel,directorCard,'Выбрать другой срок');
+ const directorPrompt=await bot.botText(director,directorChannel,'22.01.2035 17:00','director-date');
+ const directorDraft=await bot.botText(director,directorChannel,'Клиент согласовал встречу утром.','director-reason');
+ assert.match(directorDraft.text,/Клиент согласовал встречу утром\./);
+ await assert.rejects(()=>click(director,directorChannel,directorPrompt,'Согласовать без комментария'),/отменён или заменён/);
+ assert.match((await click(director,directorChannel,directorDraft,'Подтвердить и отправить')).text,/Срок согласован/);
+ assert.equal(await deadline(boundary),earlier);
+ const boundaryNotice=(await db.pool.query('SELECT body FROM outbox WHERE dedupe_key=$1',['approved:'+boundaryRequest.id])).rows[0]?.body;
+ assert.match(boundaryNotice,/Комментарий: Клиент согласовал встречу утром\./);
 
  const work=await create(liza,other,5000);
  await assert.rejects(()=>workflow.reviewTask(liza,work,'complete','',1),/приёмке/);
