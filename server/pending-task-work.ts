@@ -6,6 +6,19 @@ export const hasPendingTaskApproval=`EXISTS(
  AND a.canceled_at IS NULL AND a.task_version=t.version
 )`;
 
+export const hasPendingTaskAcceptance=`(t.status='active' AND EXISTS(
+ SELECT 1 FROM personal_task_plans p WHERE p.task_id=t.id AND p.assignment_epoch=t.assignment_epoch
+ AND p.user_id=t.assignee_id AND p.requires_acceptance AND p.accepted_at IS NULL
+))`;
+
+export const latestTaskAssignment=`NOT EXISTS(SELECT 1 FROM outbox newer
+ WHERE newer.task_assignment AND newer.task_id=o.task_id AND newer.recipient_id=o.recipient_id
+ AND newer.withdrawn_at IS NULL AND (newer.created_at,newer.id)>(o.created_at,o.id))`;
+
+export const visibleAssignmentNotice=`(NOT o.task_assignment OR EXISTS(
+ SELECT 1 FROM tasks t WHERE t.id=o.task_id AND t.assignee_id=o.recipient_id AND ${hasPendingTaskAcceptance} AND ${latestTaskAssignment}
+)) AND o.task_notice->>'acceptanceOnly' IS DISTINCT FROM 'true'`;
+
 export const visibleControlNotice=`(o.read_at IS NOT NULL OR (o.dedupe_key NOT LIKE 'control:%' AND o.dedupe_key NOT LIKE 'remind:%') OR
  NOT EXISTS(SELECT 1 FROM tasks t WHERE t.id=o.task_id AND t.status<>'completed' AND ${hasPendingTaskApproval}))`;
 

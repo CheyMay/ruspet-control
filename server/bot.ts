@@ -178,11 +178,11 @@ async function draftSummary(d:Dialog,db:Db){
 }
 async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string){
  const summary=await draftSummary(d,db);
- const action=d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
+ const action=d.payload.kind==='accept_assignment'?'Принять и запланировать':d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
  const title=heading??(d.payload.id?action+' · #'+d.payload.id:'Проверьте новую задачу');
  const redo={...d.payload,values:d.payload.kind==='reminder'?{days:d.values.days}:undefined};
  return screen(u,ch,`${title}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
-  [button('Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],
+  [button(d.payload.kind==='accept_assignment'?'Принять задачу':'Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],
   [...(d.fields.length?[button('Ввести заново','form',redo)]:[]),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]
  ],db);
 }

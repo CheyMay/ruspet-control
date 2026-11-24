@@ -6,12 +6,12 @@ import {button,htmlScreen} from './bot-ui.js';
 import {botDue} from './bot-presentation.js';
 import {businessDay} from '../shared/queues.js';
 import {compactTaskTitle} from '../shared/task-title.js';
-import {isSalesManager} from '../shared/personal-calendar.js';
 import {workQueueTitle} from '../shared/work-queue.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import type {Task,User} from '../shared/types.js';
+import {taskPersonalPlan} from './personal-calendar.js';
 import {topicOn} from './notifications.js';
-import {hasPendingTaskApproval} from './pending-task-work.js';
+import {hasPendingTaskAcceptance,hasPendingTaskApproval,latestTaskAssignment} from './pending-task-work.js';
 
 const minute=60_000,repeatEvery=30*minute,assignmentWindow=10*minute;
 type TodaySlot='morning'|'afternoon'|'last_hour'|'prepare'|'last_call';
@@ -57,11 +57,12 @@ function readyAssignments(rows:Assignment[],now:Date){
 }
 
 async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],channel:'web'|'telegram',delivery:Delivery){
-  const tasks=(await db.query<Task&{awaiting_decision:boolean}>(`SELECT t.*,${hasPendingTaskApproval} AS awaiting_decision
+  const tasks=(await db.query<Task&{awaiting_decision:boolean}>(`SELECT t.*,${hasPendingTaskApproval} AS awaiting_decision,${hasPendingTaskAcceptance} AS assignment_pending
    FROM tasks t WHERE t.assignee_id=$1 AND t.status IN ('active','review')`,[user.id])).rows.filter(task=>canSee(user,task));
   if(!tasks.length)return null;
 
-  const stamp=now.toISOString(),byId=new Map(tasks.filter(task=>task.status==='active'&&!task.awaiting_decision).map(task=>[task.id,task]));
+  const stamp=now.toISOString(),byId=new Map(tasks.filter(task=>task.status==='active'&&(!task.awaiting_decision||task.assignment_pending)).map(task=>[task.id,task]));
+  const acceptanceIds=[...byId.values()].filter(task=>task.assignment_pending).map(task=>task.id);
   const scope=await staffWorkIds(db);
   const controlled=delivery.deadlines?tasks.filter(task=>controlsTask(task,scope)):[];
   const actionable=controlled.filter(task=>task.status==='active'&&!task.awaiting_decision);
@@ -70,15 +71,15 @@ async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],chann
   const alreadyDelivered=channel==='telegram'?'SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text':
    "SELECT 1 FROM outbox d WHERE d.task_notice IS NOT NULL AND (d.task_notice->'assignmentIds') ? o.id::text";
   const rows=delivery.assignments?(await db.query<Assignment>(`SELECT o.id,o.task_id,o.created_at FROM outbox o
-   WHERE o.task_assignment AND o.recipient_id=$1 AND o.task_id=ANY($2) AND o.read_at IS NULL AND o.withdrawn_at IS NULL
-    AND o.created_at BETWEEN greatest($3::timestamptz,$4::timestamptz-interval '2 days') AND $4
-    AND NOT EXISTS(${alreadyDelivered})
-   ORDER BY o.created_at,o.id`,[user.id,[...byId.keys()],delivery.since,stamp])).rows:[];
+   WHERE o.task_assignment AND o.recipient_id=$1 AND o.task_id=ANY($2) AND o.withdrawn_at IS NULL
+    AND o.created_at<=$4 AND (o.task_id=ANY($5::text[]) OR o.read_at IS NULL AND o.created_at>=greatest($3::timestamptz,$4::timestamptz-interval '2 days'))
+    AND ${latestTaskAssignment} AND NOT EXISTS(${alreadyDelivered})
+   ORDER BY o.created_at,o.id`,[user.id,[...byId.keys()],delivery.since,stamp,acceptanceIds])).rows:[];
   const ready=readyAssignments(rows,now),hasOverdue=!!(overdue.length||elapsedToday.length);
   if(!hasOverdue&&!today.length&&!ready.length&&!checkpoint)return null;
 
   const assignments=[...new Set(ready.map(row=>row.task_id))].map(taskId=>byId.get(taskId)!);
-  return {notice:{overdue,elapsedToday,today,assignments,prepare:checkpoint,waiting},overdue:hasOverdue,today:todaySlots,assignmentIds:ready.map(row=>row.id)};
+  return {notice:{overdue,elapsedToday,today,assignments,prepare:checkpoint,waiting},overdue:hasOverdue,today:todaySlots,assignmentRows:ready};
 }
 
 export async function claimTelegramTaskNotice(user:User,chatId:string,now:Date):Promise<(TaskNotice&{id:string})|null>{
@@ -100,7 +101,7 @@ export async function claimTelegramTaskNotice(user:User,chatId:string,now:Date):
   if(!plan)return null;
   const id=randomUUID();
   await db.query(`INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state,created_at,task_notice)
-   VALUES($1,$2,$3,'sending',$4,$5)`,[id,chatId,JSON.stringify(plan.assignmentIds),stamp,
+   VALUES($1,$2,$3,'sending',$4,$5)`,[id,chatId,JSON.stringify(plan.assignmentRows.map(row=>row.id)),stamp,
    JSON.stringify({userId:user.id,overdue:plan.overdue,today:plan.today})]);
   return {id,...plan.notice};
  });
@@ -110,7 +111,9 @@ function noticeContent(notice:TaskNotice,now:Date){
  const deadlines=[...notice.overdue,...notice.elapsedToday,...notice.today];
  const topDeadlines=[...notice.overdue.slice(0,3),...notice.elapsedToday.slice(0,3),...notice.today.slice(0,3)];
  const assigned=new Set(notice.assignments.map(task=>task.id)),shown=new Set(topDeadlines.map(task=>task.id));
- const onlyNew=notice.assignments.filter(task=>!shown.has(task.id));
+ const needsAcceptance=notice.assignments.filter(task=>task.assignment_pending);
+ const ordinary=notice.assignments.filter(task=>!task.assignment_pending);
+ const onlyNew=ordinary.filter(task=>!shown.has(task.id));
  const sections:{heading:string;lines:string[]}[]=[];
  if(notice.prepare)sections.push({heading:notice.prepare==='last_call'?'До 15:00 осталось меньше получаса':'Подготовьте задачи к 15:00',
   lines:['Сдайте готовый результат. Если срок нужно перенести, отправьте запрос с новой датой.',...(notice.waiting?['Уже ждут решения или приёмки · '+notice.waiting]:[])]});
@@ -126,22 +129,35 @@ function noticeContent(notice:TaskNotice,now:Date){
   if(listedAbove)lines.push(listedAbove+' уже в списке сроков выше');
   sections.push({heading:label+' · '+total,lines});
  };
+ if(needsAcceptance.length){
+  add(needsAcceptance.length===1?'Новая задача к принятию':'Новые задачи к принятию',needsAcceptance);
+  sections.at(-1)?.lines.push('Примите задачи и укажите плановое время.');
+ }
  add('Просрочены с прошлых дней',notice.overdue);
  add('Время истекло сегодня',notice.elapsedToday);
  add('Крайний срок сегодня',notice.today);
- add('Новые задачи',onlyNew,notice.assignments.length,notice.assignments.length-onlyNew.length);
+ add('Новые задачи',onlyNew,ordinary.length,ordinary.length-onlyNew.length);
 
  const taskIds=[...new Set([...notice.assignments.slice(0,3),...topDeadlines].map(task=>task.id))].slice(0,5);
- return {sections,taskIds,deadlineTaskIds:deadlines.map(t=>t.id),hasDeadlines:!!deadlines.length||!!notice.prepare,hasAssignments:!!assigned.size};
+ return {sections,taskIds,deadlineTaskIds:deadlines.map(t=>t.id),hasDeadlines:!!deadlines.length||!!notice.prepare,hasAssignments:!!assigned.size,needsAcceptance:needsAcceptance.length>0};
 }
 
 export async function taskNoticeScreen(user:User,ch:string,notice:TaskNotice,now:Date){
- const {sections,taskIds,hasDeadlines,hasAssignments}=noticeContent(notice,now);
- const buttons=taskIds.map(id=>button('#'+id,'task',{id}));
+ const {sections,taskIds,hasDeadlines,hasAssignments,needsAcceptance}=noticeContent(notice,now);
+ const accept=await Promise.all(notice.assignments.filter(task=>task.assignment_pending).slice(0,3).map(async task=>{
+  const plan=await taskPersonalPlan(user,task);
+  return plan?.needsAcceptance?{id:task.id,button:button('Принять #'+task.id,'form',{
+   id:task.id,kind:'accept_assignment',version:plan.epoch,revision:plan.revision,list:{op:'personal_plan',filter:'awaiting'}
+  })}:null;
+ }));
+ const direct=accept.filter(item=>item!==null);
+ const buttons=taskIds.filter(id=>!direct.some(item=>item.id===id)).map(id=>button('#'+id,'task',{id}));
  return htmlScreen(user,ch,sections.map(s=>'<b>'+h(s.heading)+'</b>\n'+s.lines.map(h).join('\n')).join('\n\n'),[
+  ...direct.map(item=>[item.button]),
+  ...(needsAcceptance?[[button('Все задачи к принятию','personal_plan',{filter:'awaiting'})]]:[]),
   ...Array.from({length:Math.ceil(buttons.length/3)},(_,i)=>buttons.slice(i*3,i*3+3)),
   [...(hasDeadlines?[notice.prepare?button('Задачи к 15:00','tasks',{filter:'my_due'}):button(workQueueTitle,'inbox')]:[]),
-   ...(hasAssignments?[isSalesManager(user)?button('Принять новые задачи','personal_plan',{filter:'awaiting'}):button('Мои задачи','tasks',{filter:'mine'})]:[])]
+   ...(hasAssignments&&!needsAcceptance?[button('Мои задачи','tasks',{filter:'mine'})]:[])]
  ]);
 }
 
@@ -158,10 +174,22 @@ export async function generateWebTaskNotices(now=new Date()){
    WHERE recipient_id=$1 AND task_notice IS NOT NULL AND withdrawn_at IS NULL AND created_at BETWEEN $2 AND $3`,[user.id,dayStart,stamp])).rows;
   const plan=await planNotice(db,user,now,previous,'web',{deadlines:true,assignments:true,since:null});
   if(!plan)return;
-  const id=randomUUID(),{sections,taskIds,deadlineTaskIds,hasDeadlines,hasAssignments}=noticeContent(plan.notice,now);
-  const body=sections.map(section=>[section.heading,...section.lines].join('\n')).join('\n\n');
-  const metadata={overdue:plan.overdue,today:plan.today,assignmentIds:plan.assignmentIds,taskIds,deadlineTaskIds,hasDeadlines,hasAssignments};
-  await db.query('INSERT INTO outbox(id,recipient_id,body,dedupe_key,created_at,task_notice) VALUES($1,$2,$3,$4,$5,$6)',
-   [id,user.id,body,'web-task-notice:'+id,stamp,JSON.stringify(metadata)]);
+  const pending=plan.notice.assignments.filter(task=>task.assignment_pending);
+  const regular=plan.notice.assignments.filter(task=>!task.assignment_pending);
+  const bundles=[
+   {notice:{...plan.notice,assignments:regular},acceptanceOnly:false},
+   {notice:{overdue:[],elapsedToday:[],today:[],assignments:pending},acceptanceOnly:true}
+  ];
+  for(const {notice,acceptanceOnly} of bundles){
+   const {sections,taskIds,deadlineTaskIds,hasDeadlines,hasAssignments}=noticeContent(notice,now);
+   if(!sections.length)continue;
+   const taskSet=new Set(notice.assignments.map(task=>task.id));
+   const id=randomUUID(),body=sections.map(section=>[section.heading,...section.lines].join('\n')).join('\n\n');
+   const metadata={overdue:!acceptanceOnly&&plan.overdue,today:acceptanceOnly?[]:plan.today,
+    assignmentIds:plan.assignmentRows.filter(row=>taskSet.has(row.task_id)).map(row=>row.id),
+    taskIds,deadlineTaskIds,hasDeadlines,hasAssignments,acceptanceOnly};
+   await db.query('INSERT INTO outbox(id,recipient_id,body,dedupe_key,created_at,task_notice) VALUES($1,$2,$3,$4,$5,$6)',
+    [id,user.id,body,'web-task-notice:'+id,stamp,JSON.stringify(metadata)]);
+  }
  });
 }

@@ -269,7 +269,7 @@ export function App(){
   if(!data||viewingEmployee)return;
   const previous=lastNoticeCheck.current;
   lastNoticeCheck.current={userId:data.user.id,at:data.serverTime};
-  if(previous?.userId===data.user.id&&data.notifications.some(notice=>(notice.task_notice||notice.staff_review||notice.management_notice)&&!notice.read_at&&notice.created_at>previous.at))
+  if(previous?.userId===data.user.id&&data.notifications.some(notice=>(notice.task_assignment||notice.task_notice||notice.staff_review||notice.management_notice)&&!notice.read_at&&notice.created_at>previous.at))
    showToast('Новые рабочие уведомления');
  },[data]);
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!tour){if(boardMove){if(!busy){setBoardMove(null);setError('');}}else if(completingTask&&!busy)setCompletingTask(null);else if(editor)setEditor(null);else if(requestType)setRequestType(null);else closeTask();}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[requestType,editor,completingTask,boardMove,busy,tour]);
@@ -339,13 +339,13 @@ export function App(){
   void api<TaskGroupsData>('/task-groups').then(next=>{if(active)setGroups(next);}).catch(()=>{});
   return()=>{active=false;};
  },[data?.user.id,page,viewingEmployee]);
- const taskState=(t:Task)=>onApproval(t)?'pending':(t.assignment_pending||detail?.task.id===t.id&&detail.assignmentReceipt?.state==='pending')?'unaccepted':overdue(t)?'overdue':t.status;
+ const taskState=(t:Task)=>t.status==='active'&&(t.assignment_pending||detail?.task.id===t.id&&detail.assignmentReceipt?.state==='pending')?'unaccepted':onApproval(t)?'pending':overdue(t)?'overdue':t.status;
  const filterTasks=(items:Task[],f=filter)=>items.filter(t=>{
   if(f.startsWith('day:'))return t.status==='active'&&!onApproval(t)&&!!t.deadline&&businessDay(t.deadline)===f.slice(4);
   const deadline=taskQueue(t,now);
   switch(f){
    case 'all':return true;
-   case 'unaccepted':return t.assignment_pending===true&&!onApproval(t);
+   case 'unaccepted':return t.assignment_pending===true;
    case 'risk':return t.customer_risk===true&&t.status!=='completed';
    case 'planned_today':return !onApproval(t)&&plannedToday(t,now);
    case 'active':return t.status!=='completed';
@@ -377,6 +377,7 @@ export function App(){
     <td><Badge state={taskState(t)}>{taskState(t)==='overdue'?'Просрочена':undefined}</Badge>{(approval||t.status==='review')&&next?.userId&&<small>{next.label} · {userById(next.userId)?.name??next.userId}</small>}</td>
     <td className="mono">{t.transfer_count||'—'}</td>
     <td><div className="task-row-actions">
+     {!viewingEmployee&&t.assignee_id===data!.user.id&&t.assignment_pending&&<button type="button" className="button secondary" onClick={()=>void openTask(t.id)}>Принять</button>}
      {!viewingEmployee&&canComplete(data!.user,t,data!.approvalScope)&&!approval&&!data!.pendingAssignmentIds?.includes(t.id)&&
       <button type="button" className="button secondary" disabled={busy} onClick={()=>{setError('');setCompletingTask(t);}}>Завершить</button>}
     </div></td>
@@ -421,11 +422,12 @@ export function App(){
   if(canMoveBoardTask(task)){setError('');setBoardMove({id:task.id,deadline});}
  }
  const matchingTasks=scopedTasks.filter(t=>(!groupFilter||groups.items[t.id]===groupFilter)&&(priceFilter==='all'||priceBand(t)===priceFilter)&&(branch==='all'||t.branch_id===branch)&&(currentScope==='mine'&&!linkedIds||!selectedOwners.size||selectedOwners.has(t.assignee_id))&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.trim().replace(/^#\s*/,'').toLowerCase()));
- const visible=filterTasks(matchingTasks).sort((a,b)=>sort==='price_desc'?(taskPrice(b)??-1)-(taskPrice(a)??-1):sort==='urgency'?Number(!!b.critical)-Number(!!a.critical)||Number(b.priority==='high')-Number(a.priority==='high')||(a.deadline||'9999').localeCompare(b.deadline||'9999'):sort==='work_priority'?compareWorkPlan(a,b,workDay||businessDay(now)):sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='transfers'?b.transfer_count-a.transfer_count:(a.deadline||'9999').localeCompare(b.deadline||'9999'));
+ const unaccepted=data.tasks.filter(task=>task.assignee_id===data.user.id&&task.assignment_pending).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));
+ const visible=filterTasks(matchingTasks).sort((a,b)=>(currentScope==='mine'?Number(!!b.assignment_pending)-Number(!!a.assignment_pending):0)||(sort==='price_desc'?(taskPrice(b)??-1)-(taskPrice(a)??-1):sort==='urgency'?Number(!!b.critical)-Number(!!a.critical)||Number(b.priority==='high')-Number(a.priority==='high')||(a.deadline||'9999').localeCompare(b.deadline||'9999'):sort==='work_priority'?compareWorkPlan(a,b,workDay||businessDay(now)):sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='transfers'?b.transfer_count-a.transfer_count:(a.deadline||'9999').localeCompare(b.deadline||'9999')));
  const myWork=workQueue(data),myActionCount=workCount(myWork);
  const myApprovals=pending.filter(a=>approvalTurn(a).userId===data.user.id);
  const scopedMetrics=summarize(matchingTasks,now,pendingTasks);
- const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'Не приняты',count:matchingTasks.filter(t=>t.assignment_pending&&!pendingTasks.has(t.id)).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
+ const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(filter==='unaccepted'||matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'К принятию',count:matchingTasks.filter(t=>t.assignment_pending).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
  const cardApproval=detail?.approvals.some(a=>activeTaskApproval(detail.task,a));
  const cardCanComplete=!!detail&&!viewingEmployee&&!cardApproval&&!detail.personalPlan?.needsAcceptance&&canComplete(data.user,detail.task,detail.approvalScope);
  const title=page==='guide'?'Гайд':page==='notifications'?'Уведомления':nav.find(n=>n.id===page)?.label;
@@ -465,7 +467,18 @@ export function App(){
   {page==='analytics'&&!viewingEmployee&&data.analyticsAccess&&<WorkspaceSection label="Загружаем аналитику…"><TeamAnalytics key={data.user.id}/></WorkspaceSection>}
 
 
-  {page==='tasks'&&<><div className="task-view-bar"><div className="task-scope-switches" aria-label="Область задач">
+  {page==='tasks'&&<>
+   {currentScope==='mine'&&!linkedIds&&!viewingEmployee&&!tour&&unaccepted.length>0&&<section className="panel assignment-queue" aria-label="Новые задачи к принятию">
+    <div className="panel-heading"><div><h2>Новые задачи к принятию · {unaccepted.length}</h2>
+     <p>Примите задачу и укажите, когда планируете ею заняться.</p></div>
+     {filter!=='unaccepted'&&<button type="button" className="button secondary" onClick={()=>go('tasks','unaccepted','mine')}>Показать все</button>}
+    </div>
+    {filter!=='unaccepted'&&<ul>{unaccepted.slice(0,3).map(task=><li key={task.id}>
+     <button type="button" className="text-button assignment-title" onClick={()=>void openTask(task.id)}>#{task.id} · {task.title}</button>
+     <button type="button" className="button primary" onClick={()=>void openTask(task.id)}>Принять и запланировать</button>
+    </li>)}</ul>}
+   </section>}
+   <div className="task-view-bar"><div className="task-scope-switches" aria-label="Область задач">
    <TaskRoleSwitch value={!linkedIds&&(currentScope==='mine'||currentScope==='created')?currentScope:undefined} change={scope=>go('tasks','all',scope)}/>
    {teamAllowed&&<button className={'button '+(!linkedIds&&currentScope==='team'?'primary':'secondary')} onClick={()=>go('tasks','all','team')}>Задачи команды</button>}
    {company&&<button className={'button '+(!linkedIds&&currentScope==='company'?'primary':'secondary')} onClick={()=>go('tasks','all','company')}>Вся компания</button>}
@@ -576,6 +589,7 @@ export function App(){
     ]}/>
     <div className="drawer-body" key={drawerTab} data-tab={drawerTab} role="tabpanel">
     {error&&<div className="alert error" role="alert">{error}</div>}
+    {drawerTab==='info'&&!viewingEmployee&&detail.personalPlan?.needsAcceptance&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}/>}
     {drawerTab==='info'&&<div className="task-card-overview">
      <div>
       {detail.editAccess.canDecide&&!viewingEmployee&&<section className="task-card-section">
@@ -591,7 +605,7 @@ export function App(){
       </div>}
      </div>
      <aside>
-      {!viewingEmployee&&detail.personalPlan&&(detail.task.status==='active'||detail.personalPlan.plannedAt)&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}/>}
+      {!viewingEmployee&&detail.personalPlan&&!detail.personalPlan.needsAcceptance&&(detail.task.status==='active'||detail.personalPlan.plannedAt)&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}/>}
       <section className="task-card-section"><h3>Ответственные и срок</h3>
        <div className="task-facts">
         <div><span>Исполнитель</span><div className="person"><Avatar small user={userById(detail.task.assignee_id)}/><strong>{userById(detail.task.assignee_id)?.name}</strong></div></div>

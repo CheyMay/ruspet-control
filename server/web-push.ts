@@ -7,7 +7,7 @@ import {publicOrigin} from './report-content.js';
 import {generateWebTaskNotices} from './task-notices.js';
 import {generateWebPlanNotices,visiblePlanNotice} from './personal-calendar.js';
 import {approvalNoticeKind,topicOn} from './notifications.js';
-import {visibleDeadlineNotice} from './pending-task-work.js';
+import {hasPendingTaskAcceptance,visibleDeadlineNotice} from './pending-task-work.js';
 import type {ManagementNotice,User} from '../shared/types.js';
 
 function pushHost(value:string){
@@ -79,7 +79,12 @@ export async function testDevicePush(user:User,sessionHash:string,endpoint:strin
  return {sent:true,expired:false};
 }
 
-type PushRow={approval:boolean;id:string;endpoint:string;p256dh:string;auth:string;staff_review:boolean;personal_plan:boolean;management_notice:ManagementNotice|null;task_notice:{hasDeadlines:boolean;hasAssignments:boolean}|null};
+const readyAcceptancePush=`(o.task_notice->>'acceptanceOnly' IS DISTINCT FROM 'true' OR EXISTS(
+ SELECT 1 FROM outbox a JOIN tasks t ON t.id=a.task_id AND t.assignee_id=o.recipient_id
+ WHERE (o.task_notice->'assignmentIds') ? a.id::text AND a.withdrawn_at IS NULL AND ${hasPendingTaskAcceptance}
+))`;
+
+type PushRow={acceptance:boolean;approval:boolean;id:string;endpoint:string;p256dh:string;auth:string;staff_review:boolean;personal_plan:boolean;management_notice:ManagementNotice|null;task_notice:{hasDeadlines:boolean;hasAssignments:boolean}|null};
 export async function deliverWebPush(now=new Date()){
  const config=vapidKeys();
  if(!config)return;
@@ -87,7 +92,8 @@ export async function deliverWebPush(now=new Date()){
    'hasAssignments',COALESCE((o.task_notice->>'hasAssignments')::boolean,false) AND ${topicOn('push','assignments')},
    'hasDeadlines',COALESCE((o.task_notice->>'hasDeadlines')::boolean,false) AND ${topicOn('push','deadlines')}) END task_notice,
    o.management_notice,o.dedupe_key LIKE 'staff-review:%' AS staff_review,
-  o.personal_plan_alert_id IS NOT NULL AS personal_plan,(${approvalNoticeKind}) AS approval
+  o.personal_plan_alert_id IS NOT NULL AS personal_plan,(${approvalNoticeKind}) AS approval,
+  (o.task_notice->>'acceptanceOnly'='true') AS acceptance
   FROM outbox o JOIN web_push_subscriptions s ON s.user_id=o.recipient_id AND o.created_at>=s.created_at
   LEFT JOIN notification_preferences p ON p.user_id=o.recipient_id
   WHERE COALESCE(p.push_enabled,true) AND (
@@ -97,7 +103,7 @@ export async function deliverWebPush(now=new Date()){
    OR (o.management_notice IS NOT NULL OR o.dedupe_key LIKE 'staff-review:%') AND ${topicOn('push','updates')}
    OR o.personal_plan_alert_id IS NOT NULL AND ${topicOn('push','reminders')}
    OR (${approvalNoticeKind}) AND ${topicOn('push','approvals')})
-   AND o.withdrawn_at IS NULL AND o.read_at IS NULL AND ${visiblePlanNotice} AND ${visibleDeadlineNotice}
+   AND o.withdrawn_at IS NULL AND o.read_at IS NULL AND ${visiblePlanNotice} AND ${visibleDeadlineNotice} AND ${readyAcceptancePush}
    AND o.created_at BETWEEN $1::timestamptz-interval '10 minutes' AND $1
    AND (o.dedupe_key NOT LIKE 'staff-review:%' OR EXISTS(SELECT 1 FROM telegram_registrations r
     WHERE r.id::text=split_part(o.dedupe_key,':',2) AND r.state='review' AND r.expires_at>$1))
@@ -109,14 +115,14 @@ export async function deliverWebPush(now=new Date()){
   if(!pushHost(row.endpoint))continue;
   const claim=await pool.query(`INSERT INTO web_push_deliveries(notification_id,endpoint,state)
    SELECT $1,endpoint,'sending' FROM web_push_subscriptions WHERE endpoint=$2 AND p256dh=$3 AND auth=$4
-    AND user_id=(SELECT o.recipient_id FROM outbox o WHERE o.id=$1 AND o.read_at IS NULL AND o.withdrawn_at IS NULL AND ${visibleDeadlineNotice})
+    AND user_id=(SELECT o.recipient_id FROM outbox o WHERE o.id=$1 AND o.read_at IS NULL AND o.withdrawn_at IS NULL AND ${visibleDeadlineNotice} AND ${readyAcceptancePush})
    ON CONFLICT DO NOTHING`,[row.id,row.endpoint,row.p256dh,row.auth]);
   if(!claim.rowCount)continue;
   try{
    const hasAssignments=row.task_notice?.hasAssignments,hasDeadlines=row.task_notice?.hasDeadlines;
-   const body=row.approval?'Проверьте согласования и приёмку.':row.personal_plan?'Скоро задача по вашему плану.':row.management_notice?'Поступило рабочее уведомление.':row.staff_review?'Поступила заявка на подключение.':hasAssignments&&hasDeadlines?'Проверьте сроки и новые задачи.':hasAssignments?'Вам поставили новые задачи.':'Проверьте крайние сроки задач.';
+   const body=row.acceptance?'Примите новые задачи и укажите плановое время.':row.approval?'Проверьте согласования и приёмку.':row.personal_plan?'Скоро задача по вашему плану.':row.management_notice?'Поступило рабочее уведомление.':row.staff_review?'Поступила заявка на подключение.':hasAssignments&&hasDeadlines?'Проверьте сроки и новые задачи.':hasAssignments?'Вам поставили новые задачи.':'Проверьте крайние сроки задач.';
    await webpush.sendNotification({endpoint:row.endpoint,keys:{p256dh:row.p256dh,auth:row.auth}},
-    JSON.stringify({body,tag:row.approval?'ruspet-approvals':row.personal_plan?'ruspet-personal-plan':row.management_notice?'ruspet-management':row.staff_review?'ruspet-staff-review':hasAssignments?'ruspet-assignments':'ruspet-deadlines'}),
+    JSON.stringify({body,tag:row.acceptance?'ruspet-task-acceptance':row.approval?'ruspet-approvals':row.personal_plan?'ruspet-personal-plan':row.management_notice?'ruspet-management':row.staff_review?'ruspet-staff-review':hasAssignments?'ruspet-assignments':'ruspet-deadlines'}),
     {vapidDetails:config,TTL:600,urgency:'normal',timeout:6000});
    await pool.query("UPDATE web_push_deliveries SET state='sent' WHERE notification_id=$1 AND endpoint=$2",[row.id,row.endpoint]);
   }catch(error){

@@ -17,6 +17,7 @@ export function botTextPages(text:string,size=2400):string[]{
 
 export function botTaskStatus(task:Task,now:Date,pending=false){
  if(task.status==='completed')return 'Завершена';
+ if(task.status==='active'&&task.assignment_pending)return 'Не принята';
  if(pending)return 'На согласовании';
  if(task.status==='review')return 'На приёмке';
  if(taskQueue(task,now)==='overdue')return 'Просрочена';
@@ -42,6 +43,6 @@ export function botExcerpt(text:string,limit:number){
 
 export function sortBotTasks(tasks:Task[],now:Date){
  const rank={overdue:0,today:1,review:2,upcoming:3,no_deadline:4,completed:5};
- return [...tasks].sort((a,b)=>rank[taskQueue(a,now)]-rank[taskQueue(b,now)]||
+ return [...tasks].sort((a,b)=>Number(!!b.assignment_pending)-Number(!!a.assignment_pending)||rank[taskQueue(a,now)]-rank[taskQueue(b,now)]||
   (a.deadline??'9999').localeCompare(b.deadline??'9999')||a.id.localeCompare(b.id,'ru',{numeric:true}));
 }

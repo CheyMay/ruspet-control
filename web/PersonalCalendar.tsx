@@ -15,14 +15,14 @@ const weekdays=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
 
 export function PersonalTaskPlan({task,plan,busy,error,act}:{task:Task;plan:TaskPersonalPlan;busy:boolean;error:string;act:Act}){
- const [editing,setEditing]=useState(false);
+ const [editing,setEditing]=useState(plan.needsAcceptance);
  const [submitted,setSubmitted]=useState(false);
  const [value,setValue]=useState(plan.plannedAt?moscowClock(plan.plannedAt):'');
  const [nextStep,setNextStep]=useState(plan.nextStep??'');
  const when=value?Date.parse(value+':00+03:00'):NaN;
  const laterThanDeadline=task.deadline&&when>Date.parse(task.deadline);
- return <section className="task-card-section personal-task-plan" aria-label="Мой план задачи">
-  <h3><CalendarDays size={16}/> Мой план</h3>
+ return <section className={'task-card-section personal-task-plan'+(plan.needsAcceptance?' awaiting-acceptance':'')} aria-label="Мой план задачи">
+  <h3><CalendarDays size={16}/> {plan.needsAcceptance?'Принять задачу и запланировать':'Мой план'}</h3>
   {plan.plannedAt&&<p><strong>{planTime.format(new Date(plan.plannedAt))} МСК</strong>{plan.acceptedAt?' · задача принята':''}</p>}
   {plan.nextStep&&<p>Следующий шаг · <strong>{plan.nextStep}</strong></p>}
   {plan.needsAcceptance&&<p>Примите задачу и назначьте время для следующего шага.</p>}
@@ -36,7 +36,7 @@ export function PersonalTaskPlan({task,plan,busy,error,act}:{task:Task;plan:Task
     plan.needsAcceptance?'Задача принята и добавлена в календарь.':'Время в календаре обновлено.'))setEditing(false);
   }}>
    <label>Следующий шаг<input value={nextStep} maxLength={500} onChange={e=>setNextStep(e.target.value)} placeholder="Например, отправить клиенту расчёт"/></label>
-   <label>Дата и время шага · МСК
+   <label>{plan.needsAcceptance?'Плановая дата и время · МСК':'Дата и время шага · МСК'}
     <input type="datetime-local" required value={value} onChange={e=>setValue(e.target.value)}/>
    </label>
    <p className="muted">Это ваш личный план. Крайний срок задачи сохраняется.</p>

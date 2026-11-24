@@ -42,3 +42,9 @@
   .calendar-new { margin-inline: 10px; }
   .calendar-month, .calendar-day { padding: 10px; }
 }
+
+.assignment-queue { padding:14px 18px; margin-block:0 16px; }
+.assignment-queue ul { list-style:none; padding:0; margin:.6rem 0 0; }
+.assignment-queue li { display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:.55rem; padding:.55rem 0; border-top:1px solid var(--line); }
+.assignment-queue .assignment-title { text-align:left; min-width:0; overflow-wrap:anywhere; }
+.personal-task-plan.awaiting-acceptance { margin-bottom:1rem; border:1px solid var(--theme-accent); }

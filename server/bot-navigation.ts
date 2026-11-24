@@ -31,12 +31,14 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
  });
  const list:ListOrigin={op:p.op,page,filter:p.filter,owner:p.owner,query:p.query,target:p.target};
  const scope=approvalScope(await approvalHierarchy(db));
- const choices=slice.map(({task:t,pending})=>[button('#'+t.id,'task',{id:t.id,list}),
-  ...(!pending&&canComplete(u,t,scope)?[button('Завершить #'+t.id,'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
+ const choices=slice.map(({task:t,pending})=>[button((t.assignment_pending&&t.assignee_id===u.id?'Принять #':'#')+t.id,'task',{id:t.id,list}),
+  ...(!pending&&!t.assignment_pending&&canComplete(u,t,scope)?[button('Завершить #'+t.id,'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
  const range=slice.length===1?String(start+1):`${start+1}–${start+slice.length}`;
  const count=pages>1?`${range} из ${items.length}`:String(items.length);
  const taskScope:PersonalTaskScope|undefined=p.op==='tasks'&&(!p.owner||p.owner===u.id)?(p.filter==='created'?'created':'mine'):undefined;
- const result=await htmlScreen(u,ch,`<b>${h(label)}</b> · ${count}\n\n${lines.join('\n\n')||'Здесь пока нет задач.'}`,[
+ const unaccepted=taskScope==='mine'?items.filter(item=>item.task.assignment_pending).length:0;
+ const result=await htmlScreen(u,ch,`<b>${h(label)}</b> · ${count}\n\n${unaccepted?'Новые к принятию · '+unaccepted+'\n\n':''}${lines.join('\n\n')||'Здесь пока нет задач.'}`,[
+  ...(unaccepted?[[button('Новые к принятию · '+unaccepted,'personal_plan',{filter:'awaiting'})]]:[]),
   ...(taskScope&&ch.startsWith('telegram:')?[[button('Я исполнитель','tasks',{filter:'mine'}),button('Я постановщик','tasks',{filter:'created'})]]:[]),
   ...choices,
   [...(page?[button('← Назад',p.op,{...list,page:page-1})]:[]),...(page+1<pages?[button('Дальше →',p.op,{...list,page:page+1})]:[])],
@@ -63,7 +65,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   ].filter(Boolean).join(' · '));
   const origin={op:p.op,filter:awaiting?'awaiting':day,page};
   return htmlScreen(u,ch,'<b>'+h(heading)+'</b> · '+list.length+'\n\n'+(text.length?text.map(h).join('\n\n'):'Здесь пока нет задач.'),[
-   ...rows.map(task=>[button((awaiting?'Принять #':'Открыть #')+task.id,'task',{id:task.id,list:origin})]),
+   ...rows.map(task=>[awaiting?button('Принять #'+task.id,'form',{id:task.id,list:origin,kind:'accept_assignment',version:task.plan.epoch,revision:task.plan.revision}):button('Открыть #'+task.id,'task',{id:task.id,list:origin})]),
    [...(page?[button('← Назад',p.op,{...origin,page:page-1})]:[]),...((page+1)*tasksPerPage<list.length?[button('Дальше →',p.op,{...origin,page:page+1})]:[])],
    [button('Сегодня',p.op,{filter:today}),button('Завтра',p.op,{filter:tomorrow}),...(calendar.awaiting.length?[button('Нужно принять · '+calendar.awaiting.length,p.op,{filter:'awaiting'})]:[])],
    [button('Меню','home')]
@@ -90,7 +92,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   });
   const taskNotices=groups.map(group=>group[0].task_notice);
   return htmlScreen(u,ch,'<b>Новые уведомления</b>\n\n'+(lines.join('\n\n')||'Все уведомления прочитаны.'),[
-   ...groups.filter(group=>group[0].task_id).map(group=>[button('Открыть #'+group[0].task_id,'task',{id:group[0].task_id!,list:{op:'notices'}})]),
+   ...groups.filter(group=>group[0].task_id).map(group=>[button((group[0].task_assignment?'Принять #':'Открыть #')+group[0].task_id,'task',{id:group[0].task_id!,list:{op:'notices'}})]),
    ...groups.flatMap(([item])=>item.management_notice?.kind==='director-approvals'?[[button('Открыть пакет','director_batch',{target:item.management_notice.batchId})]]:
     item.management_notice?.kind==='morning-report'?[[button('Открыть утренний отчёт','reports',{id:item.management_notice.reportId})]]:
     workdayReports(item.management_notice).map(report=>[button(report.label,'reports',{id:report.id,filter:report.view})])),
@@ -216,11 +218,11 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  const company=hasCompanyOverview(u);
 
  return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nПросрочено · ${queue.overdue.length} · На сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}`,[
+  ...(data.pendingAssignments?[[button('Новые задачи к приёму · '+data.pendingAssignments,'personal_plan',{filter:'awaiting'})]]:[]),
   [button(workQueueTitle+' · '+workCount(queue),'inbox')],
   [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)?[button('Задачи команды','team')]:[])],
   ...(company?[[button('Сводка компании','brief',{filter:'company'}),button('Отчёты','reports')]]:
    canManage(u)?[[button('Мои отчёты','reports',{filter:'mine'})]]:[]),
-  ...(data.pendingAssignments?[[button('Новые задачи к приёму · '+data.pendingAssignments,'personal_plan',{filter:'awaiting'})]]:[]),
   [button('Новая задача','form',{kind:'create_task'}),button('Поиск','search_prompt'),button('Уведомления','notices')],
   [button('Ещё разделы','menu_more')]
  ]);

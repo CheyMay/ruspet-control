@@ -20,11 +20,12 @@ export const staffWorkInput=z.object({minutes:z.number().int().min(0).max(1440).
  note:z.string().trim().max(2000),revision:z.number().int().nonnegative()});
 
 export async function registerTaskAcceptance(db:Db,task:Task){
- if(task.status!=='active'||task.assignee_id===task.creator_id)return;
+ if(task.status!=='active'||task.assignee_id===task.creator_id)return false;
  const user=(await db.query<User>('SELECT * FROM users WHERE id=$1',[task.assignee_id])).rows[0];
- if(!user||!isSalesManager(user)||!canSee(user,task))return;
+ if(!user||user.root_access||!(isSalesManager(user)||/^тестовый менеджер$/iu.test(user.position.trim()))||!canSee(user,task))return false;
  await db.query(`INSERT INTO personal_task_plans(task_id,assignment_epoch,user_id,requires_acceptance)
   VALUES($1,$2,$3,true) ON CONFLICT(task_id,assignment_epoch) DO NOTHING`,[task.id,taskEpoch(task),user.id]);
+ return true;
 }
 
 async function assignmentPlanRow(task:Task,db:Db){
@@ -34,20 +35,21 @@ async function assignmentPlanRow(task:Task,db:Db){
 export async function taskPersonalPlan(user:User,task:Task,db:Db=pool){
  if(task.assignee_id!==user.id||user.root_access)return null;
  const row=await assignmentPlanRow(task,db);
- return row?ownPlan(row):emptyPlan(task);
+ const plan=row?ownPlan(row):emptyPlan(task);
+ return task.status==='active'?plan:{...plan,needsAcceptance:false};
 }
 export async function taskAssignmentReceipt(task:Task,plan:TaskPersonalPlan|null,db:Db){
  const row=plan??await assignmentPlanRow(task,db).then(value=>value?ownPlan(value):null);
- if(!row||!row.needsAcceptance&&!row.acceptedAt)return null;
+ if(!row||!row.acceptedAt&&(!row.needsAcceptance||task.status!=='active'))return null;
  return {state:row.needsAcceptance?'pending' as const:'accepted' as const,acceptedAt:row.acceptedAt};
 }
 
 export async function requireTaskAcceptance(user:User,task:Task,db:Db){
- if(user.id===task.assignee_id&&isSalesManager(user))
+ if(user.id===task.assignee_id)
   assert(!(await taskPersonalPlan(user,task,db))?.needsAcceptance,409,'Сначала примите задачу и укажите плановое время.');
 }
 export async function pendingAssignmentTasks(user:User,taskIds:string[],db:Db){
- if(!isSalesManager(user)||!taskIds.length)return [];
+ if(!taskIds.length)return [];
  return (await db.query<{id:string}>(`SELECT t.id FROM personal_task_plans p
   JOIN tasks t ON t.id=p.task_id AND t.assignment_epoch=p.assignment_epoch AND t.assignee_id=p.user_id
   WHERE p.user_id=$1 AND t.id=ANY($2) AND t.status='active' AND p.requires_acceptance AND p.accepted_at IS NULL ORDER BY t.id`,
@@ -104,7 +106,7 @@ export async function personalCalendar(user:User,month:string,db:Db=pool,now=new
   WHERE p.user_id=$1 AND (p.planned_at >= $2::date::timestamp AT TIME ZONE 'Europe/Moscow'
    AND p.planned_at < ($2::date+interval '1 month') AT TIME ZONE 'Europe/Moscow'
    OR p.requires_acceptance AND p.accepted_at IS NULL AND t.status='active')
-  ORDER BY p.planned_at NULLS LAST,t.deadline NULLS LAST,t.id`,[user.id,first])).rows.filter(task=>canSee(user,task));
+  ORDER BY p.planned_at NULLS LAST,t.updated_at DESC,t.id`,[user.id,first])).rows.filter(task=>canSee(user,task));
  const deadlines=(await db.query<Task>(`SELECT * FROM tasks WHERE assignee_id=$1 AND status<>'completed'
   AND deadline >= $2::date::timestamp AT TIME ZONE 'Europe/Moscow'
   AND deadline < ($2::date+interval '1 month') AT TIME ZONE 'Europe/Moscow' ORDER BY deadline,id`,[user.id,first])).rows
@@ -114,7 +116,7 @@ export async function personalCalendar(user:User,month:string,db:Db=pool,now=new
   WHERE user_id=$1 AND work_date >= $2 AND work_date < $2::date+interval '1 month' ORDER BY work_date`,[user.id,first])).rows:[];
  const compact=(row:Task&PlanRow):CalendarTask=>({id:row.id,title:row.title,deadline:row.deadline,status:row.status,plan:ownPlan(row)});
  return {today:businessDay(now),canLogWork,work,deadlines,scheduled:plans.filter(p=>p.planned_at).map(compact),
-  awaiting:plans.filter(p=>p.requires_acceptance&&!p.accepted_at).map(compact)};
+  awaiting:plans.filter(p=>p.status==='active'&&p.requires_acceptance&&!p.accepted_at).map(compact)};
 }
 
 export async function saveStaffWork(user:User,date:string,input:z.infer<typeof staffWorkInput>){

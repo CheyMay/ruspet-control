@@ -27,7 +27,7 @@ import { providers } from './providers.js';
 import {pendingAssignmentTasks,registerTaskAcceptance,requireTaskAcceptance,taskAssignmentReceipt,taskPersonalPlan,visiblePlanNotice} from './personal-calendar.js';
 import {analyticsAccess} from './analytics-scope.js';
 import {withTaskClients} from './task-clients.js';
-import {pendingTaskWorkIds,visibleControlNotice,visibleDeadlineNotice} from './pending-task-work.js';
+import {hasPendingTaskAcceptance,pendingTaskWorkIds,visibleAssignmentNotice,visibleControlNotice,visibleDeadlineNotice} from './pending-task-work.js';
 const adapters=providers();
 const planningFindings=new Set(['planned_overdue','missing_plan_start','missing_plan_end','negative_plan','long_plan','plan_after_deadline','plan_before_creation','child_plan','parent_unavailable','child_deadline','children_unavailable']);
 export async function event(db:Db,taskId:string|null,actor:string|null,kind:string,message:string,data:object={}) {
@@ -47,18 +47,19 @@ export async function notify(db:Db,taskId:string|null,recipient:string,body:stri
  await db.query('INSERT INTO outbox(id,task_id,recipient_id,body,dedupe_key,task_assignment) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(dedupe_key) DO NOTHING',[randomUUID(),taskId,recipient,body,key,taskAssignment]);
 }
 export async function notifyTaskAssignment(db:Db,task:Task,actorId:string|null,label='Вам поставили задачу'){
- if(task.assignee_id===actorId)return;
- await registerTaskAcceptance(db,task);
- await notify(db,task.id,task.assignee_id,label+' #'+task.id+' · '+task.title,`task-assignment:${task.id}:${task.version}`,true);
+ const acceptance=await registerTaskAcceptance(db,task);
+ const key=`task-assignment:${task.id}:${task.version}`;
+ await db.query('UPDATE outbox SET withdrawn_at=now() WHERE task_assignment AND task_id=$1 AND dedupe_key<>$2 AND withdrawn_at IS NULL',[task.id,key]);
+ if(task.assignee_id===actorId&&!acceptance)return;
+ const body=acceptance?'Примите задачу и укажите плановое время · #'+task.id+' · '+task.title:label+' #'+task.id+' · '+task.title;
+ await notify(db,task.id,task.assignee_id,body,key,true);
 }
 export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{requiredPrice:true,showPlanning:false,writtenRules:[],...row.config}}; }
 export async function visibleTasksForCompany(user:User,id:string):Promise<Task[]>{
  return (await pool.query<Task>("SELECT * FROM tasks WHERE company_id=$1 ORDER BY (status='completed'),updated_at DESC,id",[id])).rows.filter(t=>canSee(user,t));
 }
 export async function visibleTasks(user:User,db:Db=pool):Promise<Task[]> {
- return (await db.query<Task>(`SELECT t.*, (t.status='active' AND EXISTS(SELECT 1 FROM personal_task_plans p
-  WHERE p.task_id=t.id AND p.assignment_epoch=t.assignment_epoch AND p.user_id=t.assignee_id
-  AND p.requires_acceptance AND p.accepted_at IS NULL)) assignment_pending
+ return (await db.query<Task>(`SELECT t.*, ${hasPendingTaskAcceptance} AS assignment_pending
   FROM tasks t WHERE $1 OR assignee_id=$2 OR creator_id=$2
   OR ($3 AND (branch_id=$4 OR starts_with(branch_id,$4 || ' / ')))
   ORDER BY deadline ASC NULLS LAST,id`,[globalAccess(user)||user.role==='branch_manager'&&!!user.company_branch_access,user.id,
@@ -97,7 +98,7 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false,inc
  teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>!paused.has(f.task_id)&&(cfg.config.showPlanning||!planningFindings.has(f.rule))),
  events:compactWorkspace?[]:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
- notifications:(await db.query(`SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox o WHERE withdrawn_at IS NULL AND NOT task_assignment AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2))
+ notifications:(await db.query(`SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,task_assignment,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox o WHERE withdrawn_at IS NULL AND ${visibleAssignmentNotice} AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2))
  AND ($3 OR o.personal_plan_alert_id IS NULL) AND ${visiblePlanNotice} AND ${visibleControlNotice} AND ${visibleDeadlineNotice} ORDER BY created_at DESC LIMIT 150`,[user.id,ids,includePrivate])).rows,
  reports:(await db.query('SELECT id,day,scope,metrics,rules_version,created_at,kind,activity,slot,formula_version,parameters,summary FROM reports WHERE scope=ANY($1) AND ($2::boolean OR kind<>\'nextday\') ORDER BY created_at DESC LIMIT 100',[reportScopes(user),!!cfg.config.showPlanning])).rows};
  });

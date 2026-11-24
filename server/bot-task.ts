@@ -153,7 +153,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const plan=d.personalPlan;
  if(plan&&t.status==='active'){
   if(plan.needsAcceptance)context.push('Не принята · примите задачу и укажите плановое время');
-  rows.push([button(plan.needsAcceptance?'Принять задачу':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
+  rows.push([button(plan.needsAcceptance?'Принять и запланировать':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
    {...extra,kind:plan.needsAcceptance?'accept_assignment':'edit_personal_plan',version:plan.epoch,revision:plan.revision})]);
   if(!plan.needsAcceptance)rows.push([button('Запланировать шаг','form',{...extra,kind:'personal_step',version:plan.epoch,revision:plan.revision})]);
  }
@@ -180,7 +180,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  if(control){context.push('Нужно объяснение по проверке');rows.push([form('Дать объяснение','answer',control.id)]);}
  if(canDecide||request?.state==='approved'&&request.requesterId===u.id)
   rows.push([button(canDecide?'Решить запрос на редактирование':'Редактировать задачу',canDecide?'task_edit_permission':'edit',extra)]);
- const status=botTaskStatus(t,now,!!pending),facts:string[]=[];
+ const status=botTaskStatus({...t,assignment_pending:d.assignmentReceipt?.state==='pending'},now,!!pending),facts:string[]=[];
  if(t.status==='completed'&&t.completed_at)facts.push('Закрыта '+date(t.completed_at)+' МСК');
  if(t.status!=='completed')facts.push(t.deadline?'Крайний срок '+date(t.deadline)+' МСК':'Без крайнего срока');
  facts.push(...taskFacts);
