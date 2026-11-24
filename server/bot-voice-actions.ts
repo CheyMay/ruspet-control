@@ -1,3 +1,4 @@
+import {resolveTaskNumber} from './task-numbers.js';
 import type {Db} from './db.js';
 import {assert,canManage,canRequest,canSee} from './domain.js';
 import {taskEditAccess} from './task-edit-permissions.js';
@@ -136,7 +137,7 @@ export async function normalizeActionField(actor:User,payload:Payload,f:Field,in
 
 export async function prepareVoiceAction(actor:User,intent:VoiceIntent,db:Db){
  if(intent.kind==='create_task')return {payload:{op:'form',kind:intent.kind} as Payload,title:''};
- const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[intent.id])).rows[0];
+ const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[await resolveTaskNumber(intent.id??'',db)])).rows[0];
  assert(task&&canSee(actor,task),404,'Задача не найдена или недоступна. Проверьте номер в «Мои задачи».');
  let kind:string=intent.kind;
  const scope=approvalScope(await approvalHierarchy(db));

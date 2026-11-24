@@ -13,7 +13,7 @@ export async function companyWork(actor:User,id:string){
  const history=(await pool.query(`SELECT id,task_id,actor_id,message,created_at FROM task_events WHERE task_id=ANY($1)
   AND NOT EXISTS(SELECT 1 FROM event_retractions WHERE event_id=task_events.id)
   ORDER BY created_at DESC,id DESC LIMIT 25`,[tasks.map(t=>t.id)])).rows;
- return {tasks:tasks.slice(0,50).map(t=>({id:t.id,title:t.title,assignee_id:t.assignee_id,status:t.status,deadline:t.deadline})),total:tasks.length,history};
+ return {tasks:tasks.slice(0,50).map(t=>({id:t.id,bitrix_id:t.bitrix_id,title:t.title,assignee_id:t.assignee_id,status:t.status,deadline:t.deadline})),total:tasks.length,history};
 }
 const templateInput=z.object({name:z.string().trim().min(2).max(100),shared:z.boolean(),content:z.object({
  title:taskInput.shape.title,description:taskInput.shape.description,price:taskInput.shape.price,

@@ -44,6 +44,11 @@ function rememberCreatedId(op:Creation,externalId:string){
 async function finishCreation(db:Db,portal:string,op:Creation,raw:Record<string,unknown>){
  const original=op.payload.data.after,remote=remoteTask(raw);
  await lockDelegationChain(db,op.task_id);
+ const state=(await db.query<Pick<Creation,'state'|'created_external_id'>>('SELECT state,created_external_id FROM bitrix_operations WHERE event_id=$1 FOR UPDATE',[op.event_id])).rows[0];
+ assert(state&&state.state!=='canceled'&&(!state.created_external_id||String(state.created_external_id)===remote.id),409,'Номер или состояние отправки уже изменились.');
+ if(state.state==='sent')return;
+ const numericTask=await db.query('SELECT 1 FROM tasks WHERE id=$1 AND id<>$2',[remote.id,op.task_id]);
+ assert(!numericTask.rowCount,409,'Этот номер Битрикс24 уже есть у другой задачи. Проверьте связь.');
  const current=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[op.task_id])).rows[0];
  assert(current,409,'Исходная задача РУСПЭТ недоступна.');
  await stage(remote,db,raw);
@@ -55,7 +60,7 @@ async function finishCreation(db:Db,portal:string,op:Creation,raw:Record<string,
  const link=(await db.query('SELECT external_id::text FROM bitrix_task_links WHERE task_id=$1',[op.task_id])).rows[0];
  assert(link.external_id===remote.id,409,'Задача уже связана с другим номером Битрикс24.');
  const saved=await db.query(`UPDATE bitrix_operations SET state='sent',created_external_id=$2,phase='done',
-  finished_at=now(),error=NULL,retry_at=NULL WHERE event_id=$1 AND state IN ('processing','uncertain')`,[op.event_id,remote.id]);
+  finished_at=now(),error=NULL,retry_at=NULL WHERE event_id=$1`,[op.event_id,remote.id]);
  assert(saved.rowCount,409,'Состояние отправки уже изменилось.');
  await db.query(`UPDATE task_sync_queue SET state='sent',attempts=attempts+1,retry_at=NULL
   WHERE task_id=$1 AND task_version=$2 AND state IN ('pending','failed')`,[op.task_id,original.version]);
@@ -71,6 +76,29 @@ async function confirmCreation(request:BitrixRequest,op:Creation,externalId:stri
   409,'В Битрикс24 не найдено подтверждение связи с задачей РУСПЭТ.');
  assert(remote.createdBy===creator&&remote.responsibleId===assignee,409,'Битрикс24 указал другого постановщика или исполнителя. Проверьте назначение задачи.');
  await transaction(db=>finishCreation(db,request.portal!,op,raw));
+}
+
+export async function linkCreatedTaskFromEvent(portal:string,raw:Record<string,unknown>){
+ const remote=remoteTask(raw);
+ const marker=ruspetTaskReference(String(fieldValue(raw,'DESCRIPTION')));
+ const {rows}=await pool.query<Creation>(`SELECT o.* FROM bitrix_operations o WHERE o.payload->>'kind'='created'
+  AND (o.task_id=$1 OR o.created_external_id=$2)
+  ORDER BY o.sequence LIMIT 2`,[marker,remote.id]);
+ if(!rows.length)return false;
+ const [op]=rows;
+ assert(rows.length===1,409,'На входящий номер претендуют несколько задач РУСПЭТ.');
+ const link=(await pool.query<{external_id:string}>('SELECT external_id::text FROM bitrix_task_links WHERE task_id=$1',[op.task_id])).rows[0];
+ if(link){assert(link.external_id===remote.id,409,'Задача РУСПЭТ уже связана с другим номером Битрикс24.');return false;}
+ assert(!['sent','canceled'].includes(op.state)&&op.task_id===marker,409,'Не подтверждена связь с задачей РУСПЭТ из входящего события.');
+ const original=op.payload.data.after;
+ const mapped=(await pool.query<{user_id:string;external_id:string}>(
+  'SELECT user_id,external_id::text FROM bitrix_user_links WHERE user_id=ANY($1)',[[original.creator_id,original.assignee_id]]
+ )).rows;
+ const ids=new Map(mapped.map(row=>[row.user_id,row.external_id]));
+ assert(ids.has(original.creator_id)&&ids.has(original.assignee_id)&&ids.get(original.creator_id)===remote.createdBy&&ids.get(original.assignee_id)===remote.responsibleId,
+  409,'Битрикс24 указал другого постановщика или исполнителя. Проверьте назначение задачи.');
+ await transaction(db=>finishCreation(db,portal,op,raw));
+ return true;
 }
 
 export async function verifyBitrixCreation(request:BitrixRequest,op:Creation,cfg:Configuration){
@@ -113,13 +141,14 @@ export async function tickBitrixCreations(request:BitrixRequest,cfg:Configuratio
     let externalId=op.created_external_id;
     if(!externalId){
      if((await pool.query('SELECT 1 FROM bitrix_task_links WHERE task_id=$1',[op.task_id])).rowCount){
-      await pool.query("UPDATE bitrix_operations SET state='canceled',retry_at=NULL,error=NULL WHERE event_id=$1",[op.event_id]);
+      await pool.query("UPDATE bitrix_operations SET state='canceled',retry_at=NULL,error=NULL WHERE event_id=$1 AND state='processing'",[op.event_id]);
       continue;
      }
      assert(request.portal,409,'Для создания нужен настроенный портал Битрикс24.');
      const enabled=(await pool.query('SELECT enabled FROM bitrix_live_config WHERE id=1')).rows[0]?.enabled;
      if(!enabled)throw new BitrixError('Обмен с Битрикс24 приостановлен.');
-     await pool.query("UPDATE bitrix_operations SET phase='tasks.task.add' WHERE event_id=$1",[op.event_id]);
+     const writingClaim=await pool.query("UPDATE bitrix_operations SET phase='tasks.task.add' WHERE event_id=$1 AND state='processing'",[op.event_id]);
+     if(!writingClaim.rowCount)continue;
      writing=true;
      const result=await request<{task?:{id?:unknown}}>('tasks.task.add',{fields},undefined,{operationId:op.event_id});
      externalId=bitrixId(result?.task?.id);

@@ -26,6 +26,7 @@ import { assert, canAccess, canSee, canRequest, canManage, globalAccess, evaluat
 import { providers } from './providers.js';
 import {pendingAssignmentTasks,registerTaskAcceptance,requireTaskAcceptance,taskAssignmentReceipt,taskPersonalPlan,visiblePlanNotice} from './personal-calendar.js';
 import {analyticsAccess} from './analytics-scope.js';
+import {linkedTaskNumber,resolveTaskNumber} from './task-numbers.js';
 import {withTaskClients} from './task-clients.js';
 import {hasPendingTaskAcceptance,pendingTaskWorkIds,visibleAssignmentNotice,visibleControlNotice,visibleDeadlineNotice} from './pending-task-work.js';
 const adapters=providers();
@@ -56,10 +57,10 @@ export async function notifyTaskAssignment(db:Db,task:Task,actorId:string|null,l
 }
 export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{requiredPrice:true,showPlanning:false,writtenRules:[],...row.config}}; }
 export async function visibleTasksForCompany(user:User,id:string):Promise<Task[]>{
- return (await pool.query<Task>("SELECT * FROM tasks WHERE company_id=$1 ORDER BY (status='completed'),updated_at DESC,id",[id])).rows.filter(t=>canSee(user,t));
+ return (await pool.query<Task>(`SELECT t.*,${linkedTaskNumber} FROM tasks t WHERE company_id=$1 ORDER BY (status='completed'),updated_at DESC,id`,[id])).rows.filter(t=>canSee(user,t));
 }
 export async function visibleTasks(user:User,db:Db=pool):Promise<Task[]> {
- return (await db.query<Task>(`SELECT t.*, ${hasPendingTaskAcceptance} AS assignment_pending
+ return (await db.query<Task>(`SELECT t.*, ${linkedTaskNumber}, ${hasPendingTaskAcceptance} AS assignment_pending
   FROM tasks t WHERE $1 OR assignee_id=$2 OR creator_id=$2
   OR ($3 AND (branch_id=$4 OR starts_with(branch_id,$4 || ' / ')))
   ORDER BY deadline ASC NULLS LAST,id`,[globalAccess(user)||user.role==='branch_manager'&&!!user.company_branch_access,user.id,
@@ -114,6 +115,7 @@ export async function queueApprovalHistories(user:User){
 }
 
 export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHistory=false,includePrivate=true) {
+ id=await resolveTaskNumber(id,db);
  const [task]=await withTaskClients([await taskFor(db,id,user)],db);
  const approvals=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows;
  const current=task.status==='completed'?undefined:approvals.find(a=>a.state==='pending'&&!a.canceled_at&&a.task_version===task.version&&a.route[a.current_step]);
@@ -132,15 +134,16 @@ export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHisto
    deferredUntil:current.deferred_until,
   };
  }
- const imported=(await db.query<{count:number;linked:boolean;exchangeState:string|null}>(`SELECT
+ const imported=(await db.query<{count:number;linked:boolean;bitrixId:string|null;exchangeState:string|null}>(`SELECT
   (SELECT count(*)::int FROM bitrix_task_activity WHERE task_id=$1 AND kind='comment') AS count,
   EXISTS(SELECT 1 FROM bitrix_task_links WHERE task_id=$1) AS linked,
+  (SELECT external_id::text FROM bitrix_task_links WHERE task_id=$1) AS "bitrixId",
   (SELECT state FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 1) AS "exchangeState"`,[id])).rows[0];
  const hierarchy=await approvalHierarchy(db);
  const deadlineHistory=includeDeadlineHistory&&approvals.length?(await loadDeadlineHistories(db,[id]))[id]??[]:[];
  const personalPlan=includePrivate?await taskPersonalPlan(user,task,db):null;
  return {
-  task,personalPlan,assignmentReceipt:await taskAssignmentReceipt(task,personalPlan,db),deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
+  task:{...task,bitrix_id:imported.bitrixId},personalPlan,assignmentReceipt:await taskAssignmentReceipt(task,personalPlan,db),deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
   comments:(await db.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,
   bitrixCommentCount:imported.count,bitrixLinked:imported.linked,bitrixExchangeState:imported.exchangeState,

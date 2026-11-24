@@ -1,3 +1,4 @@
+import {taskNumber} from '../shared/task-number.js';
 import {useEffect,useLayoutEffect,useRef,useState,type DragEvent} from 'react';
 import {ArrowLeft,ArrowRight,CalendarClock,CalendarDays,Columns3,List} from 'lucide-react';
 import {suggestedBoardDeadline,taskBoard,type TaskLaneId} from '../shared/task-board.js';
@@ -23,7 +24,7 @@ function TaskBoardCard({task,names,now,open,startDrag,endDrag}:{task:Task;names:
  const valid=deadline&&Number.isFinite(+deadline);
  const due=valid?(year.format(now)===year.format(deadline)?shortDate:fullDate).format(deadline):null;
  return <button type="button" className="kanban-card" draggable={!!startDrag} onDragStart={startDrag} onDragEnd={endDrag} onClick={()=>open(task.id)}>
-  <span className="kanban-card-reference"><span>#{task.id}</span>{taskPrice(task)!==null&&<span>{formatPrice(task)}</span>}</span>
+  <span className="kanban-card-reference"><span>#{taskNumber(task)}</span>{taskPrice(task)!==null&&<span>{formatPrice(task)}</span>}</span>
   <strong>{task.title}</strong>
   {(task.assignment_pending||task.priority==='high'||task.critical)&&<span className="task-flags">
    {task.assignment_pending&&<small>Не принята</small>}{task.priority==='high'&&<small>Высокий приоритет</small>}{task.critical&&<small>Критичная</small>}

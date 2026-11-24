@@ -9,6 +9,8 @@ import {compactTaskTitle} from '../shared/task-title.js';
 import {workQueueTitle} from '../shared/work-queue.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import type {Task,User} from '../shared/types.js';
+import {linkedTaskNumber} from './task-numbers.js';
+import {taskNumber} from '../shared/task-number.js';
 import {taskPersonalPlan} from './personal-calendar.js';
 import {topicOn} from './notifications.js';
 import {hasPendingTaskAcceptance,hasPendingTaskApproval,latestTaskAssignment} from './pending-task-work.js';
@@ -57,7 +59,7 @@ function readyAssignments(rows:Assignment[],now:Date){
 }
 
 async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],channel:'web'|'telegram',delivery:Delivery){
-  const tasks=(await db.query<Task&{awaiting_decision:boolean}>(`SELECT t.*,${hasPendingTaskApproval} AS awaiting_decision,${hasPendingTaskAcceptance} AS assignment_pending
+  const tasks=(await db.query<Task&{awaiting_decision:boolean}>(`SELECT t.*,${linkedTaskNumber},${hasPendingTaskApproval} AS awaiting_decision,${hasPendingTaskAcceptance} AS assignment_pending
    FROM tasks t WHERE t.assignee_id=$1 AND t.status IN ('active','review')`,[user.id])).rows.filter(task=>canSee(user,task));
   if(!tasks.length)return null;
 
@@ -120,7 +122,7 @@ function noticeContent(notice:TaskNotice,now:Date){
  const add=(label:string,tasks:Task[],total=tasks.length,listedAbove=0)=>{
   if(!total)return;
   const lines=tasks.slice(0,3).map(task=>{
-   const facts=['#'+task.id,compactTaskTitle(task.title,84)];
+   const facts=['#'+taskNumber(task),compactTaskTitle(task.title,84)];
    if(task.deadline)facts.push(botDue(task,now));
    if(assigned.has(task.id)&&shown.has(task.id))facts.push('новая');
    return facts.join(' · ');
@@ -146,12 +148,14 @@ export async function taskNoticeScreen(user:User,ch:string,notice:TaskNotice,now
  const {sections,taskIds,hasDeadlines,hasAssignments,needsAcceptance}=noticeContent(notice,now);
  const accept=await Promise.all(notice.assignments.filter(task=>task.assignment_pending).slice(0,3).map(async task=>{
   const plan=await taskPersonalPlan(user,task);
-  return plan?.needsAcceptance?{id:task.id,button:button('Принять #'+task.id,'form',{
+  return plan?.needsAcceptance?{id:task.id,button:button('Принять #'+taskNumber(task),'form',{
    id:task.id,kind:'accept_assignment',version:plan.epoch,revision:plan.revision,list:{op:'personal_plan',filter:'awaiting'}
   })}:null;
  }));
  const direct=accept.filter(item=>item!==null);
- const buttons=taskIds.filter(id=>!direct.some(item=>item.id===id)).map(id=>button('#'+id,'task',{id}));
+ const tasks=[...notice.assignments,...notice.overdue,...notice.elapsedToday,...notice.today];
+ const numbers=new Map(tasks.map(task=>[task.id,taskNumber(task)]));
+ const buttons=taskIds.filter(id=>!direct.some(item=>item.id===id)).map(id=>button('#'+(numbers.get(id)??id),'task',{id}));
  return htmlScreen(user,ch,sections.map(s=>'<b>'+h(s.heading)+'</b>\n'+s.lines.map(h).join('\n')).join('\n\n'),[
   ...direct.map(item=>[item.button]),
   ...(needsAcceptance?[[button('Все задачи к принятию','personal_plan',{filter:'awaiting'})]]:[]),

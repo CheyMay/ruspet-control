@@ -1,4 +1,5 @@
 import {useEffect,useState,type ReactNode} from 'react';
+import {taskNumber} from '../shared/task-number.js';
 import {Search} from 'lucide-react';
 import {businessDay} from '../shared/queues.js';
 import type {Approval,Bootstrap} from '../shared/types.js';
@@ -54,7 +55,7 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
   const task=taskIndex.get(a.task_id);
   return (status==='all'||state(a)===status)&&(owner==='all'||task?.assignee_id===owner)&&(actor==='all'||current(a)===actor)&&
    (!from||businessDay(a.created_at)>=from)&&(!to||businessDay(a.created_at)<=to)&&
-   matchesFilter(`${a.task_id} ${task?.title||''} ${a.reason}`,query.replace(/#/g,''));
+   matchesFilter(`${a.task_id} ${task?taskNumber(task):''} ${task?.title||''} ${a.reason}`,query.replace(/#/g,''));
  });
  const selectedType=type??(startOnMine||items.some(a=>a.type==='deadline')?'deadline':'completion');
  const queue=items.filter(a=>a.type===selectedType);

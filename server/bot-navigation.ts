@@ -1,4 +1,5 @@
 import {button,htmlScreen,type Payload,type ListOrigin} from './bot-ui.js';
+import {taskNumber} from '../shared/task-number.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 import {botDue,botTaskStatus,sortBotTasks} from './bot-presentation.js';
 import {escapeHtml as h,workdayReports} from '../shared/report-links.js';
@@ -25,14 +26,14 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
  const pages=Math.max(1,Math.ceil(items.length/tasksPerPage)),page=Math.max(0,Math.min(p.page||0,pages-1));
  const start=page*tasksPerPage,slice=items.slice(start,start+tasksPerPage);
  const lines=slice.map(({task:t,hint,pending})=>{
-  const facts=['#'+t.id,hint||botTaskStatus(t,now,pending)];
+  const facts=['#'+taskNumber(t),hint||botTaskStatus(t,now,pending)];
   if(t.status!=='completed')facts.push(botDue(t,now));
   return `<b>${h(compactTaskTitle(t.title,126))}</b>\n${h(facts.join(' · '))}\nИсполнитель · ${h(name(t.assignee_id))}\nПостановщик · ${h(name(t.creator_id))}`;
  });
  const list:ListOrigin={op:p.op,page,filter:p.filter,owner:p.owner,query:p.query,target:p.target};
  const scope=approvalScope(await approvalHierarchy(db));
- const choices=slice.map(({task:t,pending})=>[button((t.assignment_pending&&t.assignee_id===u.id?'Принять #':'#')+t.id,'task',{id:t.id,list}),
-  ...(!pending&&!t.assignment_pending&&canComplete(u,t,scope)?[button('Завершить #'+t.id,'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
+ const choices=slice.map(({task:t,pending})=>[button((t.assignment_pending&&t.assignee_id===u.id?'Принять #':'#')+taskNumber(t),'task',{id:t.id,list}),
+  ...(!pending&&!t.assignment_pending&&canComplete(u,t,scope)?[button('Завершить #'+taskNumber(t),'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
  const range=slice.length===1?String(start+1):`${start+1}–${start+slice.length}`;
  const count=pages>1?`${range} из ${items.length}`:String(items.length);
  const taskScope:PersonalTaskScope|undefined=p.op==='tasks'&&(!p.owner||p.owner===u.id)?(p.filter==='created'?'created':'mine'):undefined;
@@ -60,12 +61,12 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   const rows=list.slice(page*tasksPerPage,(page+1)*tasksPerPage);
   const heading=awaiting?'Нужно принять':day===today?'Мой план на сегодня':day===tomorrow?'Мой план на завтра':'Мой план · '+day.split('-').reverse().join('.');
   const text=rows.map(task=>[
-   task.plan.plannedAt?moscowClock(task.plan.plannedAt).slice(11)+' МСК':null,'#'+task.id,compactTaskTitle(task.title,105),task.plan.nextStep?'Шаг: '+task.plan.nextStep.slice(0,120):null,
+   task.plan.plannedAt?moscowClock(task.plan.plannedAt).slice(11)+' МСК':null,'#'+taskNumber(task),compactTaskTitle(task.title,105),task.plan.nextStep?'Шаг: '+task.plan.nextStep.slice(0,120):null,
    task.status==='completed'?'Завершена':task.status==='review'?'На приёмке':null
   ].filter(Boolean).join(' · '));
   const origin={op:p.op,filter:awaiting?'awaiting':day,page};
   return htmlScreen(u,ch,'<b>'+h(heading)+'</b> · '+list.length+'\n\n'+(text.length?text.map(h).join('\n\n'):'Здесь пока нет задач.'),[
-   ...rows.map(task=>[awaiting?button('Принять #'+task.id,'form',{id:task.id,list:origin,kind:'accept_assignment',version:task.plan.epoch,revision:task.plan.revision}):button('Открыть #'+task.id,'task',{id:task.id,list:origin})]),
+   ...rows.map(task=>[awaiting?button('Принять #'+taskNumber(task),'form',{id:task.id,list:origin,kind:'accept_assignment',version:task.plan.epoch,revision:task.plan.revision}):button('Открыть #'+taskNumber(task),'task',{id:task.id,list:origin})]),
    [...(page?[button('← Назад',p.op,{...origin,page:page-1})]:[]),...((page+1)*tasksPerPage<list.length?[button('Дальше →',p.op,{...origin,page:page+1})]:[])],
    [button('Сегодня',p.op,{filter:today}),button('Завтра',p.op,{filter:tomorrow}),...(calendar.awaiting.length?[button('Нужно принять · '+calendar.awaiting.length,p.op,{filter:'awaiting'})]:[])],
    [button('Меню','home')]
@@ -113,8 +114,8 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   const people=(await db.query('SELECT id,name FROM users WHERE id=ANY($1)',[[...new Set(tasks.map(t=>t.assignee_id))]])).rows;
   const names=new Map<string,string>(people.map(person=>[person.id,person.name]));
   const name=(id:string)=>names.get(id)||id;
-  const list=sortBotTasks(tasks.filter(t=>t.id.toLocaleLowerCase('ru-RU').includes(query)||t.title.toLocaleLowerCase('ru-RU').includes(query)||name(t.assignee_id).toLocaleLowerCase('ru-RU').includes(query)),now);
-  list.sort((a,b)=>Number(b.id.toLocaleLowerCase('ru-RU')===query)-Number(a.id.toLocaleLowerCase('ru-RU')===query));
+  const list=sortBotTasks(tasks.filter(t=>taskNumber(t).toLocaleLowerCase('ru-RU').includes(query)||t.id.toLocaleLowerCase('ru-RU').includes(query)||t.title.toLocaleLowerCase('ru-RU').includes(query)||name(t.assignee_id).toLocaleLowerCase('ru-RU').includes(query)),now);
+  list.sort((a,b)=>Number(taskNumber(b).toLocaleLowerCase('ru-RU')===query)-Number(taskNumber(a).toLocaleLowerCase('ru-RU')===query));
   const pending=new Set((await db.query<{task_id:string}>("SELECT task_id FROM approvals WHERE task_id=ANY($1) AND state='pending'",[list.map(t=>t.id)])).rows.map(row=>row.task_id));
   return taskList(u,ch,p,list.map(task=>({task,pending:pending.has(task.id)})),`Поиск · ${p.query}`,now,name,db);
  }

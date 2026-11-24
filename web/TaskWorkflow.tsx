@@ -1,3 +1,4 @@
+import {taskNumber} from '../shared/task-number.js';
 import {TaskGroupPicker} from './TaskGroups.js';
 import {VoiceRecorder} from './VoiceRecorder.js';
 import {transcribeVoice} from './ClientNotes.js';
@@ -42,7 +43,7 @@ export function CompleteTaskDialog({task,users,busy,error,save,close}:{
   onSubmit={async event=>{event.preventDefault();if(await save(comment))close();}}>
   <div className="panel-heading"><h2 id="complete-task-heading">Завершить задачу</h2>
    <button className="icon-button" type="button" disabled={busy} onClick={close} aria-label="Закрыть">✕</button></div>
-  <p className="eyebrow">#{task.id}</p><h3>{task.title}</h3>
+  <p className="eyebrow">#{taskNumber(task)}</p><h3>{task.title}</h3>
   <TaskPeople task={task} users={users}/>
   <label>{task.result_required===false?'Результат или комментарий · необязательно':'Результат работы · обязательно'}<textarea required={task.result_required!==false} minLength={task.result_required===false?undefined:5} maxLength={4000} value={comment} onChange={event=>setComment(event.target.value)}/></label>
   {error&&<p className="alert error" role="alert">{error}</p>}

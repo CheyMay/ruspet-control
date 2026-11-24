@@ -2,6 +2,7 @@ import {randomUUID} from 'node:crypto';
 import {z} from 'zod';
 import {assert,canSee} from './domain.js';
 import {pool,transaction,type Db} from './db.js';
+import {linkedTaskNumber} from './task-numbers.js';
 import {event} from './service.js';
 import {businessDay} from '../shared/queues.js';
 import {compactTaskTitle} from '../shared/task-title.js';
@@ -101,20 +102,20 @@ export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof task
 export const calendarMonthInput=z.string().regex(/^20\d{2}-(0[1-9]|1[0-2])$/);
 export async function personalCalendar(user:User,month:string,db:Db=pool,now=new Date()):Promise<PersonalCalendarMonth>{
  const first=calendarMonthInput.parse(month)+'-01';
- const plans=(await db.query<Task&PlanRow>(`SELECT t.*,p.requires_acceptance,p.accepted_at,p.planned_at,p.revision,p.next_step
+ const plans=(await db.query<Task&PlanRow>(`SELECT t.*,${linkedTaskNumber},p.requires_acceptance,p.accepted_at,p.planned_at,p.revision,p.next_step
   FROM personal_task_plans p JOIN tasks t ON t.id=p.task_id AND t.assignment_epoch=p.assignment_epoch AND t.assignee_id=p.user_id
   WHERE p.user_id=$1 AND (p.planned_at >= $2::date::timestamp AT TIME ZONE 'Europe/Moscow'
    AND p.planned_at < ($2::date+interval '1 month') AT TIME ZONE 'Europe/Moscow'
    OR p.requires_acceptance AND p.accepted_at IS NULL AND t.status='active')
   ORDER BY p.planned_at NULLS LAST,t.updated_at DESC,t.id`,[user.id,first])).rows.filter(task=>canSee(user,task));
- const deadlines=(await db.query<Task>(`SELECT * FROM tasks WHERE assignee_id=$1 AND status<>'completed'
+ const deadlines=(await db.query<Task>(`SELECT t.*,${linkedTaskNumber} FROM tasks t WHERE assignee_id=$1 AND status<>'completed'
   AND deadline >= $2::date::timestamp AT TIME ZONE 'Europe/Moscow'
   AND deadline < ($2::date+interval '1 month') AT TIME ZONE 'Europe/Moscow' ORDER BY deadline,id`,[user.id,first])).rows
-  .filter(task=>canSee(user,task)).map(({id,title,deadline,status})=>({id,title,deadline,status}));
+  .filter(task=>canSee(user,task)).map(({id,bitrix_id,title,deadline,status})=>({id,bitrix_id,title,deadline,status}));
  const canLogWork=canLogStaffWork(user);
  const work=canLogWork?(await db.query<StaffWorkDay>(`SELECT work_date date,worked_minutes minutes,note,revision FROM staff_work_days
   WHERE user_id=$1 AND work_date >= $2 AND work_date < $2::date+interval '1 month' ORDER BY work_date`,[user.id,first])).rows:[];
- const compact=(row:Task&PlanRow):CalendarTask=>({id:row.id,title:row.title,deadline:row.deadline,status:row.status,plan:ownPlan(row)});
+ const compact=(row:Task&PlanRow):CalendarTask=>({id:row.id,bitrix_id:row.bitrix_id,title:row.title,deadline:row.deadline,status:row.status,plan:ownPlan(row)});
  return {today:businessDay(now),canLogWork,work,deadlines,scheduled:plans.filter(p=>p.planned_at).map(compact),
   awaiting:plans.filter(p=>p.status==='active'&&p.requires_acceptance&&!p.accepted_at).map(compact)};
 }

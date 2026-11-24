@@ -3,7 +3,7 @@ import type {Task,User} from './types.js';
 export type TaskPersonalPlan={
  epoch:number;revision:number;needsAcceptance:boolean;acceptedAt:string|null;plannedAt:string|null;nextStep?:string;
 };
-export type CalendarDeadline=Pick<Task,'id'|'title'|'deadline'|'status'>;
+export type CalendarDeadline=Pick<Task,'id'|'bitrix_id'|'title'|'deadline'|'status'>;
 export type CalendarTask=CalendarDeadline & {plan:TaskPersonalPlan};
 export type StaffWorkDay={date:string;minutes:number|null;note:string;revision:number};
 export type PersonalCalendarMonth={

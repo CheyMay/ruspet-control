@@ -5,6 +5,7 @@ import {TaskBranchReview,TaskCardFields,TaskEditPanel} from './TaskCardSections.
 import {roleLabels as roles} from './employee-roles.js';
 import {DelegationInbox,OrgWorkspace} from './OrgWorkspace.js';
 import {TaskDelegation} from './TaskDelegation.js';
+import {taskNumber} from '../shared/task-number.js';
 import {ProductCatalog} from './Crm.js';
 import {ClientNotes} from './ClientNotes.js';
 import {TaskGroupPicker,type TaskGroupsData} from './TaskGroups.js';
@@ -148,11 +149,13 @@ export function App(){
   if(generation===detailGeneration.current){setDetail(next);setDetailError('');}
  }
  async function openTask(id:string,tab='info',track=true){
+  const task=data?.tasks.find(t=>t.bitrix_id===id)??data?.tasks.find(t=>t.id===id);
+  if(task)id=task.id;
   if(!selected&&document.activeElement instanceof HTMLElement)taskOpener.current=document.activeElement;
   const generation=++detailGeneration.current;
   setSelected(id);setDrawerTab(tab);setDetail(null);setDetailError('');setError('');
   if(track&&id!==selected){
-   const url=new URL(location.href);url.hash='task='+encodeURIComponent(id);
+   const url=new URL(location.href);url.hash='task='+encodeURIComponent(task?taskNumber(task):id);
    const previous=history.state;
    history.pushState({...previous,ruspet:true,depth:(previous?.depth??0)+1,drawer:true},'',url);
    setCanGoBack(true);
@@ -367,7 +370,7 @@ export function App(){
     const approval=data!.approvals.find(a=>activeTaskApproval(t,a));
     const next=taskNextAction(t,approval,data!.approvalScope);
     return <tr key={t.id}>
-    <td><button className="task-link" onClick={()=>void openTask(t.id)}><span className="task-id">#{t.id} <span>{t.code}</span></span><strong>{t.title}</strong></button><TaskMeta task={t}/>{(t.priority==='high'||t.critical)&&<div className="task-flags">{t.priority==='high'&&<small>Высокий приоритет</small>}{t.critical&&<small className="red-text">Критичная</small>}</div>}</td>
+    <td><button className="task-link" onClick={()=>void openTask(t.id)}><span className="task-id">#{taskNumber(t)} <span>{t.code}</span></span><strong>{t.title}</strong></button><TaskMeta task={t}/>{(t.priority==='high'||t.critical)&&<div className="task-flags">{t.priority==='high'&&<small>Высокий приоритет</small>}{t.critical&&<small className="red-text">Критичная</small>}</div>}</td>
     <td><TaskPeople task={t} users={data!.users}/><small>{t.branch_id}</small></td>
     <td><strong>{formatPrice(t)}</strong><small>{priceLabels[priceBand(t)]}</small></td>
     <td className={overdue(t)?'late-date':''}>{date(t.deadline,true)}
@@ -421,7 +424,7 @@ export function App(){
  function moveBoardTask(task:Task,deadline?:string){
   if(canMoveBoardTask(task)){setError('');setBoardMove({id:task.id,deadline});}
  }
- const matchingTasks=scopedTasks.filter(t=>(!groupFilter||groups.items[t.id]===groupFilter)&&(priceFilter==='all'||priceBand(t)===priceFilter)&&(branch==='all'||t.branch_id===branch)&&(currentScope==='mine'&&!linkedIds||!selectedOwners.size||selectedOwners.has(t.assignee_id))&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.trim().replace(/^#\s*/,'').toLowerCase()));
+ const matchingTasks=scopedTasks.filter(t=>(!groupFilter||groups.items[t.id]===groupFilter)&&(priceFilter==='all'||priceBand(t)===priceFilter)&&(branch==='all'||t.branch_id===branch)&&(currentScope==='mine'&&!linkedIds||!selectedOwners.size||selectedOwners.has(t.assignee_id))&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${taskNumber(t)} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.trim().replace(/^#\s*/,'').toLowerCase()));
  const unaccepted=data.tasks.filter(task=>task.assignee_id===data.user.id&&task.assignment_pending).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));
  const visible=filterTasks(matchingTasks).sort((a,b)=>(currentScope==='mine'?Number(!!b.assignment_pending)-Number(!!a.assignment_pending):0)||(sort==='price_desc'?(taskPrice(b)??-1)-(taskPrice(a)??-1):sort==='urgency'?Number(!!b.critical)-Number(!!a.critical)||Number(b.priority==='high')-Number(a.priority==='high')||(a.deadline||'9999').localeCompare(b.deadline||'9999'):sort==='work_priority'?compareWorkPlan(a,b,workDay||businessDay(now)):sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='transfers'?b.transfer_count-a.transfer_count:(a.deadline||'9999').localeCompare(b.deadline||'9999')));
  const myWork=workQueue(data),myActionCount=workCount(myWork);
@@ -474,7 +477,7 @@ export function App(){
      {filter!=='unaccepted'&&<button type="button" className="button secondary" onClick={()=>go('tasks','unaccepted','mine')}>Показать все</button>}
     </div>
     {filter!=='unaccepted'&&<ul>{unaccepted.slice(0,3).map(task=><li key={task.id}>
-     <button type="button" className="text-button assignment-title" onClick={()=>void openTask(task.id)}>#{task.id} · {task.title}</button>
+     <button type="button" className="text-button assignment-title" onClick={()=>void openTask(task.id)}>#{taskNumber(task)} · {task.title}</button>
      <button type="button" className="button primary" onClick={()=>void openTask(task.id)}>Принять и запланировать</button>
     </li>)}</ul>}
    </section>}
@@ -524,7 +527,7 @@ export function App(){
   <footer className="main-footer"><span>РУСПЭТ · Контроль и согласование задач</span></footer></main></div>
   {selected&&<div className="drawer-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)closeTask();}}>
    <div className="drawer task-card" role="dialog" aria-modal="true" aria-label="Карточка задачи">
-    <div className="drawer-top"><span>ЗАДАЧА #{selected}</span>
+    <div className="drawer-top"><span>ЗАДАЧА #{detail?taskNumber(detail.task):taskNumber(data.tasks.find(task=>task.id===selected)??{id:selected})}</span>
      <div className="task-card-toolbar">
       {detail&&!viewingEmployee&&<>
        {detail.editAccess.canEdit?<button type="button" className="button secondary" disabled={busy} onClick={()=>setEditor({task:detail.task})}><Pencil size={15}/>Редактировать</button>:
@@ -552,7 +555,7 @@ export function App(){
         </>}
         <button type="button" onClick={()=>{
          const href=new URL('/',location.origin);
-         href.searchParams.set('view','tasks');href.searchParams.set('task',selected);
+         href.searchParams.set('view','tasks');href.searchParams.set('task',detail?taskNumber(detail.task):selected);
          void navigator.clipboard.writeText(href.href).then(()=>showToast('Ссылка скопирована')).catch(()=>setError('Не удалось скопировать ссылку.'));
         }}><Link size={15}/>Скопировать ссылку</button>
        </div>
@@ -738,7 +741,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
   ...(changedDeadline?{approvedDeadline:new Date(finalTime).toISOString()}:{})
  });
  return <section className={`panel approval-card ${inDrawer?'in-drawer':''}`}>
-  <div className="approval-header"><div><span className="eyebrow">{a.type==='deadline'?'ПЕРЕНОС КРАЙНЕГО СРОКА':'ЗАКРЫТИЕ ЗАДАЧИ'} · #{a.task_id}</span>{!inDrawer&&<button className="approval-title" onClick={()=>void openTask(a.task_id,'approvals')}>{task?.title}<ArrowUpRight size={16}/></button>}</div><Badge state={a.canceled_at?'canceled':a.state==='pending'&&!active?'stale':a.state}/></div>
+  <div className="approval-header"><div><span className="eyebrow">{a.type==='deadline'?'ПЕРЕНОС КРАЙНЕГО СРОКА':'ЗАКРЫТИЕ ЗАДАЧИ'} · #{task?taskNumber(task):a.task_id}</span>{!inDrawer&&<button className="approval-title" onClick={()=>void openTask(a.task_id,'approvals')}>{task?.title}<ArrowUpRight size={16}/></button>}</div><Badge state={a.canceled_at?'canceled':a.state==='pending'&&!active?'stale':a.state}/></div>
   <div className="approval-task-meta">
    {task&&<TaskPeople task={task} users={data.users}/>}
    <p>Цена задачи <strong>{task?formatPrice(task):'—'}</strong></p>
@@ -813,7 +816,7 @@ function RequestModal({type,task,initialDeadline,min,busy,error,close,submit}:{
   <div className="panel-heading"><h2>{type==='deadline'?'Запросить перенос срока':'Запросить закрытие'}</h2>
    <button type="button" className="icon-button" aria-label="Закрыть запрос" onClick={close} disabled={busy}><X size={20}/></button>
   </div>
-  <p>#{task.id} · {task.title}</p>
+  <p>#{taskNumber(task)} · {task.title}</p>
   {error&&<div className="alert error" role="alert">{error}</div>}
   {type==='deadline'&&<>
    <p className="muted">Текущий крайний срок: {date(task.deadline,true)}{task.deadline?' МСК':''}</p>

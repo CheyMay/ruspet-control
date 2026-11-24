@@ -2,6 +2,7 @@ import {approvalChangeLines} from '../shared/approval-changes.js';
 import {canEditTaskPrice} from '../shared/task-edit.js';
 import {button,htmlScreen,date,type Payload} from './bot-ui.js';
 import {botExcerpt,botTaskStatus,botTextPages} from './bot-presentation.js';
+import {taskNumber} from '../shared/task-number.js';
 import {compactTaskTitle} from '../shared/task-title.js';
 import {escapeHtml as h} from '../shared/report-links.js';
 import {formatPrice,priceBand,priceLabels} from '../shared/pricing.js';
@@ -62,7 +63,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  ]:[];
  const paged=async(label:string,text:string,rows:ReturnType<typeof button>[][]=[])=>{
   const pages=botTextPages(text),page=Math.max(0,Math.min(p.page||0,pages.length-1));
-  return htmlScreen(u,ch,`<b>${h(label)} · #${h(t.id)}</b>${pages.length>1?` · ${page+1}/${pages.length}`:''}\nИсполнитель · ${h(name(t.assignee_id))}\nПостановщик · ${h(name(t.creator_id))}\n\n${h(pages[page])}`,[
+  return htmlScreen(u,ch,`<b>${h(label)} · #${h(taskNumber(t))}</b>${pages.length>1?` · ${page+1}/${pages.length}`:''}\nИсполнитель · ${h(name(t.assignee_id))}\nПостановщик · ${h(name(t.creator_id))}\n\n${h(pages[page])}`,[
    [...(page?[button('← Предыдущая часть',p.op,{...extra,page:page-1})]:[]),...(page+1<pages.length?[button('Продолжение →',p.op,{...extra,page:page+1})]:[])],...rows,back]);
  };
  if(p.op==='task_edit_permission'){
@@ -116,7 +117,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   const text=c?[c.body,...(c.files??[]).map(file=>file.name??'Файл '+file.id)].filter(Boolean).join('\n')||'Сообщение без текста':
    loading?'Сообщения из Битрикс24 загружаются.':'Сообщений пока нет.';
   const parts=botTextPages(text),part=Math.max(0,Math.min(p.step||0,parts.length-1));
-  return htmlScreen(u,ch,`<b>Обсуждение · #${h(t.id)}</b>\n${list.length?`Сообщение ${page+1} из ${list.length} · новые сначала`:''}\n\n${c?h(c.author)+' · '+h(c.source)+(c.at?' · '+date(c.at)+' МСК':'')+'\n':''}${h(parts[part])}${parts.length>1?`\n\nЧасть ${part+1}/${parts.length}`:''}`,[
+  return htmlScreen(u,ch,`<b>Обсуждение · #${h(taskNumber(t))}</b>\n${list.length?`Сообщение ${page+1} из ${list.length} · новые сначала`:''}\n\n${c?h(c.author)+' · '+h(c.source)+(c.at?' · '+date(c.at)+' МСК':'')+'\n':''}${h(parts[part])}${parts.length>1?`\n\nЧасть ${part+1}/${parts.length}`:''}`,[
    [...(part?[button('← Часть','discussion',{...extra,page,step:part-1})]:[]),...(part+1<parts.length?[button('Читать дальше →','discussion',{...extra,page,step:part+1})]:[])],
    [...(page?[button('← Новее','discussion',{...extra,page:page-1})]:[]),...(page+1<list.length?[button('Ранее →','discussion',{...extra,page:page+1})]:[])],
    [...(loading?[button('Обновить','discussion',extra)]:[]),form('Написать комментарий','comment',c?.approvalId||pending?.id)],back]);
@@ -130,7 +131,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    for(const key of ['reason','progress','plan','comment','body','question','answer'])if(e.data[key])text+='\n'+({reason:'Причина',progress:'Сделано',plan:'План / результат',comment:'Замечание / решение',body:'Комментарий',question:'Уточнение',answer:'Ответ'} as Record<string,string>)[key]+': '+String(e.data[key]);
    return botTextPages(text);});
   const page=Math.max(0,Math.min(p.page||0,Math.max(0,texts.length-1)));
-  return htmlScreen(u,ch,`<b>История · #${h(t.id)}</b> · ${page+1}/${Math.max(1,texts.length)}\n\n${h(texts[page]||'Записей пока нет.')}`,[
+  return htmlScreen(u,ch,`<b>История · #${h(taskNumber(t))}</b> · ${page+1}/${Math.max(1,texts.length)}\n\n${h(texts[page]||'Записей пока нет.')}`,[
    [...(page?[button('← Новее','history',{...extra,page:page-1})]:[]),...(page+1<texts.length?[button('Раньше →','history',{...extra,page:page+1})]:[])],back]);
  }
  if(p.op==='task_more'){
@@ -146,7 +147,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   if(await canDelegateTask(u,t))rows.push([button('Делегировать задачу','delegate_list',extra)]);
   rows.push([button('Напоминания','task_reminders',extra)],[button('История','history',extra),button('Поля задачи','task_fields',extra)]);
   const lastAction=await lastUndo(u,t.id);if(lastAction)rows.push([button('Отменить последнее действие','undo_prepare',{...extra,target:lastAction.id})]);
-  return htmlScreen(u,ch,`<b>Ещё действия · #${h(t.id)}</b>\n${h(compactTaskTitle(t.title))}${d.approvalWatch?.byCode?'\nКонтроль руководителя продаж по коду В.':''}`,[...rows,back]);
+  return htmlScreen(u,ch,`<b>Ещё действия · #${h(taskNumber(t))}</b>\n${h(compactTaskTitle(t.title))}${d.approvalWatch?.byCode?'\nКонтроль руководителя продаж по коду В.':''}`,[...rows,back]);
  }
  const context:string[]=[];
  const rows:ReturnType<typeof button>[][]=[];
@@ -191,7 +192,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  facts.push('Исполнитель · '+name(t.assignee_id),'Постановщик · '+name(t.creator_id));
  const preview=botExcerpt(t.description,155);
  const text=[
-  `<b>${h(botExcerpt(t.title,300))}</b>\n#${h(t.id)} · <b>${h(status)}</b>${t.important?' · Важно':''}`,
+  `<b>${h(botExcerpt(t.title,300))}</b>\n#${h(taskNumber(t))} · <b>${h(status)}</b>${t.important?' · Важно':''}`,
   h(facts.join('\n')),
   ...(context.length?[h(context.join('\n'))]:[]),
   ...(preview&&preview!==botExcerpt(t.title,155)?[h(preview)]:[])

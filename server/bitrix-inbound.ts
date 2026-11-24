@@ -1,5 +1,5 @@
 import {deadlineCommentsResource,deadlineHistoryResource,refreshDeadlineHistory,refreshPastDeadlineComments} from './deadline-history.js';
-import {ruspetTaskReference} from './bitrix-task-reference.js';
+import {linkCreatedTaskFromEvent} from './bitrix-create-task.js';
 import {keepTaskApprovals} from './approval-updates.js';
 import {isDeepStrictEqual as equal} from 'node:util';
 import {pool,transaction,type Db} from './db.js';
@@ -64,11 +64,7 @@ async function peopleFor(request:BitrixRequest,raw:Record<string,unknown>,db:Db=
 }
 async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=false){
  const remote=remoteTask(raw);
- const localReference=ruspetTaskReference(String(fieldValue(raw,'DESCRIPTION')));
- if((await pool.query(`SELECT 1 FROM bitrix_operations o WHERE o.payload->>'kind'='created'
-  AND (o.task_id=$1 OR o.created_external_id=$2) AND o.state<>'sent'
-  AND NOT EXISTS(SELECT 1 FROM bitrix_task_links l WHERE l.external_id=$2)`,
- [localReference,remote.id])).rowCount)return {ignored:'Ожидаем подтверждение задачи, созданной в РУСПЭТ.'};
+ if(await linkCreatedTaskFromEvent(request.portal!,raw))return {changed:false,conflict:false,linkedCreation:true};
  if(adopt&&remote.responsibleId){
   const scope=await pool.query(`SELECT 1 FROM bitrix_user_links WHERE external_id=$1::text::bigint
    UNION ALL SELECT 1 FROM staff_directory WHERE bitrix_id=$1::text AND enabled AND user_id IS NOT NULL LIMIT 1`,[remote.responsibleId]);

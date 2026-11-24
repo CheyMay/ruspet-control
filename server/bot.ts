@@ -366,7 +366,10 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    const input=taskInput.parse({title:v.title,description:v.description||'',assigneeId:v.assignee,price:Number(v.price),deadline:v.deadline==='none'?null:v.deadline,
     plannedStart:null,plannedEnd:null,important:null,customerRisk:null,parentId:null});
    const created=await createTask(u,input);resultTask=created.id;
-   result='Задача #'+created.id+' поставлена.';
+   const integration=(await db.query<{number:string|null}>(`SELECT CASE WHEN state='sent' THEN created_external_id::text END AS number FROM bitrix_operations
+    WHERE task_id=$1 AND payload->>'kind'='created' AND state<>'canceled' LIMIT 1`,[created.id])).rows[0];
+   result=integration&&!integration.number?'Задача поставлена. Номер появится после подтверждения в Битрикс24.':
+    'Задача #'+(integration?.number??created.id)+' поставлена.';
   }
   else if(p.kind==='client_note'){await saveBotClientNote(u,p,db);result='Заметка сохранена в карточке клиента.';}
   else if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}

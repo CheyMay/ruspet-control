@@ -1,3 +1,4 @@
+import {taskNumber} from '../shared/task-number.js';
 import {useEffect,useState,type FormEvent} from 'react';
 import {CompanyPeople} from './Crm.js';
 import {ClientNotes} from './ClientNotes.js';
@@ -5,7 +6,7 @@ import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
 import type {User} from '../shared/types.js';
 
-type Work={total:number;tasks:{id:string;title:string;assignee_id:string;status:string;deadline:string|null}[];history:{id:string;task_id:string;actor_id:string|null;message:string;created_at:string}[]};
+type Work={total:number;tasks:{id:string;bitrix_id?:string|null;title:string;assignee_id:string;status:string;deadline:string|null}[];history:{id:string;task_id:string;actor_id:string|null;message:string;created_at:string}[]};
 type Contact={id:string;author_id:string;note:string;occurred_at:string};
 const status:Record<string,string>={active:'В работе',review:'На приёмке',completed:'Завершена'};
 export function CompanyWork({id,users,openTask,createTask,onContact}:{id:string;users:User[];openTask:(id:string)=>void;createTask:()=>void;onContact:()=>void}){
@@ -31,9 +32,9 @@ export function CompanyWork({id,users,openTask,createTask,onContact}:{id:string;
   {!work&&!error&&<p role="status">Загружаем задачи и контакты…</p>}
   {work&&<><p className="muted">Связанные задачи · {work.total}{work.total>50?' · показано 50':''}</p>
    {work.total===0&&<p>Связанных задач пока нет.</p>}
-   {work.tasks.map(task=><div className="automation-run" key={task.id}><div><button type="button" className="text-button task-link" onClick={()=>openTask(task.id)}>#{task.id} · {task.title}</button>
+   {work.tasks.map(task=><div className="automation-run" key={task.id}><div><button type="button" className="text-button task-link" onClick={()=>openTask(task.id)}>#{taskNumber(task)} · {task.title}</button>
     <p>{status[task.status]??task.status} · {person(task.assignee_id)} · {moscowTimestamp(task.deadline)}</p></div></div>)}
-   {!!work.history.length&&<details className="automation-log"><summary>Последние действия по задачам</summary>{work.history.map(entry=><p key={entry.id}>{moscowTimestamp(entry.created_at)} · {person(entry.actor_id)} · #{entry.task_id} · {entry.message}</p>)}</details>}
+   {!!work.history.length&&<details className="automation-log"><summary>Последние действия по задачам</summary>{work.history.map(entry=><p key={entry.id}>{moscowTimestamp(entry.created_at)} · {person(entry.actor_id)} · #{taskNumber(work.tasks.find(task=>task.id===entry.task_id)??{id:entry.task_id})} · {entry.message}</p>)}</details>}
   </>}
   <ClientNotes key={id} id={id}/>
   <CompanyPeople id={id}/>

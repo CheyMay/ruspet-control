@@ -586,6 +586,26 @@ test('an assigned task stays unaccepted until the manager sets a plan, with sepa
  assert.match((await db.pool.query('SELECT body FROM task_alerts WHERE task_id=$1',[id])).rows[0].body,/Следующий шаг: Отправить клиенту расчёт/);
 });
 
+test('clearing existing assignments leaves the task active without recording acceptance',async()=>{
+ const service=await import('../server/service.js'),calendar=await import('../server/personal-calendar.js');
+ const manager={...other,id:'cleared-assignment-manager',position:'Менеджер по продажам'};
+ await db.pool.query('INSERT INTO users(id,name,role,branch_id,position) VALUES($1,$2,$3,$4,$5)',[manager.id,manager.name,manager.role,manager.branch_id,manager.position]);
+ await login(manager);
+ const assigned=await makeTask('Старое назначение без принятия',at('2035-03-20','16:00'),manager);
+ const prior=(await service.detail(manager,assigned)).personalPlan!;
+ assert.equal(prior.needsAcceptance,true);
+ await db.pool.query(await readFile(new URL('../server/migrations/056_reset_existing_assignment_queue.sql',import.meta.url),'utf8'));
+ const detail=await service.detail(manager,assigned);
+ assert.equal(detail.task.status,'active');
+ assert.equal(detail.personalPlan?.needsAcceptance,false);
+ assert.equal(detail.personalPlan?.acceptedAt,null);
+ assert.equal(detail.personalPlan?.plannedAt,null);
+ assert(!(await api(manager,'/notifications')).body.some((item:{task_id:string;task_assignment?:boolean})=>item.task_id===assigned&&item.task_assignment));
+ await assert.rejects(()=>calendar.saveTaskPlan(manager,assigned,{epoch:prior.epoch,revision:prior.revision,plannedAt:at('2035-03-19','14:30').toISOString(),accept:true}),/измени/);
+ const next=await makeTask('Новое назначение требует принятия',at('2035-03-20','16:00'),manager);
+ assert.equal((await service.detail(manager,next)).personalPlan?.needsAcceptance,true);
+});
+
 test('Telegram accepts a new assignment directly from its notification and saves the personal plan once',async()=>{
  const bot=await import('../server/bot.js'),service=await import('../server/service.js');
  const manager={...other,id:'acceptance-manager',position:'Тестовый менеджер'};

@@ -46,6 +46,7 @@ import { resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { z, ZodError } from 'zod';
 import { pool } from './db.js';
+import {resolveTaskNumber} from './task-numbers.js';
 import { AppError, assert } from './domain.js';
 import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
@@ -165,6 +166,10 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/management/observation',async(req,res)=>{const input=z.object({confirmed:z.literal(true),expected:z.iso.datetime({offset:true}).nullable()}).parse(req.body);res.json(await resetObservation(req.actor,input.expected));});
  app.put('/api/management/preferences',async(req,res)=>res.json(await setNudgePreference(req.actor,z.object({enabled:z.boolean()}).parse(req.body).enabled)));
  app.post('/api/management/nudge',async(req,res)=>res.json(await nudgeTeam(req.actor,z.object({confirmed:z.literal(true)}).parse(req.body).confirmed)));
+ app.param('id',async(req,_res,next,id:string)=>{
+  if(req.path.startsWith('/api/tasks/'))req.params.id=await resolveTaskNumber(id);
+  next();
+ });
  app.get('/api/tasks/:id/bitrix-activity',async(req,res)=>{assert(req.actor.role==='admin',403,'История интеграции доступна администратору.');res.json((await pool.query('SELECT kind,external_id,occurred_at,author,body FROM bitrix_task_activity WHERE task_id=$1 AND kind=$2 ORDER BY occurred_at DESC,external_id DESC LIMIT 100',[req.params.id,req.query.kind==='history'?'history':'comment'])).rows);});
  app.get('/api/tasks/:id/discussion',compress,async(req,res)=>res.json(
   await service.taskBitrixDiscussion(req.actor,String(req.params.id),req.get(viewAsHeader)===undefined)));

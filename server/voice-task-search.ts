@@ -1,3 +1,4 @@
+import {taskNumber} from '../shared/task-number.js';
 import type {Db} from './db.js';
 import {canManage,canRequest} from './domain.js';
 import {okbConfigured,okbPool} from './okb.js';
@@ -62,7 +63,7 @@ export async function findVoiceTasks(actor:User,value:string,kind:VoiceKind,db:D
  const byTask=new Map(pending.map(approval=>[approval.task_id,approval]));
  const scope=approvalScope(await approvalHierarchy(db));
  const tasks=accessible.filter(task=>applicable(actor,task,kind,scope,byTask.get(task.id)));
- const exact=tasks.find(task=>task.id.toLowerCase()===search.toLowerCase());
+ const exact=tasks.find(task=>taskNumber(task).toLowerCase()===search.toLowerCase())??tasks.find(task=>task.id.toLowerCase()===search.toLowerCase());
  if(exact)return [{task:exact,company:'',score:100,pending:byTask.has(exact.id)}];
  const query=nameWords(search.replace(/^(?:(?:по\s+)?(?:клиент[ауе]?|компани[яию])\s+)+/iu,''));
  if(!query.length||query.join('').length<2||/^\d+$/u.test(search)&&![10,12].includes(search.length))return [];
