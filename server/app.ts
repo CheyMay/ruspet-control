@@ -66,7 +66,7 @@ declare global { namespace Express { interface Request { actor:User } } }
 const text=z.string().trim().min(1).max(4000), date=z.iso.datetime({offset:true});
 const selector=z.enum(['branchManager','salesHead','director','creator']);
 const rules=z.object({requiredPrice:z.boolean().optional(),showPlanning:z.boolean().optional(),writtenRules:z.array(z.object({text:z.string().trim().min(1).max(500),severity:z.enum(['critical','warning','info'])})).max(30).optional(),overdue:z.boolean(),missingDeadline:z.boolean(),plannedOverdue:z.boolean(),requiredFields:z.boolean(),code:z.boolean(),planning:z.boolean().optional(),responseMinLength:z.number().int().min(5).max(200),reminderMinutes:z.number().int().min(1).max(1440),maxReminders:z.number().int().min(0).max(10),routes:z.object({deadline:z.array(selector).min(1).max(4),completion:z.array(selector).min(1).max(4)})});
-const reportView=z.enum(['mine','created','team','company']);
+const reportView=z.enum(['mine','created','team','sales','company']);
 const reportParameters=z.object({view:reportView.optional(),actorId:z.string().max(100).optional(),from:date.optional(),to:date.optional(),assigneeId:z.string().max(100).optional(),creatorId:z.string().max(100).optional(),priceBand:z.enum(['low','medium','high','premium','unknown']).optional(),queue:z.enum(['all','front','overdue','today','review','completed','no_deadline']).optional()});
 const viewAsHeader='X-Ruspet-View-As';
 const viewAsReads=new Set(['/bootstrap','/journal','/management/progress','/alerts','/delegations','/reports','/workspace-search']);
@@ -150,7 +150,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const input=workspaceSearchInput.parse(req.query);
   res.json(await workspaceSearch(req.actor,input,req.get(viewAsHeader)!==undefined));
  });
- app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
+ app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),team:z.enum(['team','sales']).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
  app.post('/api/undo',async(req,res)=>{const input=z.object({id:z.uuid(),confirmed:z.literal(true)}).parse(req.body);res.json(await undoLastAction(req.actor,input.id));});
  app.get('/api/tasks/:id/staff-undo',async(req,res)=>{
   res.setHeader('Cache-Control','no-store');
@@ -160,7 +160,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const {id,reason}=z.object({id:z.uuid(),confirmed:z.literal(true),reason:z.string().trim().min(5).max(1000)}).parse(req.body);
   res.json(await undoStaffAction(req.actor,id,reason));
  });
- app.get('/api/management/progress',async(req,res)=>res.json(await managementProgress(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),owner:z.string().max(100).optional()}).parse(req.query))));
+ app.get('/api/management/progress',async(req,res)=>res.json(await managementProgress(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),owner:z.string().max(100).optional(),team:z.enum(['team','sales']).optional()}).parse(req.query))));
  app.get('/api/analytics/overview',compress,async(req,res)=>{
   const part=z.string().min(1).max(200);
   const query=z.object({period:z.enum(['day','week']).default('day'),

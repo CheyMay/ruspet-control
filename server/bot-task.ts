@@ -36,6 +36,12 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const people=(await pool.query('SELECT id,name FROM users WHERE id=ANY($1)',[ids])).rows;
  const name=(id:string)=>people.find(x=>x.id===id)?.name||id;
  const extra={id:t.id,list:p.list},back=[button('← К задаче','task',extra),button('Меню','home')];
+ if(t.workspace_read_only){
+  const result=await htmlScreen(u,ch,`<b>${h(compactTaskTitle(t.title))}</b> · #${h(taskNumber(t))}\n${h(botTaskStatus(t,now,!!pending))}\n\nИсполнитель · ${h(name(t.assignee_id))}\nПостановщик · ${h(name(t.creator_id))}\nКрайний срок · ${h(date(t.deadline))}`,
+   [[...(p.list?[button('К списку',p.list.op,p.list)]:[]),button('Меню','home')]]);
+  if(process.env.PUBLIC_ORIGIN)result.links=[{text:'Открыть карточку на сайте',url:new URL('/?view=tasks&task='+encodeURIComponent(taskNumber(t)),process.env.PUBLIC_ORIGIN).href}];
+  return result;
+ }
  const form=(label:string,kind:string,target?:string,step?:number)=>button(label,'form',{...extra,kind,version:t.version,target,step,revision:target===pending?.id?pending?.action_revision:undefined});
  const resultButton=t.status==='active'&&pending?.type!=='completion'&&!d.personalPlan?.needsAcceptance&&canRequest(u,t)?
   canComplete(u,t,d.approvalScope)?form('Завершить задачу','complete'):

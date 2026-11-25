@@ -5,6 +5,7 @@ import {ChartNoAxesCombined,ChevronRight,RefreshCw} from 'lucide-react';
 import type {AnalyticsDay,AnalyticsOverview,AnalyticsRow,CompletedWork,RemainingWork} from '../shared/team-analytics.js';
 import {useSectionParam} from './section-history.js';
 import {api} from './api.js';
+import {TeamScopeSwitch} from './TeamScopeSwitch.js';
 import './team-analytics.css';
 
 type Period='day'|'week';
@@ -100,7 +101,7 @@ function Teams({rows,period,nextLabel,onGroup}:{rows:AnalyticsRow[];period:Perio
  </section>;
 }
 
-export function TeamAnalytics(){
+export function TeamAnalytics({splitTeams=false}:{splitTeams?:boolean}){
  const [periodParam,changePeriod]=useSectionParam('period'),[group,changeGroup]=useSectionParam('analytics-group');
  const period:Period=periodParam==='week'?'week':'day';
  const selection=group.split('|').filter(Boolean);
@@ -144,6 +145,10 @@ export function TeamAnalytics(){
     </button>
    </div>
   </header>
+  {splitTeams&&<TeamScopeSwitch
+   value={selection[0]==='sales:my-team'?'team':selection[0]==='sales:branches'?'sales':'all'}
+   base={{id:'all',label:'Общая сводка'}}
+   onChange={team=>setSelection(team==='all'?[]:[team==='team'?'sales:my-team':'sales:branches'])}/>}
   {data&&<div className="bi-context-line">
    {data.path.length>0&&<nav aria-label="Текущая область">
     <button type="button" onClick={()=>setSelection([])}>{scope}</button>

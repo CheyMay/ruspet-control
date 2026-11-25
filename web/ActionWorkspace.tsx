@@ -7,6 +7,7 @@ import {workBuckets as buckets,workLabels,workQueue,type WorkBucket,type WorkSco
 import type {Bootstrap,Task} from '../shared/types.js';
 import {pushSectionStep} from './section-history.js';
 import {EmployeeFilter,matchesFilter} from './SearchFilter.js';
+import {TeamScopeSwitch} from './TeamScopeSwitch.js';
 import './work-queue.css';
 
 const icons={overdue:Clock3,today:CalendarClock,next:ListChecks,waiting:Clock3,planned:ListChecks};
@@ -44,6 +45,7 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
  const active=bucket==='all'?total:displayed[bucket].length;
  const earlier=displayed.overdue.filter(row=>row.deadlineState==='earlier').length;
  const expired=displayed.overdue.length-earlier;
+ const bucketLabels=scope==='mine'?workLabels:{...workLabels,next:'Нужно действие',waiting:'Ждут решения'};
  function changeScope(next:WorkScope){setScope(next);setOwner('all');setBucket('all');setLimits({});}
  function show(next:Filter){pushSectionStep({view:'actions',queue:next==='all'?null:next});setBucket(next);setLimits({});}
  function clear(){setQuery('');setKind('all');setOwner('all');setFrom('');setTo('');setDateField('deadline');show('all');}
@@ -72,7 +74,8 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
  }
  return <div className="work-queue">
   <div className="work-toolbar">
-   {data.user.role!=='employee'&&<div className="task-role-switch" role="group" aria-label="Область задач">
+   {data.salesTeams?<TeamScopeSwitch value={scope} base={{id:'mine',label:'Мои'}} onChange={changeScope}/>:
+   data.user.role!=='employee'&&<div className="task-role-switch" role="group" aria-label="Область задач">
     <button type="button" aria-pressed={scope==='mine'} onClick={()=>changeScope('mine')}>Мои</button>
     <button type="button" aria-pressed={scope==='team'} onClick={()=>changeScope('team')}>{data.user.role==='admin'?'Доступная команда':'Команда'}</button>
    </div>}
@@ -82,7 +85,7 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
    <details className="work-filters">
     <summary className="button secondary"><SlidersHorizontal size={16}/> Фильтры{hasFilters?' · активны':''}</summary>
     <div className="panel work-filter-panel">
-     {scope==='team'||responsible.size>1?<EmployeeFilter caption="Следующий шаг у" label="У кого следующий шаг" value={owner} onChange={setOwner}
+     {scope!=='mine'||responsible.size>1?<EmployeeFilter caption="Следующий шаг у" label="У кого следующий шаг" value={owner} onChange={setOwner}
       empty={{value:'all',label:'У любого сотрудника'}} people={data.users.filter(user=>responsible.has(user.id)||user.id===owner)}/>:null}
      <label>Что нужно сделать<select value={kind} onChange={e=>setKind(e.target.value)}>{Object.entries(kinds).map(([value,label])=><option value={value} key={value}>{label}</option>)}</select></label>
      <label>Какая дата<select value={dateField} onChange={e=>setDateField(e.target.value==='since'?'since':'deadline')}><option value="deadline">Крайний срок задачи</option><option value="since">Когда поступил запрос</option></select></label>
@@ -94,7 +97,7 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
   <div className="work-cards" aria-label="Быстрый выбор списка">
    {buckets.map(key=>{const Icon=icons[key];return <button type="button" key={key}
     className={'work-card '+key} aria-pressed={bucket===key} onClick={()=>show(bucket===key?'all':key)}>
-    <Icon size={18} aria-hidden="true"/><strong>{displayed[key].length}</strong><span>{workLabels[key]}</span><small>{queueLabels[key]}</small>
+    <Icon size={18} aria-hidden="true"/><strong>{displayed[key].length}</strong><span>{bucketLabels[key]}</span><small>{queueLabels[key]}</small>
    </button>;})}
   </div>
   <div className="work-results-bar">
@@ -109,7 +112,7 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
    const tasks=displayed[key];if(!tasks.length)return null;
    const limit=limits[key]??(bucket==='all'?3:12),rows=tasks.slice(0,limit);
    return <section className={'panel work-group '+key} key={key}>
-    <div className="work-group-heading"><h2>{workLabels[key]} <span>{tasks.length}</span></h2>
+    <div className="work-group-heading"><h2>{bucketLabels[key]} <span>{tasks.length}</span></h2>
      {key==='overdue'&&<small>{queueLabels.overdue}</small>}</div>
     {rows.map(row)}
     {tasks.length>limit&&<button type="button" className="text-button work-more" onClick={()=>setLimits(previous=>({...previous,[key]:limit+12}))}>Показать ещё · {Math.min(tasks.length-limit,12)}</button>}

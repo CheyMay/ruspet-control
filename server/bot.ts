@@ -29,7 +29,8 @@ import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTarg
 import {elapsedToday,taskQueue,taskRequiresResult} from '../shared/queues.js';
 import {activeTaskApproval} from '../shared/actions.js';
 import {summarize} from '../shared/analytics.js';
-import {defaultReportView,reportViews,reportViewLabels,type ReportView} from '../shared/report-parameters.js';
+import {defaultReportView,reportViews,reportViewLabel,type ReportView} from '../shared/report-parameters.js';
+import {isTeamScope} from '../shared/team-scopes.js';
 import type {Task,User} from '../shared/types.js';
 import {taskInput} from './task-input.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
@@ -72,8 +73,8 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   for(const r of archive.items.slice((page%2)*10,(page%2)*10+10))rows.push([button(date(r.summary?.to||r.created_at)+' · '+({snapshot:'Снимок',daily:'Итоги и завтра',period:'За период',today:'Сегодня',overdue:'Просрочки',review:'Приёмка',nextday:'План'} as Record<string,string>)[r.kind||'snapshot'],'reports',{id:r.id,page,filter:view})]);
   rows.push([...(page?[button('← Назад','reports',{page:page-1,filter:view})]:[]),...((page+1)*10<archive.total?[button('Далее →','reports',{page:page+1,filter:view})]:[])],
    [button('Отчёт сейчас','report_now',{filter:view}),view==='mine'?button('План на завтра','report_plan',{filter:view}):button('Итоги дня','report_evening',{filter:view})],
-   reportViews(u).filter(mode=>mode!==view).map(mode=>button(reportViewLabels[mode],'reports',{filter:mode})),[button('Меню','home')]);
-  return screen(u,ch,'Отчёты · '+reportViewLabels[view]+'\nСохранённых снимков: '+archive.total,rows);
+   reportViews(u).filter(mode=>mode!==view).map(mode=>button(reportViewLabel(u,mode),'reports',{filter:mode})),[button('Меню','home')]);
+  return screen(u,ch,'Отчёты · '+reportViewLabel(u,view)+'\nСохранённых снимков: '+archive.total,rows);
  }
  if(p.op==='delegate_list'||p.op==='delegate_preview'){
   const companyId=p.values?.companyId;
@@ -116,7 +117,9 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   assert(reportViews(u).includes(view),403,'Этот раздел отчётов недоступен.');
   const data=await bootstrap(u,true),now=new Date(data.serverTime),name=(id:string)=>data.users.find(person=>person.id===id)?.name||id;
   const team=new Set(data.teamIds);
-  const tasks=data.tasks.filter(task=>view==='company'||(view==='mine'?task.assignee_id===u.id:team.has(task.assignee_id)));
+  const teamTasks=isTeamScope(view)&&data.salesTeams?new Set(data.salesTeams[view]):null;
+  const tasks=data.tasks.filter(task=>view==='company'||(view==='mine'?task.assignee_id===u.id:view==='created'?task.creator_id===u.id:
+   teamTasks?teamTasks.has(task.id):team.has(task.assignee_id)));
   const byId=new Map(tasks.map(task=>[task.id,task]));
   const paused=new Set(data.approvals.flatMap(a=>{const task=byId.get(a.task_id);return task&&activeTaskApproval(task,a)?[task.id]:[];}));
   const totals=(subset:Task[])=>{const value=summarize(subset,now,paused);return {...value,overdue:value.overdue+value.elapsedToday,today:value.today-value.elapsedToday};};
@@ -127,9 +130,9 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   const lines=breakdown.slice(0,6).map(row=>row.person.name+': '+row.overdue+' просрочено · '+row.today+' сегодня · '+row.unfinished+' открыто');
   const summary=`Открыто: ${s.unfinished} · Завершено: ${s.completed}\nПросрочено: ${s.overdue} · Срок сегодня: ${s.today}\nНа приёмке: ${s.review} · Без срока: ${s.no_deadline}\nСогласований: ${paused.size}`;
   const priority=urgent.map(t=>`#${t.id} · ${compactTaskTitle(t.title,105)}\n${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n\n');
-  const result=await screen(u,ch,[reportViewLabels[view]+' · '+date(data.serverTime)+' МСК',summary,lines.join('\n'),
+  const result=await screen(u,ch,[reportViewLabel(u,view)+' · '+date(data.serverTime)+' МСК',summary,lines.join('\n'),
    breakdown.length>6?'Ещё исполнителей: '+(breakdown.length-6):'',priority].filter(Boolean).join('\n\n'),[
-   [button('Отчёты','reports',{filter:view}),...(view==='team'?[button('По сотрудникам','team')]:[])],
+   [button('Отчёты','reports',{filter:view}),...(isTeamScope(view)?[button('По сотрудникам','team',{team:data.salesTeams?view:undefined})]:[])],
    ...urgent.map(t=>[button('Открыть #'+t.id,'task',{id:t.id,list:{op:'brief',filter:view}})]),[button('Меню','home')]
   ]);
   if(view==='company')result.links=[{text:'Аналитика компании на сайте',url:new URL('/?view=overview',publicOrigin()).href}];

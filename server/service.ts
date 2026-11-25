@@ -25,7 +25,8 @@ import type { Task, User, Rules, Approval, ControlRequest, Step, BitrixDiscussio
 import { assert, canAccess, canSee, canRequest, canManage, globalAccess, evaluate, metrics, moscowDay } from './domain.js';
 import { providers } from './providers.js';
 import {pendingAssignmentTasks,registerTaskAcceptance,requireTaskAcceptance,taskAssignmentReceipt,taskPersonalPlan,visiblePlanNotice} from './personal-calendar.js';
-import {analyticsAccess} from './analytics-scope.js';
+import {analyticsAccess,loadAnalyticsScope,type AnalyticsScope} from './analytics-scope.js';
+import {hasSplitTeams,type TeamTaskIds} from '../shared/team-scopes.js';
 import {linkedTaskNumber,resolveTaskNumber} from './task-numbers.js';
 import {withTaskClients} from './task-clients.js';
 import {hasPendingTaskAcceptance,pendingTaskWorkIds,visibleAssignmentNotice,visibleControlNotice,visibleDeadlineNotice} from './pending-task-work.js';
@@ -61,22 +62,41 @@ export async function config(db:Db=pool):Promise<{version:number;config:Rules}> 
 export async function visibleTasksForCompany(user:User,id:string):Promise<Task[]>{
  return (await pool.query<Task>(`SELECT t.*,${linkedTaskNumber} FROM tasks t WHERE company_id=$1 ORDER BY (status='completed'),updated_at DESC,id`,[id])).rows.filter(t=>canSee(user,t));
 }
-export async function visibleTasks(user:User,db:Db=pool):Promise<Task[]> {
+export async function visibleTasks(user:User,db:Db=pool,analytics?:AnalyticsScope):Promise<Task[]> {
  return (await db.query<Task>(`SELECT t.*, ${linkedTaskNumber}, ${hasPendingTaskAcceptance} AS assignment_pending
   FROM tasks t WHERE $1 OR assignee_id=$2 OR creator_id=$2
-  OR ($3 AND (branch_id=$4 OR starts_with(branch_id,$4 || ' / ')))
+  OR ($3 AND (branch_id=$4 OR starts_with(branch_id,$4 || ' / '))) OR assignee_id=ANY($5::text[])
   ORDER BY deadline ASC NULLS LAST,id`,[globalAccess(user)||user.role==='branch_manager'&&!!user.company_branch_access,user.id,
-   user.role==='branch_manager'&&!!user.branch_id&&user.branch_id!==unassignedBranch,user.branch_id])).rows.filter(t=>canSee(user,t));
+   user.role==='branch_manager'&&!!user.branch_id&&user.branch_id!==unassignedBranch,user.branch_id,[...(analytics?.salesIds??[])]])).rows
+  .flatMap(t=>canSee(user,t)?[t]:analytics?.teamFor(t)?[{...t,workspace_read_only:true}]:[]);
+}
+export async function workspaceTasks(user:User,db:Db=pool){
+ const scope=hasSplitTeams(user)?await loadAnalyticsScope(user,db):undefined;
+ const tasks=await visibleTasks(user,db,scope);
+ const salesTeams:TeamTaskIds|undefined=scope?{team:[],sales:[]}:undefined;
+ if(scope&&salesTeams)for(const task of tasks){
+  const team=scope.teamFor(task);
+  if(team)salesTeams[team].push(task.id);
+ }
+ return {tasks,salesTeams};
 }
 async function taskFor(db:Db,id:string,user:User,lock=false):Promise<Task> {
  if(lock)await lockDelegationChain(db,id);
  const task=(await db.query(`SELECT * FROM tasks WHERE id=$1${lock?' FOR UPDATE':''}`,[id])).rows[0];
  assert(task && canSee(user,task),404,'Задача не найдена или недоступна.'); return task;
 }
+async function workspaceTaskForRead(db:Db,id:string,user:User):Promise<Task>{
+ const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1',[id])).rows[0];
+ assert(task,404,'Задача недоступна.');
+ if(canSee(user,task))return task;
+ assert(hasSplitTeams(user)&&(await loadAnalyticsScope(user,db)).teamFor(task),404,'Задача недоступна.');
+ return {...task,workspace_read_only:true};
+}
 export async function bootstrap(user:User,light=false,compactWorkspace=false,includePrivate=true) {
  return transaction(async db=>{
  await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
- const tasks=await withTaskClients(await visibleTasks(user,db),db), ids=tasks.map(t=>t.id), cfg=await config(db);
+ const {tasks:visible,salesTeams}=await workspaceTasks(user,db);
+ const tasks=await withTaskClients(visible,db), ids=tasks.map(t=>t.id), cfg=await config(db);
  const hierarchy=await approvalHierarchy(db),scope=approvalScope(hierarchy);
  const approvals=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows;
  const taskIndex=new Map(tasks.map(task=>[task.id,task]));
@@ -90,15 +110,15 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false,inc
  const teamIds=await teamMemberIds(user,db);
  const pendingAssignmentIds=includePrivate?await pendingAssignmentTasks(user,ids,db):[];
  const pendingAssignments=pendingAssignmentIds.length;
- if(light)return {pendingAssignments,pendingAssignmentIds,approvalScope:scope,user,users,tasks,teamIds,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
- const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t));
+ if(light)return {pendingAssignments,pendingAssignmentIds,approvalScope:scope,user,users,tasks,teamIds,salesTeams,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
+ const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t)||taskIndex.has(t.id));
  const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
  const lastTaskChange=(await db.query("SELECT max(created_at) AS at FROM task_events WHERE task_id=ANY($1) AND (kind=ANY($2) OR (data ? 'before' AND data ? 'after'))",[ids,['created','task_edited','task_completed','deadline_changed','review_submitted','review_returned','action_undone']])).rows[0].at;
  const deadlineHistory=await loadDeadlineHistories(db,[...new Set(approvals.map(a=>a.task_id))]);
  return {analyticsAccess:includePrivate?await analyticsAccess(user,db):null,pendingAssignments,pendingAssignmentIds,
  deadlineApproverId:hierarchy?.sales_head_id??null,deadlineHistory,approvalScope:scope,lastTaskChange,selection,user,users,
  tasks:compactWorkspace?tasks.map(({source_fields,...task})=>({...task,price:task.price??taskPrice({price:task.price,source_fields})})):tasks,
- teamIds,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
+ teamIds,salesTeams,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
  findings:(await db.query("SELECT * FROM findings WHERE task_id=ANY($1) AND status='open'",[ids])).rows.filter(f=>!paused.has(f.task_id)&&(cfg.config.showPlanning||!planningFindings.has(f.rule))),
  events:compactWorkspace?[]:(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) OR (task_id IS NULL AND $2) ORDER BY created_at DESC LIMIT 250',[ids,globalAccess(user)])).rows,
  notifications:(await db.query(`SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,task_assignment,dedupe_key LIKE 'staff-review:%' AS staff_review FROM outbox o WHERE withdrawn_at IS NULL AND ${visibleAssignmentNotice} AND recipient_id=$1 AND (task_id IS NULL OR task_id=ANY($2))
@@ -118,7 +138,7 @@ export async function queueApprovalHistories(user:User){
 
 export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHistory=false,includePrivate=true) {
  id=await resolveTaskNumber(id,db);
- const [task]=await withTaskClients([await taskFor(db,id,user)],db);
+ const [task]=await withTaskClients([await workspaceTaskForRead(db,id,user)],db);
  const approvals=(await db.query<Approval>('SELECT * FROM approvals WHERE task_id=$1 ORDER BY created_at DESC',[id])).rows;
  const current=task.status==='completed'?undefined:approvals.find(a=>a.state==='pending'&&!a.canceled_at&&a.task_version===task.version&&a.route[a.current_step]);
  let approvalProgress:TaskApprovalProgress|null=null;
@@ -145,7 +165,9 @@ export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHisto
  const deadlineHistory=includeDeadlineHistory&&approvals.length?(await loadDeadlineHistories(db,[id]))[id]??[]:[];
  const personalPlan=includePrivate?await taskPersonalPlan(user,task,db):null;
  return {
-  task:{...task,bitrix_id:imported.bitrixId},personalPlan,assignmentReceipt:await taskAssignmentReceipt(task,personalPlan,db),deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,editAccess:await taskEditAccess(user,task,db),approvalWatch:await approvalWatch(user,task,db),
+  task:{...task,bitrix_id:imported.bitrixId},personalPlan,assignmentReceipt:await taskAssignmentReceipt(task,personalPlan,db),deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,
+  editAccess:task.workspace_read_only?{canEdit:false,canRequest:false,canDecide:false,request:null}:await taskEditAccess(user,task,db),
+  approvalWatch:task.workspace_read_only?null:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
   comments:(await db.query('SELECT * FROM comments WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY created_at',[id])).rows,
   bitrixCommentCount:imported.count,bitrixLinked:imported.linked,bitrixExchangeState:imported.exchangeState,
@@ -156,11 +178,12 @@ export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHisto
  };
 }
 export async function taskBitrixResults(user:User,id:string,allowQueue=true){
- await taskFor(pool,id,user);
- return loadBitrixResults(id,allowQueue);
+ const task=await workspaceTaskForRead(pool,id,user);
+ return loadBitrixResults(id,allowQueue&&!task.workspace_read_only);
 }
 export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true,focus?:string):Promise<BitrixDiscussion>{
- await taskFor(pool,id,user);
+ const task=await workspaceTaskForRead(pool,id,user);
+ allowQueue=allowQueue&&!task.workspace_read_only;
  const portal=process.env.BITRIX_PORTAL;
  const origin=portal&&/^[a-z0-9.-]+$/i.test(portal)?'https://'+portal:null;
  const [stored,links,results]=await Promise.all([

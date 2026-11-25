@@ -18,6 +18,7 @@ import {pool,type Db} from './db.js';
 import {personalNotifications} from './notifications.js';
 import {personalCalendar} from './personal-calendar.js';
 import {groupNotifications} from '../shared/notifications.js';
+import {teamScopeLabels} from '../shared/team-scopes.js';
 import type {PersonalTaskScope,Report,User,Task} from '../shared/types.js';
 
 const tasksPerPage=4;
@@ -30,10 +31,10 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
   if(t.status!=='completed')facts.push(botDue(t,now));
   return `<b>${h(compactTaskTitle(t.title,126))}</b>\n${h(facts.join(' · '))}\nИсполнитель · ${h(name(t.assignee_id))}\nПостановщик · ${h(name(t.creator_id))}`;
  });
- const list:ListOrigin={op:p.op,page,filter:p.filter,owner:p.owner,query:p.query,target:p.target};
+ const list:ListOrigin={op:p.op,page,filter:p.filter,owner:p.owner,query:p.query,target:p.target,team:p.team};
  const scope=approvalScope(await approvalHierarchy(db));
  const choices=slice.map(({task:t,pending})=>[button((t.assignment_pending&&t.assignee_id===u.id?'Принять #':'#')+taskNumber(t),'task',{id:t.id,list}),
-  ...(!pending&&!t.assignment_pending&&canComplete(u,t,scope)?[button('Завершить #'+taskNumber(t),'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
+  ...(!t.workspace_read_only&&!pending&&!t.assignment_pending&&canComplete(u,t,scope)?[button('Завершить #'+taskNumber(t),'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
  const range=slice.length===1?String(start+1):`${start+1}–${start+slice.length}`;
  const count=pages>1?`${range} из ${items.length}`:String(items.length);
  const taskScope:PersonalTaskScope|undefined=p.op==='tasks'&&(!p.owner||p.owner===u.id)?(p.filter==='created'?'created':'mine'):undefined;
@@ -44,7 +45,7 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
   ...choices,
   [...(page?[button('← Назад',p.op,{...list,page:page-1})]:[]),...(page+1<pages?[button('Дальше →',p.op,{...list,page:page+1})]:[])],
   [...(p.op==='plan_tasks'?[button('К плану','reports',{id:p.target,filter:p.filter})]:p.op==='director_batch'?[]:
-   p.op==='inbox'?[button('К срокам и действиям','inbox')]:[button('Фильтры','task_filters',{owner:p.owner})]),...(p.owner&&p.owner!==u.id?[button('К команде','team')]:[]),button('Меню','home')]
+   p.op==='inbox'?[button('К срокам и действиям','inbox',{team:p.team})]:[button('Фильтры','task_filters',{owner:p.owner,team:p.team})]),...(p.owner&&p.owner!==u.id?[button('К команде','team',{team:p.team})]:[]),button('Меню','home')]
  ],db);
  return {...result,taskScope};
 }
@@ -143,10 +144,13 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  }
  const own=data.tasks.filter(task=>task.assignee_id===u.id);
  const teamIds=new Set(data.teamIds);
+ if(p.team)assert(data.salesTeams,403,'Эта область команды недоступна.');
+ const selectedTeam=p.team??(data.salesTeams&&p.op==='team'?'team':undefined);
+ const teamTasks=selectedTeam&&data.salesTeams?new Set(data.salesTeams[selectedTeam]):null;
  if(p.op==='team'){
   assert(canManage(u),403,'Задачи команды доступны руководителю.');
   const owners=new Map<string,Task[]>();
-  for(const task of data.tasks.filter(task=>teamIds.has(task.assignee_id))){
+  for(const task of data.tasks.filter(task=>teamTasks?teamTasks.has(task.id):teamIds.has(task.assignee_id))){
    const assigned=owners.get(task.assignee_id)??[];
    assigned.push(task);owners.set(task.assignee_id,assigned);
   }
@@ -154,17 +158,18 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    .sort((a,b)=>b.overdue-a.overdue||b.today-a.today||b.open-a.open||a.name.localeCompare(b.name,'ru'));
   const page=Math.max(0,Math.min(p.page||0,Math.ceil(people.length/6)-1));
   const shown=people.slice(page*6,page*6+6);
-  return htmlScreen(u,ch,'<b>Задачи команды</b>\nВыберите сотрудника. Числа под именем относятся к его задачам.\n\n'+
+  return htmlScreen(u,ch,`<b>${selectedTeam?teamScopeLabels[selectedTeam]:'Задачи команды'}</b>\nВыберите сотрудника. Числа под именем относятся к его задачам.\n\n`+
    (shown.map(person=>`<b>${h(person.name)}</b>\nОткрыто: ${person.open} · Просрочено: ${person.overdue} · Сегодня: ${person.today}`).join('\n\n')||'У сотрудников пока нет задач.'),[
-   ...shown.map(person=>[button(person.name,'tasks',{owner:person.id,filter:'open'})]),
-   [...(page?[button('← Назад','team',{page:page-1})]:[]),...((page+1)*6<people.length?[button('Дальше →','team',{page:page+1})]:[])],
-   [button('Отчёт команды','reports',{filter:'team'}),button('Меню','home')]
+   ...(data.salesTeams?[[button(teamScopeLabels.team,'team',{team:'team'}),button(teamScopeLabels.sales,'team',{team:'sales'})]]:[]),
+   ...shown.map(person=>[button(person.name,'tasks',{owner:person.id,filter:'open',team:selectedTeam})]),
+   [...(page?[button('← Назад','team',{page:page-1,team:selectedTeam})]:[]),...((page+1)*6<people.length?[button('Дальше →','team',{page:page+1,team:selectedTeam})]:[])],
+   [button('Отчёт команды','reports',{filter:selectedTeam??'team'}),button('Меню','home')]
   ],db);
  }
  const owner=p.owner||u.id;
- const scoped=data.tasks.filter(task=>task.assignee_id===owner);
+ const scoped=data.tasks.filter(task=>task.assignee_id===owner&&(!teamTasks||teamTasks.has(task.id)));
  const placed=data.tasks.filter(task=>task.creator_id===u.id);
- if(p.owner&&owner!==u.id)assert(canManage(u)&&scoped.length&&(teamIds.has(owner)||hasCompanyOverview(u)),404,'Сотрудник вне доступной команды.');
+ if(p.owner&&owner!==u.id)assert(canManage(u)&&scoped.length&&(teamTasks||teamIds.has(owner)||hasCompanyOverview(u)),404,'Сотрудник вне доступной команды.');
  const matches=(t:Task,filter:string)=>{
   if(filter==='open'||filter==='mine')return t.status!=='completed';
   if(filter==='active')return t.status==='active';
@@ -176,10 +181,10 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   if(filter==='today')return deadline==='today'&&!expired;
   return deadline===filter;
  };
- const queue=workQueue(data);
+ const queue=workQueue(data,p.op==='inbox'?p.team??'mine':'mine');
  if(p.op==='task_filters'){
   const count=(filter:string)=>filter==='created'?placed.length:scoped.filter(t=>matches(t,filter)).length;
-  const choice=(text:string,filter:string)=>button(`${text} · ${count(filter)}`,'tasks',{filter,owner});
+  const choice=(text:string,filter:string)=>button(`${text} · ${count(filter)}`,'tasks',{filter,owner,team:p.team});
   return htmlScreen(u,ch,'<b>'+h(owner===u.id?'Мои задачи':name(owner))+' · фильтры</b>\n\nВремя — московское.',[
    ...(owner===u.id?[[choice('Мои сроки','my_due')]]:[]),
    [choice('Просрочены','overdue'),choice('Срок сегодня','today')],
@@ -191,19 +196,21 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  }
  if(['inbox','tasks','day'].includes(p.op)){
   if(p.op==='inbox'){
+   const labels=p.team?{...workLabels,next:'Нужно действие',waiting:'Ждут решения'}:workLabels;
+   const title=p.team?workQueueTitle+' · '+teamScopeLabels[p.team]:workQueueTitle;
    if(p.filter&&Object.hasOwn(workLabels,p.filter)){
     const key=p.filter as WorkBucket;
     return taskList(u,ch,p,queue[key].map(item=>({
      task:item.task,hint:item.label+(key==='waiting'&&item.ownerId?' · '+name(item.ownerId):''),
      pending:item.pendingApproval||key==='waiting'||item.needsAcceptance||!!item.action
-    })),workLabels[key],now,name,db);
+    })),labels[key],now,name,db);
    }
    const earlier=queue.overdue.filter(item=>item.deadlineState==='earlier').length;
    const expired=queue.overdue.length-earlier;
-   return htmlScreen(u,ch,`<b>${workQueueTitle}</b>\n\nПросрочено с прошлых дней · ${earlier}\nИстекло сегодня · ${expired}\nКрайний срок сегодня · ${queue.today.length}\nЖдут моего действия · ${queue.next.length}\nЖдут действия коллеги · ${queue.waiting.length}\nОстальные в работе · ${queue.planned.length}`,[
-    [button('Просрочено · '+queue.overdue.length,'inbox',{filter:'overdue'}),button('Крайний срок сегодня · '+queue.today.length,'inbox',{filter:'today'})],
-    [button('Ждут моего действия · '+queue.next.length,'inbox',{filter:'next'})],
-    [button('Ждут действия коллеги · '+queue.waiting.length,'inbox',{filter:'waiting'}),button('Остальные в работе · '+queue.planned.length,'inbox',{filter:'planned'})],
+   const choose=(key:WorkBucket)=>button(labels[key]+' · '+queue[key].length,'inbox',{filter:key,team:p.team});
+   return htmlScreen(u,ch,`<b>${title}</b>\n\nПросрочено с прошлых дней · ${earlier}\nИстекло сегодня · ${expired}\nКрайний срок сегодня · ${queue.today.length}\n${labels.next} · ${queue.next.length}\n${labels.waiting} · ${queue.waiting.length}\nОстальные в работе · ${queue.planned.length}`,[
+    ...(data.salesTeams?[[button('Мои','inbox'),button(teamScopeLabels.team,'inbox',{team:'team'}),button(teamScopeLabels.sales,'inbox',{team:'sales'})]]:[]),
+    [choose('overdue'),choose('today')],[choose('next')],[choose('waiting'),choose('planned')],
     [button('Меню','home')]
    ],db);
   }
@@ -223,7 +230,8 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   return htmlScreen(u,ch,'<b>Другие разделы</b>',[
    [button('Напоминания','alerts'),...(!canManage(u)?[button('Отчёты','reports',{filter:'mine'})]:[])],
    [button('Мой календарь','personal_plan')],
-   ...(canManage(u)?[[button('Сводка команды','brief',{filter:'team'})]]:[]),
+   ...(canManage(u)?data.salesTeams?[[button(teamScopeLabels.team,'brief',{filter:'team'}),
+    button(teamScopeLabels.sales,'brief',{filter:'sales'})]]:[[button('Сводка команды','brief',{filter:'team'})]]:[]),
    ...(last?[[button('Отменить последнее действие','undo_prepare',{id:last.task_id,target:last.id})]]:[]),
    [button('Как пользоваться','help')],[button('Меню','home')]
   ]);
@@ -235,7 +243,8 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nПросрочено · ${queue.overdue.length} · На сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}`,[
   ...(data.pendingAssignments?[[button('Новые задачи к приёму · '+data.pendingAssignments,'personal_plan',{filter:'awaiting'})]]:[]),
   [button(workQueueTitle+' · '+workCount(queue),'inbox')],
-  [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)?[button('Задачи команды','team')]:[])],
+  [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)&&!data.salesTeams?[button('Задачи команды','team')]:[])],
+  ...(canManage(u)&&data.salesTeams?[[button(teamScopeLabels.team,'team',{team:'team'}),button(teamScopeLabels.sales,'team',{team:'sales'})]]:[]),
   ...(company?[[button('Сводка компании','brief',{filter:'company'}),button('Отчёты','reports')]]:
    canManage(u)?[[button('Мои отчёты','reports',{filter:'mine'})]]:[]),
   [button('Новая задача','form',{kind:'create_task'}),button('Поиск','search_prompt'),button('Уведомления','notices')],

@@ -165,6 +165,54 @@ test('analytics API enforces scopes and returns aggregate figures without task d
  assert.equal((await fetch(base+'/analytics/overview',{headers:{Cookie:deputy,'X-Ruspet-View-As':'head-crimea'}})).status,403);
 });
 
+test('a sales deputy sees the same disjoint teams in work, reports and the bot without gaining write access',async()=>{
+ const {rows:[deputy]}=await db.pool.query<User>(`INSERT INTO users(id,name,role,branch_id,position,sales_analytics_access)
+  VALUES('regional-deputy','Заместитель по продажам','branch_manager','Головной офис / Продажи','Заместитель руководителя продаж',true) RETURNING *`);
+ await db.pool.query(`INSERT INTO users(id,name,role,branch_id,position) VALUES
+  ('sales-analyst','Аналитик','employee','Головной офис / Продажи','Аналитик продаж'),
+  ('analyst-assistant','Ассистент','employee','Головной офис / Продажи','Ассистент аналитика')`);
+ await db.pool.query(`INSERT INTO org_reporting(employee_id,manager_id) VALUES
+  ('sales-analyst','regional-deputy'),('analyst-assistant','sales-analyst')`);
+ await db.pool.query(`INSERT INTO staff_directory(id,source_key,name,name_key,organisation,department,emails,phones,user_id) VALUES
+  ($1,'sales-analyst','Аналитик','аналитик','РУСПЭТ','аналитики','{}','{}','sales-analyst'),
+  ($2,'analyst-assistant','Ассистент','ассистент','РУСПЭТ','аналитики','{}','{}','analyst-assistant')`,[randomUUID(),randomUUID()]);
+ await task('analyst-work','sales-analyst','Головной офис / Продажи',today('16:00'));
+ await task('assistant-work','analyst-assistant','Головной офис / Продажи',today('16:00'));
+ await task('deputy-work','regional-deputy','Головной офис / Продажи',today('16:00'));
+ await task('warehouse-work','rep-crimea','Крым / Склад',today('16:00'));
+
+ const service=await import('../server/service.js');
+ const {workQueue}=await import('../shared/work-queue.js');
+ const {managementProgress}=await import('../server/management.js');
+ const {renderBotNavigation}=await import('../server/bot-navigation.js');
+ const data={...await service.bootstrap(deputy,true),serverTime:now.toISOString()};
+ assert.deepEqual(data.salesTeams?.team.slice().sort(),['analyst-work','assistant-work']);
+ assert(data.salesTeams?.sales.includes('due')&&data.salesTeams.sales.includes('aquas'));
+ assert(!data.salesTeams?.sales.some(id=>['buyer','excluded','warehouse-work','deputy-work'].includes(id)));
+ assert(data.tasks.find(task=>task.id==='due')?.workspace_read_only);
+ assert.equal((await service.detail(deputy,'due')).editAccess.canEdit,false);
+ await assert.rejects(()=>service.addComment(deputy,'due','Попытка изменения вне обычных прав'),{status:404});
+ await assert.rejects(()=>service.detail(deputy,'buyer'),{status:404});
+ assert.deepEqual(workQueue(data,'team').today.map(row=>row.task.id).sort(),['analyst-work','assistant-work']);
+ assert(workQueue(data,'sales').today.some(row=>row.task.id==='aquas'));
+ assert(!workQueue(data,'sales').today.some(row=>row.task.id==='analyst-work'));
+ assert(workQueue(data,'mine').today.some(row=>row.task.id==='deputy-work'));
+ const teamProgress=await managementProgress(deputy,{team:'team'});
+ assert.deepEqual(teamProgress.rows.map(row=>row.id).sort(),['analyst-assistant','sales-analyst']);
+ assert((await managementProgress(deputy,{team:'sales'})).rows.some(row=>row.id==='rep-crimea'));
+ const teamReport=await service.makeReport(deputy,'today','deputy-team-fixture',now,{view:'team'});
+ const salesReport=await service.makeReport(deputy,'today','deputy-sales-fixture',now,{view:'sales'});
+ assert.deepEqual(teamReport.rows.map(row=>row.id).sort(),['analyst-work','assistant-work']);
+ assert(salesReport.rows.some(row=>row.id==='aquas'));
+ assert(!salesReport.rows.some(row=>['buyer','warehouse-work','analyst-work'].includes(row.id)));
+ await assert.rejects(()=>service.getReport({...deputy,sales_analytics_access:false},teamReport.id),{status:404});
+ const menu=await renderBotNavigation(deputy,'deputy-fixture',{op:'inbox'});
+ assert(menu.buttons.flat().some(button=>button.text==='Моя команда'));
+ assert(menu.buttons.flat().some(button=>button.text==='Команда продаж'));
+ const sales=await renderBotNavigation(deputy,'deputy-fixture',{op:'inbox',team:'sales'});
+ assert.match(sales.text,/Сроки и действия · Команда продаж/);
+});
+
 test('a sales branch shows the shared director from the reporting tree when no local lead is assigned',async()=>{
  await db.pool.query("UPDATE users SET branch_id='AQUAS',position='Сотрудник AQUAS' WHERE id='head-crimea'");
  await db.pool.query("UPDATE org_reporting SET manager_id='director' WHERE employee_id='rep-crimea'");

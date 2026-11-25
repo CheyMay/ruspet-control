@@ -1,14 +1,14 @@
 import {summarize} from '../shared/analytics.js';
 import type {Task,User} from '../shared/types.js';
 
-export function TeamTasks({tasks,users,now,paused,onSelect}:{tasks:Task[];users:User[];now:Date;paused:ReadonlySet<string>;onSelect:(id:string,filter:string)=>void}){
+export function TeamTasks({tasks,users,now,paused,onSelect,heading='Задачи команды'}:{tasks:Task[];users:User[];now:Date;paused:ReadonlySet<string>;onSelect:(id:string,filter:string)=>void;heading?:string}){
  const people=users.map(user=>{
   const counts=summarize(tasks.filter(task=>task.assignee_id===user.id),now,paused);
   return {user,...counts,overdue:counts.overdue+counts.elapsedToday,today:counts.today-counts.elapsedToday};
  })
   .filter(row=>row.total).sort((a,b)=>b.overdue-a.overdue||b.today-a.today||b.unfinished-a.unfinished||a.user.name.localeCompare(b.user.name,'ru'));
  return <section className="panel team-summary">
-  <div className="panel-heading"><div><h2>Задачи команды</h2><p>Выберите сотрудника или нажмите на показатель.</p></div></div>
+  <div className="panel-heading"><div><h2>{heading}</h2><p>Выберите сотрудника или нажмите на показатель.</p></div></div>
   {people.length?<div className="table-scroll"><table>
    <thead><tr><th>Сотрудник</th><th>Открыто</th><th>Просрочено</th><th>Сегодня</th><th>На приёмке</th></tr></thead>
    <tbody>{people.map(row=><tr key={row.user.id}>

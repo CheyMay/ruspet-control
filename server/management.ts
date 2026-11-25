@@ -1,17 +1,21 @@
 import {randomUUID} from 'node:crypto';
 import {pool,transaction} from './db.js';
-import {visibleTasks,event,notify} from './service.js';
+import {visibleTasks,workspaceTasks,event,notify} from './service.js';
 import {assert,canManage} from './domain.js';
 import {summarize} from '../shared/analytics.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
 import type {User} from '../shared/types.js';
+import type {TeamScope} from '../shared/team-scopes.js';
 
-export async function managementProgress(u:User,range:{from?:string;to?:string;owner?:string}={}){
+export async function managementProgress(u:User,range:{from?:string;to?:string;owner?:string;team?:TeamScope}={}){
  assert(canManage(u),403,'Раздел доступен руководителю.');
  const mark=(await pool.query('SELECT * FROM management_observations WHERE user_id=$1',[u.id])).rows[0]||null;
  const inactive=new Set((await pool.query<{user_id:string}>(`SELECT user_id FROM staff_directory
   WHERE user_id IS NOT NULL GROUP BY user_id HAVING NOT bool_or(enabled)`)).rows.map(row=>row.user_id));
- const tasks=(await visibleTasks(u)).filter(t=>!inactive.has(t.assignee_id)&&(!range.owner||t.assignee_id===range.owner)),ids=tasks.map(t=>t.id);
+ const workspace=await workspaceTasks(u);
+ assert(!range.team||workspace.salesTeams,403,'Эта область команды недоступна.');
+ const teamIds=range.team?new Set(workspace.salesTeams?.[range.team]):null;
+ const tasks=workspace.tasks.filter(t=>!inactive.has(t.assignee_id)&&(!teamIds||teamIds.has(t.id))&&(!range.owner||t.assignee_id===range.owner)),ids=tasks.map(t=>t.id);
  const from=range.from?range.from+'T00:00:00+03:00':mark?.started_at||null;
  const to=range.to?range.to+'T23:59:59.999+03:00':new Date().toISOString();
  assert(!from||Date.parse(from)<=Date.parse(to),400,'Начало периода позже окончания.');

@@ -1,12 +1,13 @@
 import {actionItems,activeTaskApproval,canReview,taskNextAction,type ActionItem} from './actions.js';
 import {businessDay} from './queues.js';
 import type {Bootstrap,Task} from './types.js';
+import type {TeamScope} from './team-scopes.js';
 
 export const workQueueTitle='Сроки и действия';
 export const workLabels={overdue:'Просрочено',today:'Крайний срок сегодня',next:'Ждут моего действия',waiting:'Ждут действия коллеги',planned:'Остальные в работе'} as const;
 export const workBuckets=['overdue','today','next','waiting','planned'] as const;
 export type WorkBucket=keyof typeof workLabels;
-export type WorkScope='mine'|'team';
+export type WorkScope='mine'|TeamScope;
 export type WorkTask={
  task:Task;bucket:WorkBucket;deadlineState:'earlier'|'expired'|'today'|null;
  ownerId:string|null;action:ActionItem|null;needsAcceptance:boolean;pendingApproval:boolean;
@@ -30,33 +31,35 @@ export const workCount=(queue:WorkQueue)=>queue.overdue.length+queue.today.lengt
 export function workQueue(data:Bootstrap,scope:WorkScope='mine'):WorkQueue{
  const queue:WorkQueue={overdue:[],today:[],next:[],waiting:[],planned:[]};
  const user=data.user,now=new Date(data.serverTime),today=businessDay(now);
- if(scope==='team'&&user.role==='employee')return queue;
+ const personal=scope==='mine';
+ if(!data.salesTeams&&(scope==='sales'||scope==='team'&&user.role==='employee'))return queue;
+ const teamTasks=!personal&&data.salesTeams?new Set(data.salesTeams[scope]):null;
  const allVisible=user.role==='admin'||user.role==='director',members=new Set(data.teamIds??[]);
  const awaiting=new Set(data.pendingAssignmentIds??[]);
  const approvals=new Map(data.approvals.filter(a=>a.state==='pending'&&!a.canceled_at).map(a=>[a.task_id,a]));
  const actions=new Map<string,ActionItem>();
  for(const item of actionItems(data)){
-  if(scope==='mine'&&!item.mine)continue;
+  if(personal&&!item.mine)continue;
   const previous=actions.get(item.taskId);
   if(!previous||priority[item.kind]<priority[previous.kind])actions.set(item.taskId,item);
  }
  for(const task of data.tasks){
-  if(task.status==='completed')continue;
+  if(task.status==='completed'||personal&&task.workspace_read_only)continue;
   const own=task.assignee_id===user.id;
-  if(scope==='team'&&(own||!allVisible&&!members.has(task.assignee_id)))continue;
+  if(!personal&&(own||(teamTasks?!teamTasks.has(task.id):!allVisible&&!members.has(task.assignee_id))))continue;
   const approval=approvals.get(task.id);
   const pendingApproval=!!approval&&activeTaskApproval(task,approval);
   const current=taskNextAction(task,pendingApproval?approval:undefined,data.approvalScope);
-  const allowedReview=scope==='team'||task.status!=='review'||pendingApproval||canReview(user,task,data.approvalScope);
+  const allowedReview=!personal||task.status!=='review'||pendingApproval||canReview(user,task,data.approvalScope);
   const turn=allowedReview||current?.userId!==user.id?current:null;
   const candidate=actions.get(task.id);
   const related=pendingApproval&&candidate?.kind==='rework'||!allowedReview&&candidate?.kind==='review'?null:candidate??null;
-  if(scope==='mine'&&!own&&!related)continue;
+  if(personal&&!own&&!related)continue;
   const stage=pendingApproval||task.status==='review';
   const deadline=pendingApproval?null:deadlineState(task,now,today);
   const needsAcceptance=own&&task.status==='active'&&awaiting.has(task.id);
-  const waiting=stage&&(scope==='team'||turn?.userId!==user.id)&&(!related||scope==='team');
-  const execution=task.status==='active'&&!pendingApproval&&(scope==='team'||own&&turn?.userId===user.id);
+  const waiting=stage&&(!personal||turn?.userId!==user.id)&&(!related||!personal);
+  const execution=task.status==='active'&&!pendingApproval&&(!personal||own&&turn?.userId===user.id);
   let bucket:WorkBucket;
   if(waiting)bucket='waiting';
   else if(execution&&deadline)bucket=deadline==='today'?'today':'overdue';

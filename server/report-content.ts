@@ -1,11 +1,14 @@
 import type {Report} from '../shared/types.js';
 import {reportKindLabels,reportViewLabels} from '../shared/report-parameters.js';
+import {teamScopeLabels} from '../shared/team-scopes.js';
 import {priceLabels} from '../shared/pricing.js';
 import {taskLink,reportLink,type ReportLink} from '../shared/report-links.js';
 export function publicOrigin(){const url=new URL(process.env.PUBLIC_ORIGIN||'https://cheymay.ru');if(!['https:','http:'].includes(url.protocol))throw Error('Invalid PUBLIC_ORIGIN');return url.origin;}
 const date=(s:string)=>new Date(s).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'});
 export function reportText(r:Report,includeTeam=true){
- const title=reportKindLabels[r.kind||'snapshot']+(r.parameters?.view?' · '+reportViewLabels[r.parameters.view]:'');
+ const view=r.parameters?.view;
+ const viewLabel=view==='team'&&r.scope.startsWith('sales-team:')?teamScopeLabels.team:view&&reportViewLabels[view];
+ const title=reportKindLabels[r.kind||'snapshot']+(viewLabel?' · '+viewLabel:'');
  const s=r.summary;if(!s)return {text:`${title}\nСоздан: ${date(r.created_at)} МСК\nВсего: ${r.metrics.total}\nПросрочки: ${r.metrics.overdue}\nСегодня: ${r.metrics.today}\nПриёмка: ${r.metrics.review}`,links:[] as ReportLink[]};
  if(!s.stateAvailable)return {text:`${title}\n${date(s.from)} — ${date(s.to)} МСК\nСостояние задач на выбранное время недоступно. Числовые показатели не рассчитаны.\n${s.notes.join('\n')}`,links:[] as ReportLink[]};
  const lines=[title,`${date(s.from)} — ${date(s.to)} МСК`];

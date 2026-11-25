@@ -14,12 +14,15 @@ import {activeTaskApproval,approvalTurn,taskNextAction} from '../shared/actions.
 import {branchCovers} from '../shared/branches.js';
 import {approvalHierarchy,approvalScope} from './approval-hierarchy.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
+import {loadAnalyticsScope} from './analytics-scope.js';
+import {hasSplitTeams,isTeamScope} from '../shared/team-scopes.js';
 
-const scopeForView=(u:User,view:ReportView)=>view==='mine'?'user:'+u.id:view==='created'?'created:'+u.id:view==='team'?'team:'+u.id:'company';
+const scopeForView=(u:User,view:ReportView)=>view==='mine'?'user:'+u.id:view==='company'?'company':
+ view==='team'&&hasSplitTeams(u)?'sales-team:'+u.id:view+':'+u.id;
 export function reportScopes(u:User,view?:ReportView){
  const allowed=reportViews(u);
  if(view)assert(allowed.includes(view),403,'Этот раздел отчётов недоступен.');
- return [...(view?[view]:allowed).map(mode=>scopeForView(u,mode)),
+ return [...(view?[view]:allowed).map(mode=>scopeForView(u,mode)),...(!view&&hasSplitTeams(u)?['team:'+u.id]:[]),
   ...(!view&&u.role==='branch_manager'&&!u.company_branch_access?['branch:'+u.branch_id]:[])];
 }
 export function stateAt(current:Task,events:Event[],at:Date):Task|null {
@@ -49,19 +52,21 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   if(p.queue==='all')delete p.queue;
   if(view==='mine'){assert(!p.assigneeId||p.assigneeId===u.id,403,'Личный отчёт формируется только по своим задачам.');p.assigneeId=u.id;}
   if(view==='created'){assert(!p.creatorId||p.creatorId===u.id,403,'В этом отчёте видны только поставленные вами задачи.');p.creatorId=u.id;}
-  if(view==='team')assert(p.assigneeId!==u.id,400,'Для своих задач откройте личный отчёт.');
+  if(isTeamScope(view))assert(p.assigneeId!==u.id,400,'Для своих задач откройте личный отчёт.');
   const from=p.from?new Date(p.from):localDayStart(moscowDay(now)),to=p.to?new Date(p.to):now;
   assert(Number.isFinite(from.getTime())&&Number.isFinite(to.getTime())&&from<=to&&to<=now,400,'Укажите корректный период, не позже текущего времени.');
   p.from=from.toISOString();p.to=to.toISOString();
   const day=moscowDay(to),key=createHash('sha256').update(JSON.stringify({kind,day,assignee:p.assigneeId||null,creator:p.creatorId||null,actor:p.actorId||null,price:p.priceBand||null,queue:p.queue||null,from:p.from,to:raw.to?p.to:null})).digest('hex');
   const old=(await db.query('SELECT * FROM reports WHERE day=$1 AND scope=$2 AND kind=$3 AND slot=$4',[day,scope,kind,slot])).rows[0];
   if(old){assert(old.comparison_key===key,409,'Этот запрос уже использован с другими параметрами. Создайте новый отчёт.');return old;}
-  const team=view==='team'?new Set(await teamMemberIds(u,db)):null;
+  const split=isTeamScope(view)&&hasSplitTeams(u)?await loadAnalyticsScope(u,db):null;
+  const team=view==='team'&&!split?new Set(await teamMemberIds(u,db)):null;
   if(team&&p.assigneeId)assert(team.has(p.assigneeId),403,'Исполнитель вне вашей команды.');
   const workScope=controlledOnly?await staffWorkIds(db):null;
   const inView=(task:Task)=>(!controlledOnly||controlsTask(task,workScope))&&
-   (view==='mine'?task.assignee_id===u.id:view==='created'?task.creator_id===u.id:team?team.has(task.assignee_id):true);
-  const current=(await db.query<Task>('SELECT * FROM tasks WHERE ($1::text IS NULL OR creator_id=$1) ORDER BY deadline NULLS LAST,id',[view==='created'?u.id:null])).rows.filter(t=>canSee(u,t));
+   (split?split.teamFor(task)===view:view==='mine'?task.assignee_id===u.id:view==='created'?task.creator_id===u.id:team?team.has(task.assignee_id):true);
+  const canRead=(task:Task)=>canSee(u,task)||!!split?.teamFor(task);
+  const current=(await db.query<Task>('SELECT * FROM tasks WHERE ($1::text IS NULL OR creator_id=$1) ORDER BY deadline NULLS LAST,id',[view==='created'?u.id:null])).rows.filter(canRead);
   const allowedIds=current.map(t=>t.id),allowed=new Set(allowedIds);
   const history=(await db.query('SELECT * FROM task_events WHERE task_id=ANY($1) ORDER BY created_at,id',[allowedIds])).rows as Event[];
   const byCurrent=new Map(current.map(t=>[t.id,t]));const byHistory=new Map<string,Event[]>();for(const e of history){const list=byHistory.get(e.task_id!)||[];list.push(e);byHistory.set(e.task_id!,list);}
@@ -69,24 +74,24 @@ export async function generateReport(u:User,kind:string,slot:string,now:Date,raw
   const source=(await db.query('SELECT * FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null;
   const tracked=source?.imported_at||history.map(e=>e.created_at).sort()[0]||current.map(t=>t.created_at).sort()[0]||null;
   const stateAvailable=!tracked||Date.parse(tracked)<=to.getTime();
-  const atEnd=stateAvailable?current.map(t=>atTime(t.id,to)).filter((t):t is Task=>!!t&&canSee(u,t)&&inView(t)):[];
+  const atEnd=stateAvailable?current.map(t=>atTime(t.id,to)).filter((t):t is Task=>!!t&&canRead(t)&&inView(t)):[];
   const scoped=atEnd.filter(t=>matchesParameters(t,{...p,queue:'all'},to));
   const filtered=atEnd.filter(t=>matchesParameters(t,p,to));
   const users=(await db.query('SELECT id,name,role,branch_id,position FROM users')).rows as User[];
-  const currentAssignees=new Set(current.map(t=>t.assignee_id));
-  const eligible=users.filter(person=>(view==='mine'?person.id===u.id:!team||team.has(person.id))&&
+  const currentAssignees=new Set((split?atEnd:current).map(t=>t.assignee_id));
+  const eligible=users.filter(person=>split?currentAssignees.has(person.id):(view==='mine'?person.id===u.id:!team||team.has(person.id))&&
    (view==='created'?currentAssignees.has(person.id):globalAccess(u)||person.id===u.id||u.role==='branch_manager'&&branchCovers(u.branch_id,person.branch_id)||currentAssignees.has(person.id)));
   if(p.assigneeId)assert(eligible.some(person=>person.id===p.assigneeId),403,'Исполнитель вне доступной области.');
   const owners=p.assigneeId?[p.assigneeId]:[...new Set(eligible.map(person=>person.id))];
   // Only a live report may establish today's baseline; historical reports never invent it.
   if(view!=='created'&&day===moscowDay(now)&&Math.abs(to.getTime()-now.getTime())<1000)await captureFronts(db,owners,now);
-  const fronts=(await db.query('SELECT * FROM work_fronts WHERE user_id=ANY($1) AND day=$2 AND captured_at<=$3',[owners,day,to.toISOString()])).rows.map((f:FrontSnapshot)=>({...f,rows:f.rows.filter(t=>canSee(u,t)&&inView(t))}));
+  const fronts=(await db.query('SELECT * FROM work_fronts WHERE user_id=ANY($1) AND day=$2 AND captured_at<=$3',[owners,day,to.toISOString()])).rows.map((f:FrontSnapshot)=>({...f,rows:f.rows.filter(t=>canRead(t)&&inView(t))}));
   const selectedQueue=p.queue?p.queue:['today','overdue','review'].includes(kind)?kind:'all';
   const queueMatches=(t:Task)=>selectedQueue==='all'||selectedQueue==='today'&&!!t.deadline&&moscowDay(t.deadline)===day||selectedQueue==='overdue'&&!!t.deadline&&new Date(t.deadline)<to||selectedQueue==='review'&&t.status==='review'||selectedQueue==='completed'&&t.status==='completed'||selectedQueue==='no_deadline'&&!t.deadline||selectedQueue==='front'&&t.status!=='completed'&&frontTasks([t],day).length>0;
   const retracted=new Set((await db.query('SELECT r.event_id FROM event_retractions r JOIN task_events e ON e.id=r.event_id WHERE e.task_id=ANY($1) AND r.created_at<=$2',[allowedIds,to.toISOString()])).rows.map(r=>r.event_id));
   const inRange=history.filter(e=>!retracted.has(e.id)).filter(e=>Date.parse(e.created_at)>=from.getTime()&&Date.parse(e.created_at)<=to.getTime()).filter(e=>{
    const t=(e.data.after||e.data.before) as Task|undefined;const snapshot=t?.id?t:atTime(e.task_id!,new Date(e.created_at));const before=e.data.before as Task|undefined;
-   return (!p.actorId||e.actor_id===p.actorId)&&!!snapshot&&canSee(u,snapshot)&&inView(snapshot)&&matchesParameters(snapshot,{...p,queue:'all'},to)&&(queueMatches(snapshot)||!!before&&queueMatches(before));
+   return (!p.actorId||e.actor_id===p.actorId)&&!!snapshot&&canRead(snapshot)&&inView(snapshot)&&matchesParameters(snapshot,{...p,queue:'all'},to)&&(queueMatches(snapshot)||!!before&&queueMatches(before));
   });
   const closedIds=new Set(inRange.filter(e=>reportOutcome(e)==='task_completed').map(e=>e.task_id));
   const touched=new Set(inRange.filter(e=>workKinds.has(reportOutcome(e))).map(e=>e.task_id));

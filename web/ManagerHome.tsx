@@ -5,12 +5,13 @@ import {TaskPeople} from './TaskPeople.js';
 import {TaskMeta} from './TaskMeta.js';
 import {workLabels,type WorkBucket,type WorkQueue} from '../shared/work-queue.js';
 import type {Bootstrap,Task} from '../shared/types.js';
+import {teamScopeLabels} from '../shared/team-scopes.js';
 
 type Props={data:Bootstrap;queue:WorkQueue;open:(id:string,tab?:string)=>void;tasks:(filter:string)=>void;placed:()=>void;
- actions:(bucket?:WorkBucket)=>void;team?:()=>void;calendar?:()=>void;complete?:(task:Task)=>void;busy?:boolean};
+ actions:(bucket?:WorkBucket)=>void;team?:()=>void;sales?:()=>void;calendar?:()=>void;complete?:(task:Task)=>void;busy?:boolean};
 const timestamp=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
 
-export function ManagerHome({data,queue,open,tasks,placed,actions,team,calendar,complete,busy=false}:Props){
+export function ManagerHome({data,queue,open,tasks,placed,actions,team,sales,calendar,complete,busy=false}:Props){
  const own=data.tasks.filter(task=>task.assignee_id===data.user.id&&task.status!=='completed');
  const focus=[...queue.overdue,...queue.today];
  const metrics=[{bucket:'overdue',Icon:Clock3},{bucket:'today',Icon:CalendarDays},{bucket:'next',Icon:ListTodo},{bucket:'waiting',Icon:Clock3},{bucket:'planned',Icon:ListTodo}] as const;
@@ -20,7 +21,8 @@ export function ManagerHome({data,queue,open,tasks,placed,actions,team,calendar,
    <div className="task-scope-actions">
     <button className="button secondary" onClick={()=>tasks('all')}>Мои задачи <ArrowRight size={16}/></button>
     <button className="button secondary" onClick={placed}>Я постановщик</button>
-    {team&&<button className="button secondary" onClick={team}>Задачи команды</button>}
+    {team&&<button className="button secondary" onClick={team}>{sales?teamScopeLabels.team:'Задачи команды'}</button>}
+    {sales&&<button className="button secondary" onClick={sales}>{teamScopeLabels.sales}</button>}
     {calendar&&!!data.pendingAssignments&&<button className="button primary" onClick={calendar}>Принять и запланировать · {data.pendingAssignments}</button>}
    </div>
   </section>

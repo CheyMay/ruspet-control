@@ -8,6 +8,8 @@ import {useSectionParam} from './section-history.js';
 import {api} from './api.js';
 import {EmployeeFilter,matchesFilter} from './SearchFilter.js';
 import {activeTaskApproval,approvalTurn} from '../shared/actions.js';
+import {TeamScopeSwitch} from './TeamScopeSwitch.js';
+import type {TeamScope} from '../shared/team-scopes.js';
 
 const approvalKinds=[{id:'deadline',label:'Переносы сроков'},{id:'completion',label:'Закрытие задач'}] as const;
 export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}:{data:Bootstrap;render:(a:Approval)=>ReactNode;readOnly?:boolean;startOnMine?:boolean}){
@@ -17,7 +19,11 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
   const task=taskIndex.get(approval.task_id);
   return !!task&&activeTaskApproval(task,approval);
  };
- const mine=data.approvals.filter(a=>active(a)&&current(a)===data.user.id).length;
+ const [team,setTeam]=useState<'all'|TeamScope>('all');
+ const taskIds=team!=='all'&&data.salesTeams?new Set(data.salesTeams[team]):null;
+ const visibleApprovals=taskIds?data.approvals.filter(a=>taskIds.has(a.task_id)):data.approvals;
+ const myDecision=(a:Approval)=>!taskIndex.get(a.task_id)?.workspace_read_only&&active(a)&&current(a)===data.user.id;
+ const mine=visibleApprovals.filter(myDecision).length;
  const [tab,setTab]=useSectionParam('approval-tab');
  const section=tab==='mine'||tab==='open'||tab==='requests'||tab==='history'?tab:mine||startOnMine?'mine':data.user.role==='employee'?'requests':'open';
  const [query,setQuery]=useState('');
@@ -53,7 +59,7 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
  const tabLabels={mine:'От меня ждут решения',open:'Все открытые запросы',requests:'Мои открытые запросы',history:'История'};
  const states={pending:'На решении',clarification:'Нужно уточнение',approved:'Согласовано',rejected:'Отклонено',stale:'Неактуально',canceled:'Отменено'};
  const state=(a:Approval)=>a.canceled_at?'canceled':active(a)?waiting(a)?'clarification':'pending':a.state==='pending'?'stale':a.state;
- const scoped=data.approvals.filter(a=>section==='mine'?active(a)&&current(a)===data.user.id:
+ const scoped=visibleApprovals.filter(a=>section==='mine'?myDecision(a):
   section==='open'?active(a):section==='requests'?active(a)&&a.requester_id===data.user.id:!active(a)&&(data.user.role!=='employee'||a.requester_id===data.user.id||a.route.some(step=>step.userId===data.user.id)));
  const owners=new Set(scoped.map(a=>taskIndex.get(a.task_id)?.assignee_id));
  const actors=new Set(scoped.map(current));
@@ -76,6 +82,8 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
  const openStates=section!=='history';
  return <>
   {!readOnly&&data.user.role==='admin'&&<DirectorBatchPanel refreshKey={data.serverTime}/>}
+  {data.salesTeams&&<TeamScopeSwitch value={team} base={{id:'all',label:'Все доступные'}}
+   onChange={value=>{setTeam(value);setOwner('all');setActor('all');setLimit(12);}}/>}
   <div className="tabs approval-kind-tabs" aria-label="Показать согласования">
    {(Object.keys(tabLabels) as (keyof typeof tabLabels)[]).map(key=><button type="button" key={key} className={section===key?'selected':''}
     aria-pressed={section===key} onClick={()=>{setTab(key);setStatus('all');setOwner('all');setActor('all');setLimit(12);}}>

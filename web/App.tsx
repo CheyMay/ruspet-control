@@ -32,6 +32,7 @@ import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {ReminderInbox} from './ReminderInbox.js';
 import {ManagerHome} from './ManagerHome.js';
 import {TaskRoleSwitch} from './TaskRoleSwitch.js';
+import {isTeamScope,teamScopeLabels} from '../shared/team-scopes.js';
 import {MobileWorkspace} from './MobileWorkspace.js';
 import {PersonalCalendar,PersonalTaskPlan} from './PersonalCalendar.js';
 import {NotificationCenter,NotificationSettings} from './NotificationCenter.js';
@@ -348,7 +349,7 @@ export function App(){
  if(!next){setPage('overview');return;}
  if(nav.some(item=>item.id===next)&&!canOpenWorkspacePage(data.user,next as Page,data.analyticsAccess)){setPage('overview');return;}if(q.get('view')==='guide'){setPage('guide');return;}if(q.get('view')==='okb'){setPage('okb');setOkbCompany(q.get('client'));return;}if(q.get('view')==='training'&&data.user.root_access){setSettingsTarget('training');setPage('settings');return;}if(q.get('view')==='registrations'&&data.user.role==='admin'){setSettingsTarget('registrations');setPage('settings');return;}if(q.get('view')==='approvals'&&canOpenWorkspacePage(data.user,'approvals')){setPage('approvals');return;}if(q.get('view')==='notifications'){setPage('notifications');return;}if(q.get('view')==='actions'){const bucket=q.get('queue')||'';setWorkEntry({bucket:Object.hasOwn(workLabels,bucket)?bucket as WorkBucket:'all',visit:0});setPage('actions');return;}if(q.get('view')==='analytics'&&data.analyticsAccess&&!viewingEmployee){setPage('analytics');return;}if(q.get('view')==='calendar'&&!viewingEmployee){setPage('calendar');return;}if(q.get('view')==='reports'){if(!q.get('report')&&!canOpenWorkspacePage(data.user,'reports'))return;setPage('reports');setReportOpen(q.get('report'));setReportPdf(q.get('format')==='pdf');return;}if(q.get('view')!=='tasks'){setPage(nav.find(item=>item.id===next)?.id??'overview');return;}setPage('tasks');if(q.get('compose')==='1'&&!viewingEmployee){const url=new URL(location.href);url.searchParams.delete('compose');history.replaceState(history.state,'',url);routeFromUrl.current=url.search;setEditor({task:null});}
  const scope=q.get('scope'),ownerParam=q.get('owner');
- if(scope==='personal'||scope==='mine'||scope==='created'||scope==='team'||scope==='company')setTaskView(scope);
+ if(scope==='personal'||scope==='mine'||scope==='created'||isTeamScope(scope)||scope==='company')setTaskView(scope);
  else if(ownerParam===data.user.id)setTaskView('mine');
  else if((ownerParam||q.has('report'))&&hasCompanyOverview(data.user))setTaskView('company');
  else if(ownerParam&&managed(data.user))setTaskView('team');
@@ -414,12 +415,12 @@ export function App(){
     <td><Badge state={taskState(t)}>{taskState(t)==='overdue'?'Просрочена':undefined}</Badge>{(approval||t.status==='review')&&next?.userId&&<small>{next.label} · {userById(next.userId)?.name??next.userId}</small>}</td>
     <td className="mono">{t.transfer_count||'—'}</td>
     <td><div className="task-row-actions">
-     {!viewingEmployee&&t.assignee_id===data!.user.id&&t.assignment_pending&&<button type="button" className="button secondary" onClick={()=>void openTask(t.id)}>Принять</button>}
-     {!viewingEmployee&&t.status==='review'&&canReview(data!.user,t)&&approval?.type!=='deadline'&&(!approval?.clarification_requested_at||!!approval.clarification_answered_at)&&
+     {!viewingEmployee&&!t.workspace_read_only&&t.assignee_id===data!.user.id&&t.assignment_pending&&<button type="button" className="button secondary" onClick={()=>void openTask(t.id)}>Принять</button>}
+     {!viewingEmployee&&!t.workspace_read_only&&t.status==='review'&&canReview(data!.user,t)&&approval?.type!=='deadline'&&(!approval?.clarification_requested_at||!!approval.clarification_answered_at)&&
       <button type="button" className="button primary" disabled={busy} onClick={()=>void act(`/tasks/${t.id}/review`,{action:'accept',comment:'',expectedVersion:t.version},'POST','Результат принят, задача завершена.')}>Принять результат</button>}
-     {!viewingEmployee&&canComplete(data!.user,t,data!.approvalScope)&&approval?.type!=='completion'&&!data!.pendingAssignmentIds?.includes(t.id)&&
+     {!viewingEmployee&&!t.workspace_read_only&&canComplete(data!.user,t,data!.approvalScope)&&approval?.type!=='completion'&&!data!.pendingAssignmentIds?.includes(t.id)&&
       <button type="button" className="button secondary" disabled={busy} onClick={()=>{setError('');setCompletingTask(t);}}>Завершить</button>}
-     {!viewingEmployee&&t.status==='active'&&approval?.type==='deadline'&&allowedRequest(data!.user,t)&&
+     {!viewingEmployee&&!t.workspace_read_only&&t.status==='active'&&approval?.type==='deadline'&&allowedRequest(data!.user,t)&&
       !canComplete(data!.user,t,data!.approvalScope)&&!data!.pendingAssignmentIds?.includes(t.id)&&
       <button type="button" className="button secondary" disabled={busy} onClick={()=>void openTask(t.id,'result')}>Сдать результат</button>}
     </div></td>
@@ -483,24 +484,25 @@ export function App(){
  const trainingStep=tour?.steps[tour.index];
  const showKanban=taskPresentation==='board'&&!trainingStep;
  const requestedScope=trainingStep?.page==='tasks'?trainingStep.scope??taskView:taskView;
- const currentScope=(requestedScope==='company'&&!company||requestedScope==='team'&&!teamAllowed)?defaultTaskView:requestedScope;
+ const currentScope=(requestedScope==='company'&&!company||requestedScope==='sales'&&!data.salesTeams||requestedScope==='team'&&!teamAllowed&&!data.salesTeams)?defaultTaskView:requestedScope;
  const showPersonalAssignments=currentScope==='mine'||currentScope==='personal';
  const members=new Set(data.teamIds);
+ const scopedTeam=data.salesTeams&&isTeamScope(currentScope)?new Set(data.salesTeams[currentScope]):null;
  const inEpic=(task:Task)=>!groupFilter||groups.items[task.id]===groupFilter||groups.companyItems[task.id]===groupFilter;
  const scopedTasks=linkedIds?data.tasks.filter(t=>linkedIds.includes(t.id)):currentScope==='mine'?data.tasks.filter(t=>t.assignee_id===data.user.id):
   currentScope==='created'?data.tasks.filter(t=>t.creator_id===data.user.id):
   currentScope==='personal'?data.tasks.filter(t=>t.assignee_id===data.user.id||t.creator_id===data.user.id):
-  currentScope==='team'?data.tasks.filter(t=>members.has(t.assignee_id)):data.tasks;
+  scopedTeam?data.tasks.filter(t=>scopedTeam.has(t.id)):currentScope==='team'?data.tasks.filter(t=>members.has(t.assignee_id)):data.tasks;
  const taskIndex=new Map(data.tasks.map(task=>[task.id,task]));
  const ownerSelection=readFilterSelection(owner),selectedOwners=new Set(ownerSelection);
  const scopedOwners=new Set(scopedTasks.map(task=>task.assignee_id));
  const ownerNames=data.users.filter(person=>selectedOwners.has(person.id)).map(person=>person.name).join(', ');
- const teamDirectory=currentScope==='team'&&(trainingStep?.scope==='team'||!showKanban&&!linkedIds&&!selectedOwners.size&&
+ const teamDirectory=isTeamScope(currentScope)&&(trainingStep?.scope==='team'||!showKanban&&!linkedIds&&!selectedOwners.size&&
   filter==='all'&&!groupFilter&&!workDay&&!search.trim()&&!fromDate&&!toDate&&branch==='all'&&priceFilter==='all');
  const pending=data.approvals.filter(a=>{const task=taskIndex.get(a.task_id);return !!task&&activeTaskApproval(task,a);});
  const pendingTasks=new Set(pending.map(a=>a.task_id));
  const boardMoveTask=boardMove&&taskIndex.get(boardMove.id);
- const canMoveBoardTask=(task:Task)=>!viewingEmployee&&!busy&&task.status==='active'&&!pendingTasks.has(task.id)&&allowedRequest(data.user,task);
+ const canMoveBoardTask=(task:Task)=>!viewingEmployee&&!task.workspace_read_only&&!busy&&task.status==='active'&&!pendingTasks.has(task.id)&&allowedRequest(data.user,task);
  function moveBoardTask(task:Task,deadline?:string){
   if(canMoveBoardTask(task)){setError('');setBoardMove({id:task.id,deadline});}
  }
@@ -508,12 +510,13 @@ export function App(){
  const unaccepted=data.tasks.filter(task=>task.assignee_id===data.user.id&&task.assignment_pending).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));
  const visible=filterTasks(matchingTasks).sort((a,b)=>(showPersonalAssignments?Number(b.assignee_id===data.user.id&&!!b.assignment_pending)-Number(a.assignee_id===data.user.id&&!!a.assignment_pending):0)||(sort==='price_desc'?(taskPrice(b)??-1)-(taskPrice(a)??-1):sort==='urgency'?Number(!!b.critical)-Number(!!a.critical)||Number(b.priority==='high')-Number(a.priority==='high')||(a.deadline||'9999').localeCompare(b.deadline||'9999'):sort==='work_priority'?compareWorkPlan(a,b,workDay||businessDay(now)):sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='transfers'?b.transfer_count-a.transfer_count:(a.deadline||'9999').localeCompare(b.deadline||'9999')));
  const myWork=workQueue(data),myActionCount=workCount(myWork);
- const myApprovals=pending.filter(a=>approvalTurn(a).userId===data.user.id);
+ const myApprovals=pending.filter(a=>approvalTurn(a).userId===data.user.id&&!taskIndex.get(a.task_id)?.workspace_read_only);
  const scopedMetrics=summarize(matchingTasks,now,pendingTasks);
  const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.filter(t=>linkedIds||t.status!=='completed').length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(filter==='unaccepted'||matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'К принятию',count:matchingTasks.filter(t=>t.assignment_pending).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
+ const cardReadOnly=viewingEmployee||!!detail?.task.workspace_read_only;
  const cardApproval=detail?.approvals.find(a=>activeTaskApproval(detail.task,a));
- const cardCanComplete=!!detail&&!viewingEmployee&&cardApproval?.type!=='completion'&&!detail.personalPlan?.needsAcceptance&&canComplete(data.user,detail.task,detail.approvalScope);
- const cardCanSubmit=!!detail&&!viewingEmployee&&!cardCanComplete&&!detail.personalPlan?.needsAcceptance&&
+ const cardCanComplete=!!detail&&!cardReadOnly&&cardApproval?.type!=='completion'&&!detail.personalPlan?.needsAcceptance&&canComplete(data.user,detail.task,detail.approvalScope);
+ const cardCanSubmit=!!detail&&!cardReadOnly&&!cardCanComplete&&!detail.personalPlan?.needsAcceptance&&
   cardApproval?.type!=='completion'&&detail.task.status==='active'&&allowedRequest(data.user,detail.task);
  const title=page==='guide'?'Гайд':page==='notifications'?'Уведомления':nav.find(n=>n.id===page)?.label;
  const user=data.user;
@@ -545,11 +548,12 @@ export function App(){
   {page==='bot'&&<BotConversation key={data.user.id} textDraft={new URLSearchParams(location.search).get('draft')==='text'} refresh={refresh}/>}
   {page==='overview'&&<ManagerHome data={data} queue={myWork} open={openTask} actions={bucket=>go('actions',undefined,undefined,bucket)} tasks={filter=>go('tasks',filter,'mine')} placed={()=>go('tasks','all','created')}
    complete={viewingEmployee?undefined:task=>{setError('');setCompletingTask(task);}} busy={busy}
-   team={teamAllowed?()=>go('tasks','all','team'):undefined} calendar={viewingEmployee?undefined:()=>go('calendar')}/>}
+   team={teamAllowed||data.salesTeams?()=>go('tasks','all','team'):undefined}
+   sales={data.salesTeams?()=>go('tasks','all','sales'):undefined} calendar={viewingEmployee?undefined:()=>go('calendar')}/>}
 
 
   {!viewingEmployee&&page==='calendar'&&(data.user.root_access?<section className="panel"><div className="panel-heading"><h2>Личный планер</h2><a className="button primary" href="/time">Открыть планер</a></div></section>:<PersonalCalendar open={id=>void openTask(id)} refreshKey={data.serverTime}/>)}
-  {page==='analytics'&&!viewingEmployee&&data.analyticsAccess&&<WorkspaceSection label="Загружаем аналитику…"><TeamAnalytics key={data.user.id}/></WorkspaceSection>}
+  {page==='analytics'&&!viewingEmployee&&data.analyticsAccess&&<WorkspaceSection label="Загружаем аналитику…"><TeamAnalytics key={data.user.id} splitTeams={!!data.salesTeams}/></WorkspaceSection>}
 
 
   {page==='tasks'&&<>
@@ -567,7 +571,8 @@ export function App(){
    <div className="task-view-bar"><div className="task-scope-switches" aria-label="Область задач">
    <TaskRoleSwitch value={!linkedIds&&(currentScope==='mine'||currentScope==='created')?currentScope:undefined} change={scope=>go('tasks','all',scope)}
     all={{selected:!linkedIds&&currentScope==='personal',onClick:()=>go('tasks','all','personal')}}/>
-   {teamAllowed&&<button className={'button '+(!linkedIds&&currentScope==='team'?'primary':'secondary')} onClick={()=>go('tasks','all','team')}>Задачи команды</button>}
+   {(teamAllowed||data.salesTeams)&&<button className={'button '+(!linkedIds&&currentScope==='team'?'primary':'secondary')} onClick={()=>go('tasks','all','team')}>{data.salesTeams?teamScopeLabels.team:'Задачи команды'}</button>}
+   {data.salesTeams&&<button className={'button '+(!linkedIds&&currentScope==='sales'?'primary':'secondary')} onClick={()=>go('tasks','all','sales')}>{teamScopeLabels.sales}</button>}
    {company&&<button className={'button '+(!linkedIds&&currentScope==='company'?'primary':'secondary')} onClick={()=>go('tasks','all','company')}>Вся компания</button>}
   </div>{!viewingEmployee&&<details className="work-filters"><summary className="button secondary">Эпики</summary><div className="panel work-filter-panel">
    <TaskGroupPicker value="" creationOnly onChange={async()=>{await refreshGroups();}}/>
@@ -579,7 +584,8 @@ export function App(){
      {data.selection&&<p>В рабочей выборке: {data.selection.included}. Исключено: {data.selection.checklist} с чек-листами и {data.selection.unfinishedAnalysis} на анализ невыполненных задач.</p>}
      <dl className="freshness"><div><dt>Импорт в систему</dt><dd>{moscowTimestamp(data.source.imported_at)}</dd></div><div><dt>Последнее изменение задач</dt><dd>{moscowTimestamp(data.lastTaskChange)}</dd></div><div><dt>Расчёт показателей</dt><dd>{moscowTimestamp(data.serverTime)}</dd></div></dl>
     </details>}</>}
-  </details>}{teamDirectory?<TeamTasks tasks={scopedTasks} users={data.users} now={now} paused={pendingTasks} onSelect={(id,f)=>{go('tasks',f,'team');setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">{new URLSearchParams(location.search).has('person')?'Задачи сотрудника · '+(userById(new URLSearchParams(location.search).get('person')!)?.name??''):'Выборка из сохранённого отчёта · показано текущее состояние доступных задач.'}<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={value=>{pushSectionStep({view:'tasks',scope:currentScope,filter:value==='all'?null:value});setFilter(value);}} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel" data-presentation={showKanban?'board':'list'}><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label>{(groups.groups.length>0||groups.companyGroups.length>0)&&!viewingEmployee&&<select aria-label="Эпик" value={groupFilter} onChange={e=>{setGroupFilter(e.target.value);setTablePage(0);}}>
+  </details>}{teamDirectory?<TeamTasks tasks={scopedTasks} users={data.users} now={now} paused={pendingTasks} heading={data.salesTeams&&isTeamScope(currentScope)?teamScopeLabels[currentScope]:undefined}
+    onSelect={(id,f)=>{go('tasks',f,currentScope);setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">{new URLSearchParams(location.search).has('person')?'Задачи сотрудника · '+(userById(new URLSearchParams(location.search).get('person')!)?.name??''):'Выборка из сохранённого отчёта · показано текущее состояние доступных задач.'}<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={value=>{pushSectionStep({view:'tasks',scope:currentScope,filter:value==='all'?null:value});setFilter(value);}} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel" data-presentation={showKanban?'board':'list'}><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label>{(groups.groups.length>0||groups.companyGroups.length>0)&&!viewingEmployee&&<select aria-label="Эпик" value={groupFilter} onChange={e=>{setGroupFilter(e.target.value);setTablePage(0);}}>
     <option value="">Все эпики</option>{groups.groups.length>0&&<optgroup label="Мои эпики">{groups.groups.map(group=><option value={group.id} key={group.id}>{group.name}</option>)}</optgroup>}{groups.companyGroups.length>0&&<optgroup label="Эпики компании">{groups.companyGroups.map(group=><option value={group.id} key={group.id}>{group.name}</option>)}</optgroup>}
    </select>}{showKanban&&<button type="button" className="button secondary" aria-expanded={showBoardFilters} aria-controls="task-filter-options" onClick={()=>setShowBoardFilters(value=>!value)}><Filter size={16}/> Фильтры</button>}<div id="task-filter-options" className="task-filter-options" hidden={showKanban&&!showBoardFilters}><SearchFilter label="Филиал" value={branch} onChange={setBranch} empty={{value:'all',label:'Все филиалы'}} placeholder="Название подразделения" options={[...new Set(data.tasks.map(t=>t.branch_id))].sort((a,b)=>a.localeCompare(b,'ru')).map(value=>({value,label:value}))}/>{(currentScope!=='mine'||linkedIds)&&<EmployeeFilter label="Исполнители" values={ownerSelection} onChange={ids=>setOwner(writeFilterSelection(ids))} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>selectedOwners.has(u.id)||scopedOwners.has(u.id))}/>}<label className="date-filter">Крайний срок от<input aria-label="Крайний срок от" type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></label><label className="date-filter">до<input aria-label="Крайний срок до" type="date" min={fromDate} value={toDate} onChange={e=>setToDate(e.target.value)}/></label><select aria-label="Категория цены" value={priceFilter} onChange={e=>{setPriceFilter(e.target.value);setTablePage(0)}}><option value="all">Любая цена</option>{Object.entries(priceLabels).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select><select aria-label="Сортировка" value={sort} onChange={e=>setSort(e.target.value)}><option value="deadline">По сроку</option><option value="price_desc">По цене: сначала дороже</option><option value="work_priority">Порядок работы: просрочки и цена</option><option value="urgency">По критичности и приоритету</option><option value="title">По названию</option><option value="transfers">По переносам</option></select></div></div>{(search||(currentScope!=='mine'||linkedIds)&&!!selectedOwners.size||branch!=='all'||fromDate||toDate||priceFilter!=='all'||workDay)&&<div className="active-filter"><span>{[search&&'Поиск: '+search,(currentScope!=='mine'||linkedIds)&&ownerNames,branch!=='all'&&branch,fromDate&&'С '+fromDate,toDate&&'По '+toDate,priceFilter!=='all'&&priceLabels[priceFilter as keyof typeof priceLabels],workDay&&'На '+workDay].filter(Boolean).join(' · ')}</span><button className="text-button" onClick={()=>go('tasks','all')}>Сбросить фильтры</button></div>}{!showKanban&&<>{renderTaskTable(visible)}{visible.length>50&&<div className="pagination"><button className="button secondary" disabled={tablePage===0} onClick={()=>setTablePage(p=>p-1)}>Назад</button><span>{tablePage+1} / {Math.ceil(visible.length/50)}</span><button className="button secondary" disabled={(tablePage+1)*50>=visible.length} onClick={()=>setTablePage(p=>p+1)}>Далее</button></div>}<div className="panel-footer"><span>Найдено {visible.length} из {scopedTasks.length}</span></div></>}</section>
    {showKanban&&<TaskKanban tasks={visible} users={data.users} viewerId={data.user.id} now={now} pending={pendingTasks} filtered={filter!=='all'||visible.length!==scopedTasks.length||!!linkedIds}
@@ -616,7 +622,7 @@ export function App(){
    <div className="drawer task-card" role="dialog" aria-modal="true" aria-label="Карточка задачи">
     <div className="drawer-top"><span>ЗАДАЧА #{detail?taskNumber(detail.task):taskNumber(data.tasks.find(task=>task.id===selected)??{id:selected})}</span>
      <div className="task-card-toolbar">
-      {detail&&!viewingEmployee&&<>
+      {detail&&!cardReadOnly&&<>
        {detail.editAccess.canEdit?<button type="button" className="button secondary" disabled={busy} onClick={()=>setEditor({task:detail.task})}><Pencil size={15}/>Редактировать</button>:
         (detail.editAccess.canRequest||detail.editAccess.request)&&<button type="button" className="button secondary" onClick={()=>setDrawerTab('approvals')}>
          {detail.editAccess.request?.state==='pending'?'К запросу правки':'Запросить редактирование'}
@@ -631,7 +637,7 @@ export function App(){
        <div className="task-card-more-actions" onClick={e=>{
         if(e.target instanceof Element&&e.target.closest('button'))e.currentTarget.parentElement?.removeAttribute('open');
        }}>
-        {detail&&!viewingEmployee&&<>
+        {detail&&!cardReadOnly&&<>
          <button type="button" disabled={busy} onClick={()=>setEditor({task:null,copyOf:detail.task})}><Copy size={15}/>Создать копию</button>
          <button type="button" disabled={busy} onClick={()=>setEditor({task:null,parent:detail.task})}>＋ Создать подзадачу</button>
          {detail.approvalWatch?.canChange&&detail.task.status!=='completed'&&(detail.approvalWatch.byCode?
@@ -655,6 +661,7 @@ export function App(){
      <h2>{detail.task.title}</h2>
      <p>{[detail.task.branch_id,detail.task.code].filter(Boolean).join(' · ')}</p>
      <TaskMeta task={detail.task}/>
+     {detail.task.workspace_read_only&&<p className="muted">Просмотр задачи команды</p>}
      {detail.bitrixExchangeState&&<p className="muted task-exchange-state">{['blocked','uncertain'].includes(detail.bitrixExchangeState)?'Изменение в РУСПЭТ сохранено. Передача в Битрикс24 требует проверки.':detail.bitrixExchangeState==='failed'?'Изменение в РУСПЭТ сохранено. Битрикс24 пока не подтвердил передачу.':'Изменение в РУСПЭТ сохранено и ожидает передачи в Битрикс24.'}</p>}
      {(detail.task.priority==='high'||detail.task.critical)&&<div className="task-flags">{detail.task.priority==='high'&&<Badge state="pending">Высокий приоритет</Badge>}{detail.task.critical&&<Badge state="overdue">Критичная</Badge>}</div>}
     </div>
@@ -679,11 +686,11 @@ export function App(){
     ]}/>
     <div className="drawer-body" key={drawerTab} data-tab={drawerTab} role="tabpanel">
     {error&&<div className="alert error" role="alert">{error}</div>}
-    {drawerTab==='info'&&!viewingEmployee&&detail.personalPlan?.needsAcceptance&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}
+    {drawerTab==='info'&&!cardReadOnly&&detail.personalPlan?.needsAcceptance&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}
      deadlineAction={cardApproval?{label:'К согласованию',run:()=>setDrawerTab('approvals')}:allowedRequest(data.user,detail.task)?{label:'Предложить новый срок',run:()=>setRequestType('deadline')}:undefined}/>}
     {drawerTab==='info'&&<div className="task-card-overview">
      <div>
-      {detail.editAccess.canDecide&&!viewingEmployee&&<section className="task-card-section">
+      {detail.editAccess.canDecide&&!cardReadOnly&&<section className="task-card-section">
        <h3>Исполнитель просит разрешение на редактирование</h3>
        <button type="button" className="button primary" onClick={()=>setDrawerTab('approvals')}>Рассмотреть запрос</button>
       </section>}
@@ -696,17 +703,17 @@ export function App(){
       </div>}
      </div>
      <aside>
-      {!viewingEmployee&&detail.personalPlan&&!detail.personalPlan.needsAcceptance&&(detail.task.status==='active'||detail.personalPlan.plannedAt)&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}/>}
+      {!cardReadOnly&&detail.personalPlan&&!detail.personalPlan.needsAcceptance&&(detail.task.status==='active'||detail.personalPlan.plannedAt)&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}/>}
       <section className="task-card-section"><h3>Ответственные и срок</h3>
        <div className="task-facts">
         <div><span>Исполнитель</span><div className="person"><Avatar small user={userById(detail.task.assignee_id)}/><strong>{userById(detail.task.assignee_id)?.name}</strong></div></div>
         <div><span>Постановщик</span><strong>{userById(detail.task.creator_id)?.name}</strong></div>
-        {detail.assignmentReceipt&&(!detail.personalPlan||viewingEmployee)&&<div><span>Приём задачи</span><strong>{detail.assignmentReceipt.state==='accepted'?'Задача принята':'Ждёт подтверждения исполнителя'}</strong></div>}
+        {detail.assignmentReceipt&&(!detail.personalPlan||cardReadOnly)&&<div><span>Приём задачи</span><strong>{detail.assignmentReceipt.state==='accepted'?'Задача принята':'Ждёт подтверждения исполнителя'}</strong></div>}
         <div><span>Крайний срок</span><strong className={overdue(detail.task)?'red-text':''}>{date(detail.task.deadline,true)}{detail.task.deadline?' МСК':''}</strong></div>
-        <div><span>Цена задачи</span><strong>{formatPrice(detail.task)}</strong><small>{priceLabels[priceBand(detail.task)]}</small>{!viewingEmployee&&canEditTaskPrice(data.user,detail.task)&&<TaskPriceEditor key={detail.task.id+':'+detail.task.version} task={detail.task} busy={busy} act={act}/>}</div>
+        <div><span>Цена задачи</span><strong>{formatPrice(detail.task)}</strong><small>{priceLabels[priceBand(detail.task)]}</small>{!cardReadOnly&&canEditTaskPrice(data.user,detail.task)&&<TaskPriceEditor key={detail.task.id+':'+detail.task.version} task={detail.task} busy={busy} act={act}/>}</div>
        </div>
        <div className="task-card-buttons">
-        {!cardApproval&&!viewingEmployee&&detail.task.status!=='completed'&&allowedRequest(data.user,detail.task)&&
+        {!cardApproval&&!cardReadOnly&&detail.task.status!=='completed'&&allowedRequest(data.user,detail.task)&&
          <button type="button" disabled={busy} className="button secondary" onClick={()=>setRequestType('deadline')}><CalendarDays size={15}/>Предложить новый срок</button>}
         {!cardApproval&&detail.task.status==='review'&&<button type="button" className="button primary" onClick={()=>setDrawerTab('result')}>К приёмке</button>}
         {cardCanSubmit&&
@@ -722,17 +729,17 @@ export function App(){
       </section>
      </aside>
     </div>}
-    {drawerTab==='fields'&&<>{!viewingEmployee&&['admin','director','sales_head'].includes(data.user.role)&&detail.task.branch_id===unassignedBranch&&
+    {drawerTab==='fields'&&<>{!cardReadOnly&&['admin','director','sales_head'].includes(data.user.role)&&detail.task.branch_id===unassignedBranch&&
      <TaskBranchReview key={detail.task.id} task={detail.task} users={data.users} busy={busy} act={act}/>}
      <TaskCardFields task={detail.task} showPlanning={!!data.rules.showPlanning} date={date}/></>}
     {drawerTab==='links'&&<section className="task-card-section">
-     {!viewingEmployee&&detail.task.company_id&&canUseOkb(data.user)&&<CompanyReference key={detail.task.company_id} id={detail.task.company_id} open={id=>{go('okb');setOkbCompany(id);}}/>}
-     {!viewingEmployee&&detail.task.client_refs?.map(client=><ClientNotes key={detail.task.id+client.id} id={client.id} name={client.name} taskId={detail.task.id}/>)}
-     {!viewingEmployee&&(data.user.role==='admin'||detail.task.creator_id===data.user.id)&&<TaskGroupPicker company canCreate={data.user.role==='admin'}
+     {!cardReadOnly&&detail.task.company_id&&canUseOkb(data.user)&&<CompanyReference key={detail.task.company_id} id={detail.task.company_id} open={id=>{go('okb');setOkbCompany(id);}}/>}
+     {!cardReadOnly&&detail.task.client_refs?.map(client=><ClientNotes key={detail.task.id+client.id} id={client.id} name={client.name} taskId={detail.task.id}/>)}
+     {!cardReadOnly&&(data.user.role==='admin'||detail.task.creator_id===data.user.id)&&<TaskGroupPicker company canCreate={data.user.role==='admin'}
       key={'company:'+detail.task.id} value={groups.companyItems[detail.task.id]??''} onChange={async epicId=>{
        await api('/tasks/'+encodeURIComponent(detail.task.id)+'/company-epic','PUT',{epicId:epicId||null});await refreshGroups();
       }}/>}
-     {!viewingEmployee&&(detail.task.assignee_id===data.user.id||detail.task.creator_id===data.user.id)&&<TaskGroupPicker
+     {!cardReadOnly&&(detail.task.assignee_id===data.user.id||detail.task.creator_id===data.user.id)&&<TaskGroupPicker
       key={detail.task.id} value={groups.items[detail.task.id]??''} onChange={async groupId=>{
        await api('/tasks/'+encodeURIComponent(detail.task.id)+'/group','PUT',{groupId:groupId||null});await refreshGroups();
       }}/>}
@@ -740,12 +747,12 @@ export function App(){
      {data.tasks.some(item=>item.parent_id===detail.task.id)&&<div className="task-subtask-list">
       <h3>Подзадачи</h3>{data.tasks.filter(item=>item.parent_id===detail.task.id).map(item=><button key={item.id} type="button" className="text-button" onClick={()=>void openTask(item.id)}>#{item.id} · {item.title}</button>)}
      </div>}
-     <TaskDelegation readOnly={viewingEmployee} key={detail.task.id} task={detail.task} user={data.user} users={data.users} open={openTask}
+     <TaskDelegation readOnly={cardReadOnly} key={detail.task.id} task={detail.task} user={data.user} users={data.users} open={openTask}
       onCreated={()=>{void refreshDetail(detail.task.id).catch(e=>setError(e.message));void refresh().catch(()=>{});}}/>
-     <TaskReminders readOnly={viewingEmployee} key={detail.task.id+data.user.id} task={detail.task} user={data.user} users={data.users}/>
+     <TaskReminders readOnly={cardReadOnly} key={detail.task.id+data.user.id} task={detail.task} user={data.user} users={data.users}/>
     </section>}
     {drawerTab==='result'&&<>
-     {!viewingEmployee&&(!cardApproval||detail.task.status==='active'&&cardApproval.type==='deadline')&&(detail.personalPlan?.needsAcceptance?
+     {!cardReadOnly&&(!cardApproval||detail.task.status==='active'&&cardApproval.type==='deadline')&&(detail.personalPlan?.needsAcceptance?
       <div className="task-card-section"><p>Перед сдачей результата примите задачу и выберите плановое время.</p><button type="button" className="button secondary" onClick={()=>setDrawerTab('info')}>К приёму задачи</button></div>:
       <ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} scope={detail.approvalScope}
        withdrawsDeadline={cardApproval?.type==='deadline'} busy={busy} act={act}/>)}
@@ -756,11 +763,11 @@ export function App(){
      </article>)}</section>:null}
      <TaskResults key={selected} id={selected} linked={detail.bitrixLinked} hasLocal={!!detail.submissions.length}/>
     </>}
-  {drawerTab==='discussion'&&<><TaskDiscussion key={selected} id={selected} comments={detail.comments} users={data.users} focus={discussionFocus}/>{!viewingEmployee&&!cardApproval&&detail.controls.filter(c=>['waiting','escalated'].includes(c.state)&&(data.user.id===c.assignee_id||data.user.role==='admin')).map(c=><ExplanationForm key={c.id} min={data.rules.responseMinLength} busy={busy} submit={body=>act(`/controls/${c.id}/answer`,body)}/>)}{!viewingEmployee&&<form className="comment-form" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const f=new FormData(form),body=String(f.get('body')),approvalId=String(f.get('approvalId')||'')||undefined;if(await act(`/tasks/${selected}/comments`,{body,approvalId}))form.reset();}}>{detail.approvals.some(a=>!a.canceled_at)&&<label>К чему относится сообщение<select name="approvalId"><option value="">К задаче в целом</option>{detail.approvals.filter(a=>!a.canceled_at).map(a=><option key={a.id} value={a.id}>{a.type==='deadline'?'Перенос':'Закрытие'} от {date(a.created_at,true)}</option>)}</select></label>}<label>Комментарий<textarea name="body" required maxLength={4000} placeholder="Добавьте уточнение или результат работы…"/></label><button className="button primary" disabled={busy}><Send size={15}/>Отправить</button></form>}</>}
-  {drawerTab==='history'&&<>{!viewingEmployee&&<UndoAction taskId={selected} refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}
-   {!viewingEmployee&&data.user.role==='admin'&&data.user.staff_undo_access&&<StaffUndo key={selected} taskId={selected} refreshKey={data.serverTime} busy={busy} error={error} act={act}/>}
-   <TaskHistory showPlanning={!!data.rules.showPlanning} events={detail.events} users={data.users}/>{!viewingEmployee&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="history"/>}{demo&&!viewingEmployee&&data.user.role==='admin'&&<div className="demo-action"><p>Проверка сохранения согласования при изменении задачи</p><button className="text-button" disabled={busy} onClick={()=>void act('/tasks/'+selected+'/mock-change',{expectedVersion:detail.task.version})}>Изменить описание в mock-источнике <ArrowUpRight size={14}/></button></div>}</>}
-  {drawerTab==='approvals'&&<>{!viewingEmployee&&<TaskEditPanel key={selected} task={detail.task} access={detail.editAccess} users={data.users} busy={busy} act={act}/>}<div className='task-card-approvals'>{detail.approvals.map(a=><div key={a.id}><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask} taskDetail={detail} inDrawer/>{detail.decisions.filter(d=>d.approval_id===a.id&&d.decision!=='clarify').map(d=><div className="decision-record" key={d.id}>{d.retracted?<History size={14}/>:d.decision==='approve'?<Check size={14}/>:d.decision==='reject'?<X size={14}/>:<Clock3 size={14}/>} <div>{userById(d.actor_id)?.name} · {({approve:'Согласовал',reject:'Отказал',later:'Вернётся позже'} as Record<string,string>)[d.decision]}<small>{d.retracted?'Отменено · ':''}{date(d.created_at,true)}{d.comment&&` · ${d.comment}`}</small></div></div>)}</div>)}{!detail.approvals.length&&<Empty>Запросить перенос крайнего срока можно в обзоре.</Empty>}</div></>}
+  {drawerTab==='discussion'&&<><TaskDiscussion key={selected} id={selected} comments={detail.comments} users={data.users} focus={discussionFocus}/>{!cardReadOnly&&!cardApproval&&detail.controls.filter(c=>['waiting','escalated'].includes(c.state)&&(data.user.id===c.assignee_id||data.user.role==='admin')).map(c=><ExplanationForm key={c.id} min={data.rules.responseMinLength} busy={busy} submit={body=>act(`/controls/${c.id}/answer`,body)}/>)}{!cardReadOnly&&<form className="comment-form" onSubmit={async e=>{e.preventDefault();const form=e.currentTarget;const f=new FormData(form),body=String(f.get('body')),approvalId=String(f.get('approvalId')||'')||undefined;if(await act(`/tasks/${selected}/comments`,{body,approvalId}))form.reset();}}>{detail.approvals.some(a=>!a.canceled_at)&&<label>К чему относится сообщение<select name="approvalId"><option value="">К задаче в целом</option>{detail.approvals.filter(a=>!a.canceled_at).map(a=><option key={a.id} value={a.id}>{a.type==='deadline'?'Перенос':'Закрытие'} от {date(a.created_at,true)}</option>)}</select></label>}<label>Комментарий<textarea name="body" required maxLength={4000} placeholder="Добавьте уточнение или результат работы…"/></label><button className="button primary" disabled={busy}><Send size={15}/>Отправить</button></form>}</>}
+  {drawerTab==='history'&&<>{!cardReadOnly&&<UndoAction taskId={selected} refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}
+   {!cardReadOnly&&data.user.role==='admin'&&data.user.staff_undo_access&&<StaffUndo key={selected} taskId={selected} refreshKey={data.serverTime} busy={busy} error={error} act={act}/>}
+   <TaskHistory showPlanning={!!data.rules.showPlanning} events={detail.events} users={data.users}/>{!cardReadOnly&&data.user.role==='admin'&&<BitrixActivity key={selected} id={selected} kind="history"/>}{demo&&!cardReadOnly&&data.user.role==='admin'&&<div className="demo-action"><p>Проверка сохранения согласования при изменении задачи</p><button className="text-button" disabled={busy} onClick={()=>void act('/tasks/'+selected+'/mock-change',{expectedVersion:detail.task.version})}>Изменить описание в mock-источнике <ArrowUpRight size={14}/></button></div>}</>}
+  {drawerTab==='approvals'&&<>{!cardReadOnly&&<TaskEditPanel key={selected} task={detail.task} access={detail.editAccess} users={data.users} busy={busy} act={act}/>}<div className='task-card-approvals'>{detail.approvals.map(a=><div key={a.id}><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask} taskDetail={detail} inDrawer/>{detail.decisions.filter(d=>d.approval_id===a.id&&d.decision!=='clarify').map(d=><div className="decision-record" key={d.id}>{d.retracted?<History size={14}/>:d.decision==='approve'?<Check size={14}/>:d.decision==='reject'?<X size={14}/>:<Clock3 size={14}/>} <div>{userById(d.actor_id)?.name} · {({approve:'Согласовал',reject:'Отказал',later:'Вернётся позже'} as Record<string,string>)[d.decision]}<small>{d.retracted?'Отменено · ':''}{date(d.created_at,true)}{d.comment&&` · ${d.comment}`}</small></div></div>)}</div>)}{!detail.approvals.length&&<Empty>Запросить перенос крайнего срока можно в обзоре.</Empty>}</div></>}
     </div></>:<div className="empty">{detailError?<><p role="alert">{detailError}</p><button className="button secondary" onClick={()=>void openTask(selected,drawerTab)}>Повторить загрузку</button></>:'Загружаем карточку…'}</div>}</div></div>}
   {requestType&&detail&&<RequestModal type={requestType} task={detail.task} min={data.rules.responseMinLength} busy={busy} error={error} close={()=>setRequestType(null)} submit={async body=>{if(await act(`/tasks/${detail.task.id}/approvals`,body)){setRequestType(null);setDrawerTab('approvals');}}}/>}
   {boardMoveTask&&<RequestModal type="deadline" task={boardMoveTask} initialDeadline={boardMove?.deadline} min={data.rules.responseMinLength} busy={busy}
@@ -814,8 +821,8 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
  const resultReview=a.type==='completion'&&task?.status==='review';
  const change=a.task_change;
  const active=!!task&&activeTaskApproval(task,a);
- const canDecide=active&&!change?.routeIssue&&actor?.id===data.user.id&&!waiting;
- const canAnswer=active&&waiting&&a.requester_id===data.user.id;
+ const canDecide=active&&!task?.workspace_read_only&&!change?.routeIssue&&actor?.id===data.user.id&&!waiting;
+ const canAnswer=active&&!task?.workspace_read_only&&waiting&&a.requester_id===data.user.id;
  const isDeadline=a.type==='deadline';
  const editDeadlineInline=!viewingEmployee&&canDecide&&canSetApprovedDeadline(data.user.id,a,task,{
   deadlineApproverId:taskDetail?.deadlineApproverId??data.deadlineApproverId,

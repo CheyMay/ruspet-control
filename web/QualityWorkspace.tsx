@@ -3,18 +3,24 @@ import {useRememberedFilter} from './remembered-filter.js';
 import type {Bootstrap} from '../shared/types.js';
 import {taskQueue} from '../shared/queues.js';
 import {EmployeeFilter,SearchFilter} from './SearchFilter.js';
+import {isTeamScope} from '../shared/team-scopes.js';
+import {TeamScopeSwitch} from './TeamScopeSwitch.js';
 
 export function QualityWorkspace({data,open,settings}:{data:Bootstrap;open:(id:string,tab?:string)=>void;settings?:()=>void}){
  const manager=data.user.role!=='employee';
  const [scope,setScope]=useRememberedFilter(data.user.id,'QualityWorkspace.scope',manager?'all':'mine'),[owner,setOwner]=useRememberedFilter(data.user.id,'QualityWorkspace.owner','all'),[creator,setCreator]=useRememberedFilter(data.user.id,'QualityWorkspace.creator','all'),[severity,setSeverity]=useRememberedFilter(data.user.id,'QualityWorkspace.severity','all'),[rule,setRule]=useRememberedFilter(data.user.id,'QualityWorkspace.rule','all'),[badness,setBadness]=useRememberedFilter(data.user.id,'QualityWorkspace.badness','all');
- const scoped=data.tasks.filter(t=>(manager||t.assignee_id===data.user.id)&&(scope!=='mine'||t.assignee_id===data.user.id)&&(scope!=='created'||t.creator_id===data.user.id)&&(scope!=='team'||t.assignee_id!==data.user.id)&&(owner==='all'||t.assignee_id===owner));
+ const teamIds=data.salesTeams&&isTeamScope(scope)?new Set(data.salesTeams[scope]):null;
+ const selectedScope=isTeamScope(scope)||scope==='mine'||scope==='created'?scope:'all';
+ const scoped=data.tasks.filter(t=>(manager||t.assignee_id===data.user.id)&&(scope!=='mine'||t.assignee_id===data.user.id)&&(scope!=='created'||t.creator_id===data.user.id)&&(teamIds?teamIds.has(t.id):scope!=='team'||t.assignee_id!==data.user.id)&&(owner==='all'||t.assignee_id===owner));
  const visible=scoped.filter(t=>creator==='all'||t.creator_id===creator);
  const rows=visible.map(t=>({task:t,all:data.findings.filter(f=>f.task_id===t.id)})).filter(row=>row.all.length&&(badness!=='many'||row.all.length>=3)&&(badness!=='week'||taskQueue(row.task,new Date(data.serverTime))==='overdue'&&Date.parse(row.task.deadline!)<Date.parse(data.serverTime)-7*86400000)).map(row=>({...row,findings:row.all.filter(f=>(severity==='all'||f.severity===severity)&&(rule==='all'||f.rule===rule))})).filter(row=>row.findings.length);
  const name=(id:string)=>data.users.find(u=>u.id===id)?.name||id;
  const labels:Record<string,string>={critical:'Критично',warning:'Требует внимания',info:'Справочно'};
  return <><div className="info-banner"><div><strong>Нарушения по задачам</strong><p>Откройте задачу, чтобы посмотреть нарушение или ответ исполнителя.</p></div>{manager&&settings&&<button className="text-button" onClick={settings}>Правила контроля</button>}</div>
   <section className="panel"><div className="filters quality-filters">
-   {manager&&<><label>Область<select aria-label="Область" value={scope} onChange={e=>setScope(e.target.value)}><option value="all">Вся доступная область</option><option value="mine">Я исполнитель</option><option value="created">Я постановщик</option><option value="team">Команда без моих задач</option></select></label><EmployeeFilter caption="Исполнитель" label="Исполнитель" value={owner} onChange={setOwner} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>u.id===owner||data.tasks.some(t=>t.assignee_id===u.id))}/></>}
+   {manager&&<>{data.salesTeams?<TeamScopeSwitch value={selectedScope} base={{id:'all',label:'Все доступные'}}
+    additional={[{id:'mine',label:'Я исполнитель'},{id:'created',label:'Я постановщик'}]}
+    onChange={value=>{setScope(value);setOwner('all');}}/>:<label>Область<select aria-label="Область" value={scope} onChange={e=>setScope(e.target.value)}><option value="all">Вся доступная область</option><option value="mine">Я исполнитель</option><option value="created">Я постановщик</option><option value="team">Команда без моих задач</option></select></label>}<EmployeeFilter caption="Исполнитель" label="Исполнитель" value={owner} onChange={setOwner} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>u.id===owner||data.tasks.some(t=>t.assignee_id===u.id&&(!teamIds||teamIds.has(t.id))))}/></>}
    <EmployeeFilter caption="Постановщик" label="Постановщик" value={creator} onChange={setCreator} empty={{value:'all',label:'Все постановщики'}} people={data.users.filter(u=>u.id===creator||scoped.some(t=>t.creator_id===u.id))}/>
    <label>Серьёзность<select aria-label="Серьёзность" value={severity} onChange={e=>setSeverity(e.target.value)}><option value="all">Все уровни</option>{Object.entries(labels).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select></label>
    <label>Особенности<select aria-label="Особенности нарушения" value={badness} onChange={e=>setBadness(e.target.value)}><option value="all">Любое нарушение</option><option value="many">Три и более нарушений</option><option value="week">Просрочка больше недели</option></select></label>

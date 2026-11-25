@@ -5,6 +5,7 @@ import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {isSalesManager} from '../shared/personal-calendar.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {assert} from './domain.js';
+import {hasSplitTeams,teamScopeLabels,type TeamScope} from '../shared/team-scopes.js';
 
 type Person=User&{manager_id:string|null;departments:string[];staff_inactive:boolean};
 const leader=(u:User)=>/руководител|директор|начальник/iu.test(u.position);
@@ -49,7 +50,7 @@ export async function loadAnalyticsScope(user:User,db:Db){
  const sales=new Set(people.filter(p=>!p.staff_inactive&&salesPerson(p)).map(p=>p.id));
  const analyticsTeam=new Set(people.filter(p=>sales.has(p.id)&&(immediate.has(p.id)&&!isSalesManager(p)||
   p.departments.some(department=>department.trim().toLocaleLowerCase('ru-RU')==='аналитики'))).map(p=>p.id));
- const separateTeams=access==='sales'&&!!user.sales_analytics_access;
+ const separateTeams=access==='sales'&&hasSplitTeams(user);
  const salesLead=access==='team'&&sales.has(user.id)&&salesUnit(user.branch_id);
  const leadershipByBranch=new Map<string,Person>();
  for(const p of people.filter(p=>sales.has(p.id)&&salesUnit(p.branch_id)&&leader(p))){
@@ -81,6 +82,8 @@ export async function loadAnalyticsScope(user:User,db:Db){
   return immediate.size===0&&user.role==='branch_manager'&&!!assignee&&
    branchCovers(user.branch_id,assignee.branch_id)&&branchCovers(user.branch_id,t.branch_id);
  };
+ const teamFor=(t:Task):TeamScope|null=>separateTeams&&t.assignee_id!==user.id&&visible(t)?
+  analyticsTeam.has(t.assignee_id)?'team':'sales':null;
  function path(t:Task):AnalyticsGroup[]{
   const p=byId.get(t.assignee_id);
   const employee={key:'person:'+t.assignee_id,label:p?.name??'Сотрудник',caption:p?.position};
@@ -89,21 +92,24 @@ export async function loadAnalyticsScope(user:User,db:Db){
    return first&&first.id!==t.assignee_id?[{key:'team:'+first.id,label:'Команда · '+first.name,caption:first.position},employee]:[employee];
   }
   if(sales.has(t.assignee_id)&&!(/\/\s*Склад(?:\s|$)/iu.test(t.branch_id))){
-   if(separateTeams&&analyticsTeam.has(t.assignee_id))return [{key:'sales:my-team',label:'Моя команда'},employee];
+   if(separateTeams&&t.assignee_id===user.id)return [{key:'sales:mine',label:'Мои задачи'},employee];
+   if(separateTeams&&analyticsTeam.has(t.assignee_id))return [{key:'sales:my-team',label:teamScopeLabels.team},employee];
    const multipleBranches=!!p&&/крым\p{L}*\s+и\s+краснодар/iu.test(p.position);
    const branch=salesUnit(t.branch_id)?t.branch_id:t.branch_id===unassignedBranch&&p&&!multipleBranches&&salesUnit(p.branch_id)?p.branch_id:'На сверку';
    const head=leadershipByBranch.get(branch);
    const group={key:'branch:'+branch,label:branch,caption:head?'Руководитель · '+head.name:undefined};
-   return separateTeams?[{key:'sales:branches',label:'Команда продаж'},group,employee]:
+   return separateTeams?[{key:'sales:branches',label:teamScopeLabels.sales},group,employee]:
     access==='sales'?[group,employee]:[{key:'department:Продажи',label:'Продажи'},group,employee];
   }
   const branch=t.branch_id!==unassignedBranch?t.branch_id:p?.branch_id??unassignedBranch;
   const [department]=branch.split(' / ');
   return [{key:'department:'+department,label:department===unassignedBranch?'Подразделение на сверку':department},employee];
  }
- const emptyStaffPaths=separateTeams?people.filter(p=>analyticsTeam.has(p.id)).map(p=>
-  [{key:'sales:my-team',label:'Моя команда'},{key:'person:'+p.id,label:p.name,caption:p.position}]):[];
- return {access,label:access==='company'?'Вся компания':access==='sales'?'Продажи':'Моя команда',visible,path,byId,salesIds:sales,emptyStaffPaths};
+ const emptyStaffPaths:AnalyticsGroup[][]=separateTeams?people.filter(p=>p.id!==user.id&&analyticsTeam.has(p.id)).map(p=>
+  [{key:'sales:my-team',label:teamScopeLabels.team},{key:'person:'+p.id,label:p.name,caption:p.position}]):[];
+ if(separateTeams)emptyStaffPaths.push([{key:'sales:my-team',label:teamScopeLabels.team}],
+  [{key:'sales:branches',label:teamScopeLabels.sales}]);
+ return {access,label:access==='company'?'Вся компания':access==='sales'?'Продажи':'Моя команда',visible,path,byId,salesIds:sales,emptyStaffPaths,teamFor};
 }
 
 export type AnalyticsScope=Awaited<ReturnType<typeof loadAnalyticsScope>>;
