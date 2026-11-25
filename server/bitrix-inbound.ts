@@ -1,5 +1,6 @@
 import {deadlineCommentsResource,deadlineHistoryResource,refreshDeadlineHistory,refreshPastDeadlineComments} from './deadline-history.js';
 import {linkCreatedTaskFromEvent} from './bitrix-create-task.js';
+import {writeFields} from './bitrix-live.js';
 import {keepTaskApprovals} from './approval-updates.js';
 import {isDeepStrictEqual as equal} from 'node:util';
 import {pool,transaction,type Db} from './db.js';
@@ -126,11 +127,18 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
   assert(link?.baseline?.inbound||baselineEvent,409,'Нет исходного снимка задачи для безопасной сверки.');
   const local=localValues(task);
   const base:Values=link?.baseline?.inbound??localValues(baselineEvent!);
-  const linkedExchange=!!link&&(await db.query('SELECT sync_linked_tasks FROM bitrix_live_config WHERE id=1')).rows[0].sync_linked_tasks;
-  if(linkedExchange&&(await db.query(`SELECT 1 FROM bitrix_operations WHERE task_id=$1
-   AND state NOT IN ('sent','canceled') AND payload->'data'->>'after' IS NOT NULL LIMIT 1`,[id])).rowCount){
-   await stage(remote,db,raw);
-   return {changed:false,conflict:!!link.conflict};
+  const exchange=link?(await db.query('SELECT sync_linked_tasks,price_field FROM bitrix_live_config WHERE id=1')).rows[0]:null;
+  const linkedExchange=!!exchange?.sync_linked_tasks;
+  const held=new Set<Property>();
+  if(linkedExchange){
+   const snapshot=(await db.query('SELECT raw FROM bitrix_task_snapshots WHERE external_id=$1',[remote.id])).rows[0]?.raw;
+   const last=snapshot&&readDate(snapshot,'CHANGED_DATE'),current=readDate(raw,'CHANGED_DATE');
+   if(last&&current&&current<last)return {changed:false,conflict:false};
+   const queued=(await db.query<{before:Task;after:Task}>(`SELECT payload#>'{data,before}' AS before,payload#>'{data,after}' AS after
+    FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') AND payload#>'{data,before}' IS NOT NULL
+    AND payload#>'{data,after}' IS NOT NULL`,[id])).rows;
+   for(const operation of queued)for(const key of writeFields(operation.before,operation.after,exchange))held.add(key);
+   if(held.has('status'))held.add('completed_at');
   }
   const authoritative=!linkedExchange&&process.env.BITRIX_INBOUND_AUTHORITATIVE==='true';
   const next:Values={title:remote.title,description:remote.description,deadline:remote.deadline,status:state,
@@ -140,10 +148,14 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
    completed_at:state==='completed'?readDate(raw,'CLOSED_DATE'):null,price:field?price:local.price};
   const workflowFields:Property[]=['status','assignee_id','creator_id','completed_at'];
   const permissionConflict=!authoritative&&workflowFields.some(key=>!equal(local[key],base[key])&&!equal(local[key],next[key]));
-  const changed=properties.filter(key=>!equal(next[key],local[key])&&
-   (authoritative||equal(local[key],base[key])&&!(permissionConflict&&workflowFields.includes(key))||
-    linkedExchange&&key==='completed_at'&&local.status==='completed'&&next.status==='completed'&&!!next.completed_at));
-  const conflicts=properties.filter(key=>!equal(next[key],local[key])&&!equal(next[key],base[key])&&!changed.includes(key));
+  // Result review can be local until the creator decides it. Keep it while the portal
+  // stays in its previously known active state and the participants are unchanged.
+  const localReview=local.status==='review'&&next.status==='active'&&base.status==='active'&&
+   next.assignee_id===local.assignee_id&&next.creator_id===local.creator_id;
+  const changed=properties.filter(key=>!equal(next[key],local[key])&&!held.has(key)&&
+   (linkedExchange?key!=='status'||!localReview:authoritative||equal(local[key],base[key])&&
+    !(permissionConflict&&workflowFields.includes(key))));
+  const conflicts=linkedExchange?[]:properties.filter(key=>!equal(next[key],local[key])&&!equal(next[key],base[key])&&!changed.includes(key));
   const merged={...local,...Object.fromEntries(changed.map(key=>[key,next[key]]))};
   const owner=(await db.query<User>('SELECT * FROM users WHERE id=$1',[merged.assignee_id])).rows[0];
   if(changed.length){

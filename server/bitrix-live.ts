@@ -151,12 +151,22 @@ export async function enqueueBitrixOperation(db:Db,eventId:string,taskId:string,
  if(after&&!linked.sync_linked_tasks){const people=(await db.query('SELECT user_id FROM bitrix_pilot_members WHERE user_id=ANY($1)',[[after.assignee_id,after.creator_id]])).rows;assert(new Set(people.map(p=>p.user_id)).size===new Set([after.assignee_id,after.creator_id]).size,409,'Для связанной задачи выбирайте исполнителя и постановщика из участников пилота.');}
  await db.query('INSERT INTO bitrix_operations(event_id,task_id,payload) VALUES($1,$2,$3) ON CONFLICT DO NOTHING',[eventId,taskId,JSON.stringify({kind,message,data,actorId})]);
 }
-function writeFields(before:Task,after:Task,cfg:Config){
+export function writeFields(before:Task,after:Task,cfg:Pick<Config,'sync_linked_tasks'|'price_field'>){
  const old=localValues(before),next=localValues(after);
  return changeFields.filter(key=>!same(old[key],next[key])&&(!cfg.sync_linked_tasks||
   (key!=='price'||!!cfg.price_field)&&(key!=='status'||next.status!=='review')));
 }
-type QueueOperation={state:string;payload:{kind:string;data?:{before?:Task;after?:Task}}};
+type QueueOperation={state:string;phase:string|null;attempts:number;payload:{kind:string;data?:{before?:Task;after?:Task}}};
+const commentPhases=['tasks.task.chat.message.send','task.commentitem.add'];
+function recoverableFieldWrite(op:QueueOperation|undefined,cfg:Config){
+ return cfg.sync_linked_tasks&&op?.state==='uncertain'&&op.attempts<8&&!!op.payload.data?.before&&!!op.payload.data.after&&
+  op.payload.kind!=='created'&&!commentPhases.includes(op.phase??'');
+}
+
+function matchesPortalValue(field:keyof Values,observed:Values,expected:Values){
+ // The configured price field can store whole roubles even when REST accepts decimals.
+ return same(observed[field],expected[field])||field==='price'&&expected.price!==null&&observed.price===Math.round(expected.price);
+}
 function independentDeadline(head:QueueOperation|null,next:QueueOperation|null,cfg:Config):Task|null{
  if(!cfg.sync_linked_tasks||!head||!next||!['uncertain','blocked'].includes(head.state)||next.payload.kind!=='deadline_changed')return null;
  const {before,after}=next.payload.data??{};
@@ -177,16 +187,23 @@ export function canRestoreLinkedFields(before:Task,after:Task,cfg:Config){
   (!restore.includes('price')||taskPrice(before)!==null)&&
   (!restore.includes('status')||before.status==='active');
 }
-async function outboundFields(before:Task,after:Task,raw:Record<string,unknown>,cfg:Config){
+async function outboundFields(before:Task,after:Task,raw:Record<string,unknown>,cfg:Config,recovering=false){
  const remote=await remoteValues(raw,cfg),old=localValues(before),next=localValues(after),changed=writeFields(before,after,cfg);
- const conflicts=changed.filter(k=>!same(remote[k],old[k])&&!same(remote[k],next[k])&&
+ const conflicts=changed.filter(k=>!same(remote[k],old[k])&&!(cfg.sync_linked_tasks?matchesPortalValue(k,remote,next):same(remote[k],next[k]))&&
   !(cfg.sync_linked_tasks&&k==='status'&&old.status==='review'&&remote.status==='active'));
- assert(!conflicts.length,409,'Одновременно изменены поля: '+conflicts.join(', '));
+ assert(cfg.sync_linked_tasks||!conflicts.length,409,'Одновременно изменены поля: '+conflicts.join(', '));
  assert(next.creator_id===old.creator_id,409,'Смена постановщика не поддержана пилотом.');
- assert(remote.creator_id===old.creator_id,409,'Постановщик изменился в Битрикс24. Сначала сверьте права.');
+ const roleChanged=remote.creator_id!==old.creator_id||remote.assignee_id!==old.assignee_id&&
+  (!changed.includes('assignee_id')||remote.assignee_id!==next.assignee_id);
+ assert(cfg.sync_linked_tasks||remote.creator_id===old.creator_id,409,'Постановщик изменился в Битрикс24. Сначала сверьте права.');
+ // A possibly delivered edit must not replace a third value found during recovery.
+ const retained=cfg.sync_linked_tasks?changed.filter(key=>roleChanged||conflicts.includes(key)&&
+  (recovering||key==='assignee_id'||key==='status')):[];
+ const replay=changed.filter(key=>!retained.includes(key));
  const fields:Record<string,unknown>={};
- for(const key of changed){
-  if(key==='status'||same(remote[key],next[key]))continue;
+ for(const key of replay){
+  if(key==='status'||same(remote[key],next[key])||
+   recovering&&matchesPortalValue(key,remote,next))continue;
   if(key==='assignee_id'){
    const person=(await pool.query('SELECT external_id FROM bitrix_user_links WHERE user_id=$1',[next.assignee_id])).rows[0];assert(person,409,'Новый исполнитель не сопоставлен с Битрикс24.');fields.RESPONSIBLE_ID=String(person.external_id);
   }else if(key==='price'){
@@ -196,7 +213,7 @@ async function outboundFields(before:Task,after:Task,raw:Record<string,unknown>,
    fields.DESCRIPTION=withRuspetTaskReference(next.description,after.id);
   }else fields[key.toUpperCase()]=next[key];
  }
- return {fields,remote,next,changed};
+ return {fields,next,replay,retained,roleChanged,rebased:replay.filter(key=>conflicts.includes(key))};
 }
 async function changeStatus(request:BitrixRequest,externalId:string,raw:Record<string,unknown>,desired:Task['status'],write:(method:Parameters<BitrixRequest>[0],body:object)=>Promise<unknown>){
  let status=String(fieldValue(raw,'STATUS'));
@@ -225,8 +242,8 @@ export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:strin
   // A previous process may have died after the portal accepted a request.
   await pool.query(`UPDATE bitrix_operations SET
    state=CASE WHEN payload->>'kind'='created' AND (created_external_id IS NOT NULL OR phase='reading') THEN 'failed' ELSE 'uncertain' END,
-   retry_at=CASE WHEN payload->>'kind'='created' THEN now() ELSE NULL END,
-   error='Обработчик прерван. Требуется сверка с Битрикс24.' WHERE state='processing'`);
+   retry_at=CASE WHEN payload->>'kind'='created' OR $1 AND phase=ANY($2) THEN now() ELSE NULL END,
+   error='Обработчик прерван. Требуется сверка с Битрикс24.' WHERE state='processing'`,[cfg.sync_linked_tasks,commentPhases]);
   let sent=cfg.sync_linked_tasks?await tickBitrixCreations(request,cfg,options.taskIds):0;
   const capture=(await pool.query('SELECT enabled,verified_at FROM bitrix_event_capture WHERE id=1')).rows[0];
   const poll=!cfg.sync_linked_tasks&&(options.poll??!(capture?.enabled&&capture.verified_at));
@@ -240,18 +257,30 @@ export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:strin
    const op=await transaction(async db=>{
     await lockDelegationChain(db,id);
     const [head,next]=(await db.query("SELECT * FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 2 FOR UPDATE",[id])).rows;
-    const independent=independentDeadline(head,next,cfg);
+    const recoverHead=recoverableFieldWrite(head,cfg)&&(!head.retry_at||Date.parse(head.retry_at)<=Date.now());
+    const independent=recoverHead?null:independentDeadline(head,next,cfg);
     const candidate=independent?next:head;
-    if(!candidate||!['pending','failed'].includes(candidate.state)||candidate.retry_at&&Date.parse(candidate.retry_at)>Date.now())return candidate?{...candidate,skip:true}:null;
+    if(!candidate)return null;
+    if(cfg.sync_linked_tasks&&candidate.state==='uncertain'&&commentPhases.includes(candidate.phase)&&
+     candidate.retry_at&&Date.parse(candidate.retry_at)<=Date.now())return {...candidate,verifyComment:true};
+    const recovering=recoverableFieldWrite(candidate,cfg);
+    if(!recovering&&!['pending','failed'].includes(candidate.state)||candidate.retry_at&&Date.parse(candidate.retry_at)>Date.now())return {...candidate,skip:true};
     if(independent){
      const current=(await db.query('SELECT creator_id,assignee_id,status FROM tasks WHERE id=$1',[id])).rows[0];
      if(!current||current.creator_id!==independent.creator_id||current.assignee_id!==independent.assignee_id||
       current.status!==independent.status)return {...candidate,skip:true};
     }
     await db.query("UPDATE bitrix_operations SET state='processing',phase='reading',attempts=attempts+1 WHERE event_id=$1",[candidate.event_id]);
-    return {...candidate,independent};
+    return {...candidate,independent,recovering};
    });
    if(op?.skip||cfg.sync_linked_tasks&&!op)continue;
+   if(op?.verifyComment){
+    try{await recoverOperation(request,op.event_id,'verify');sent++;}
+    catch{
+     await pool.query("UPDATE bitrix_operations SET retry_at=now()+interval '30 minutes' WHERE event_id=$1 AND state='uncertain'",[op.event_id]);
+    }
+    continue;
+   }
    let writing=false;
    try{
     let raw=await readLiveTask(request,externalId),remote=await remoteValues(raw,cfg);
@@ -271,30 +300,40 @@ export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:strin
      return request(method,body,undefined,{operationId:op.event_id});
     };
     const data=op.payload.data||{},before=data.before as Task|undefined,after=data.after as Task|undefined;
+    let retained:(keyof Values)[]=[],rebased:(keyof Values)[]=[],roleChanged=false;
     if(after){
      assert(before,409,'У операции нет исходного состояния для безопасной сверки.');
      if(op.independent)assert(remote.assignee_id===op.independent.assignee_id&&remote.status===op.independent.status,409,
       'Исполнитель или статус изменились в Битрикс24. Сначала сверьте задачу.');
-     const plan=await outboundFields(before,after,raw,cfg);
+     const plan=await outboundFields(before,after,raw,cfg,op.recovering);
+     ({retained,rebased,roleChanged}=plan);
      if(Object.keys(plan.fields).length)await write('tasks.task.update',{taskId:externalId,fields:plan.fields});
-     if(plan.changed.includes('status'))await changeStatus(request,externalId,raw,after.status,write);
+     if(plan.replay.includes('status'))await changeStatus(request,externalId,raw,after.status,write);
      raw=await readLiveTask(request,externalId);remote=await remoteValues(raw,cfg);
-     assert(plan.changed.every(k=>same(remote[k],plan.next[k])),409,'Контрольное чтение не подтвердило изменения задачи.');
+     assert(plan.replay.every(k=>cfg.sync_linked_tasks?matchesPortalValue(k,remote,plan.next):same(remote[k],plan.next[k])),
+      409,'Контрольное чтение не подтвердило изменения задачи.');
     }
     if(!cfg.sync_linked_tasks||op.payload.kind==='comment'){
      const actor=(await pool.query('SELECT name FROM users WHERE id=$1',[op.payload.actorId])).rows[0];
      const text=operationComment(op,actor?.name||'Система');
-     const ack=process.env.BITRIX_LEGACY_COMMENTS==='true'||cfg.sync_linked_tasks&&!bitrixId(fieldValue(raw,'CHAT_ID'))?
+     const legacy=cfg.sync_linked_tasks?!bitrixId(fieldValue(raw,'CHAT_ID')):process.env.BITRIX_LEGACY_COMMENTS==='true';
+     const ack=legacy?
       await write('task.commentitem.add',{TASKID:externalId,FIELDS:{POST_MESSAGE:text}}):
-      await write('tasks.task.chat.message.send',{fields:{taskId:externalId,text}});
+      await write('tasks.task.chat.message.send',{fields:{taskId:Number.isSafeInteger(Number(externalId))?Number(externalId):externalId,text}});
      assert(ack===true||bitrixId(ack)!==null||typeof ack==='object'&&ack!==null&&
       ((ack as Record<string,unknown>).result===true||bitrixId((ack as Record<string,unknown>).id)!==null),502,'Отправка комментария не подтверждена.');
     }
     await transaction(async db=>{
      await lockDelegationChain(db,id);
      const current=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
-     assert(current.creator_id===remote.creator_id,409,'Постановщик изменился во время отправки. Требуется сверка.');
-     await db.query("UPDATE bitrix_operations SET state='sent',phase='done',error=NULL,finished_at=now() WHERE event_id=$1",[op.event_id]);
+     assert(cfg.sync_linked_tasks||current.creator_id===remote.creator_id,409,'Постановщик изменился во время отправки. Требуется сверка.');
+     const discarded=retained.length>0&&after&&writeFields(before!,after,cfg).every(field=>retained.includes(field));
+     await db.query("UPDATE bitrix_operations SET state=$2,phase=$3,error=NULL,finished_at=now(),retry_at=NULL WHERE event_id=$1",
+      [op.event_id,discarded?'canceled':'sent',retained.length?'reconciled':'done']);
+     if(retained.length||rebased.length)await db.query(`INSERT INTO task_events(id,task_id,kind,message,data)
+      VALUES($1,$2,'bitrix_reconciled',$3,$4)`,[randomUUID(),id,
+      roleChanged?'Участники изменились в Битрикс24. Применено состояние портала.':'Поля задачи сверены с Битрикс24',
+      JSON.stringify({operationId:op.event_id,retained,rebased})]);
      if(cfg.sync_linked_tasks){
       await db.query('UPDATE bitrix_task_links SET checked_at=now(),conflict=NULL WHERE task_id=$1',[id]);
       if(op.payload.kind==='comment')await queueRefresh(db,request.portal!,'task_inbound_comments',externalId);

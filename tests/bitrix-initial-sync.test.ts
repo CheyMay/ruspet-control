@@ -301,7 +301,7 @@ test('inbound balancer permits result reads and still rejects result writes',asy
  }
 });
 
-test('confirmed links exchange completed tasks and comments without overwriting pending local changes',async()=>{
+test('confirmed links import unrelated fields while preserving a pending closure and then exchange completion and comments',async()=>{
  const inbound=await import('../server/bitrix-inbound.js');
  const live=await import('../server/bitrix-live.js');
  const {event,taskBitrixDiscussion}=await import('../server/service.js');
@@ -348,7 +348,8 @@ test('confirmed links exchange completed tasks and comments without overwriting 
   await events.queueRefresh(db.pool,portal,'task_inbound',id);
   const during=await inbound.tickInboundTasks(rest,id);
   assert.equal(during?.id,id);
-  assert.equal((await db.pool.query('SELECT status,title FROM tasks WHERE id=$1',[id])).rows[0].title,before.title);
+  const queued=(await db.pool.query('SELECT status,title FROM tasks WHERE id=$1',[id])).rows[0];
+  assert.deepEqual(queued,{status:'completed',title:remote.title});
   assert.equal((await live.tickLiveSync(rest)).sent,1);
   assert.equal((await live.tickLiveSync(rest)).sent,1);
   assert.deepEqual(writes,['tasks.task.complete','tasks.task.chat.message.send']);

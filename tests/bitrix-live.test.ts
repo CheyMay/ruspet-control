@@ -297,9 +297,10 @@ test('independent portal edits survive outbound writes; unknown messages without
 });
 
 
-test('a linked deadline can pass an unresolved comment or price edit but cannot overwrite a new Bitrix deadline',async()=>{
+test('linked deadlines pass unrelated blocked work, rebase queued changes, and preserve a newer portal value after an uncertain write',async()=>{
  const request=Object.assign((...args:Parameters<BitrixRequest>)=>transport(...args),{portal:'fixture.bitrix24.ru',mode:'webhook' as const}) as BitrixRequest;
- const cases=await Promise.all(['9821','9822','9823'].map(makeLinked));
+ const cases:Task[]=[];
+ for(const id of ['9821','9822','9823','9824'])cases.push(await makeLinked(id));
  const target='2036-12-12T15:00:00.000Z',portalEdit='2036-12-11T15:00:00.000Z';
  const status=(await db.pool.query('SELECT enabled,sync_linked_tasks FROM bitrix_live_config WHERE id=1')).rows[0];
  const start=calls.length;
@@ -308,21 +309,26 @@ test('a linked deadline can pass an unresolved comment or price edit but cannot 
   for(const [i,task] of cases.entries()){
    const priceEdit={...task,price:12500};
    if(i===1)await service.event(db.pool,task.id,director.id,'task_edited','Новая цена',{before:task,after:priceEdit});
-   else await service.addComment(director,task.id,'Исход отправки комментария неизвестен.');
-   await db.pool.query("UPDATE bitrix_operations SET state='uncertain' WHERE task_id=$1",[task.id]);
+   else if(i!==3)await service.addComment(director,task.id,'Исход отправки комментария неизвестен.');
+   await db.pool.query("UPDATE bitrix_operations SET state='uncertain',attempts=8 WHERE task_id=$1",[task.id]);
    const before=i===1?priceEdit:task;
    await db.pool.query('UPDATE tasks SET deadline=$2,price=$3,version=version+1 WHERE id=$1',[task.id,target,before.price]);
    await service.event(db.pool,task.id,director.id,'deadline_changed','Срок согласован',{before,after:{...before,deadline:target,version:before.version+1}});
+   if(i===3)await db.pool.query("UPDATE bitrix_operations SET state='uncertain',phase='tasks.task.update',attempts=1 WHERE task_id=$1",[task.id]);
   }
   remote.get('9823')!.deadline=portalEdit;
+  remote.get('9824')!.deadline=portalEdit;
   await live.tickLiveSync(request,{taskIds:cases.map(task=>task.id),poll:false});
   assert.equal(remote.get('9821')!.deadline,target);
   assert.equal(remote.get('9822')!.deadline,target);
   assert.equal(remote.get('9822')!.ufPrice,10000);
-  assert.equal(remote.get('9823')!.deadline,portalEdit);
+  assert.equal(remote.get('9823')!.deadline,target);
+  assert.equal(remote.get('9824')!.deadline,portalEdit);
   const states=(await db.pool.query("SELECT state,error FROM bitrix_operations WHERE task_id=ANY($1) ORDER BY sequence",[cases.map(task=>task.id)])).rows;
-  assert.deepEqual(states.map(row=>row.state),['uncertain','sent','uncertain','sent','uncertain','blocked']);
-  assert.match(states.at(-1).error,/Одновременно изменены поля: deadline/);
+  assert.deepEqual(states.map(row=>row.state),['uncertain','sent','uncertain','sent','uncertain','sent','canceled']);
+  const audit=(await db.pool.query("SELECT task_id,data FROM task_events WHERE kind='bitrix_reconciled' AND task_id=ANY($1) ORDER BY created_at",[cases.map(task=>task.id)])).rows;
+  assert.deepEqual(audit.find(event=>event.task_id===cases[2].id).data.rebased,['deadline']);
+  assert.deepEqual(audit.find(event=>event.task_id===cases[3].id).data.retained,['deadline']);
   assert(!calls.slice(start).some(call=>call.method==='tasks.task.chat.message.send'&&['9821','9823'].includes(String(call.body.fields.taskId))));
  }finally{
   const ids=cases.map(task=>task.id);

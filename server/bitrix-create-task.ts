@@ -165,8 +165,8 @@ export async function tickBitrixCreations(request:BitrixRequest,cfg:Configuratio
    const uncertain=op.state==='uncertain'||writing&&!op.created_external_id&&!rejected;
    const state=uncertain?'uncertain':error instanceof AppError||writing&&rejected&&!quota?'blocked':'failed';
    const message=error instanceof BitrixError||error instanceof AppError?error.message:'Не удалось создать задачу в Битрикс24.';
-   const retryAt=uncertain&&op.state==='uncertain'||state==='blocked'?null:
-    new Date(Date.now()+Math.min(3600000,30000*2**Math.min(op.attempts,7))).toISOString();
+   const delay=uncertain&&op.state==='uncertain'?1800000:Math.min(3600000,30000*2**Math.min(op.attempts,7));
+   const retryAt=state==='blocked'?null:new Date(Date.now()+delay).toISOString();
    await pool.query(`UPDATE bitrix_operations SET state=$2,error=$3,retry_at=$4
     WHERE event_id=$1 AND state IN ('processing','uncertain')`,[op.event_id,state,message,retryAt]);
   }
