@@ -186,6 +186,7 @@ export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:str
  return (await pool.query<{id:string;task_id:string|null;created_at:string;body:string}>(`SELECT o.* FROM outbox o LEFT JOIN notification_preferences p ON p.user_id=o.recipient_id
   WHERE o.withdrawn_at IS NULL AND o.read_at IS NULL AND NOT o.task_assignment AND o.task_notice IS NULL AND o.management_notice IS NULL AND o.dedupe_key NOT LIKE 'staff-review:%' AND o.personal_plan_alert_id IS NULL
    AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[])) AND ${visibleControlNotice}
+   AND (o.dedupe_key NOT LIKE 'approval:%' OR NOT EXISTS(SELECT 1 FROM approval_hierarchy h WHERE h.creator_first AND h.sales_head_id=o.recipient_id))
    AND CASE WHEN ${approvalNoticeKind} THEN ${topicOn('telegram','approvals')} ELSE NOT $7 AND ${topicOn('telegram','updates')} END
    AND o.created_at BETWEEN greatest($2::timestamptz,$3::timestamptz,$6::timestamptz-interval '2 days') AND $6
    AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text)
@@ -286,9 +287,10 @@ async function deliverManagementNotices(user:User,chatId:string,now:Date,managem
   if(!claimed)continue;
   try{
    const path=notice.kind==='director-approvals'?'/?view=approvals&batch='+notice.batchId:notice.kind==='approval-batch-ready'?'/?view=approvals':
-    notice.kind==='morning-report'?'/?view=reports&report='+notice.reportId:'/?view=tasks&scope=team&filter=overdue';
+    notice.kind==='morning-report'?'/?view=reports&report='+notice.reportId:notice.kind==='weekly-deadline-watch'?'/?view=approvals&weekly='+notice.week:'/?view=tasks&scope=team&filter=overdue';
    const workdayButtons=workdayReports(notice).map(report=>[button(report.label,'reports',{id:report.id,filter:report.view})]);
-   const actions=notice.kind==='director-approvals'?[[button('Открыть пакет','director_batch',{target:notice.batchId})]]:workdayButtons;
+   const actions=notice.kind==='director-approvals'?[[button('Открыть пакет','director_batch',{target:notice.batchId})]]:
+    notice.kind==='weekly-deadline-watch'?[[button('Выбрать задачи','director_weekly',{target:notice.week})]]:workdayButtons;
    const buttons=actions.length?(await screen(user,'telegram:'+chatId,'',actions)).buttons:[];
    const links=notice.kind==='workday'?undefined:[{text:'Открыть в РУСПЭТ',url:new URL(path,publicOrigin()).href}];
    const sent=await send(chatId,{text:row.body,buttons,links});

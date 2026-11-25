@@ -6,8 +6,10 @@ import {roleLabels as roles} from './employee-roles.js';
 import {DelegationInbox,OrgWorkspace} from './OrgWorkspace.js';
 import {TaskDelegation} from './TaskDelegation.js';
 import {taskNumber} from '../shared/task-number.js';
+import {taskRequiresResult} from '../shared/queues.js';
 import {ProductCatalog} from './Crm.js';
 import {ClientNotes} from './ClientNotes.js';
+import {pushSectionStep} from './section-history.js';
 import {TaskGroupPicker,type TaskGroupsData} from './TaskGroups.js';
 import {CompanyReference} from './TaskComposeTools.js';
 import type {ProcessDraft} from './WorkDesign.js';
@@ -17,6 +19,7 @@ import {EmployeeFilter,SearchFilter} from './SearchFilter.js';
 import {AccessDirectory,SystemHealth,moscowTimestamp} from './SystemHealth.js';
 import {readFilterSelection,useRememberedFilter,writeFilterSelection} from './remembered-filter.js';
 import {Journal} from './Journal.js';
+import {DirectorWeeklyTasks} from './DirectorApprovals.js';
 import {ApprovalWorkspace} from './ApprovalWorkspace.js';
 import {ApprovalHierarchySettings} from './ApprovalHierarchySettings.js';
 import {UndoAction} from './UndoAction.js';
@@ -60,7 +63,7 @@ import {approvalChangeLines} from '../shared/approval-changes.js';
 import { CompleteTaskDialog,ReviewActions,TaskEditor,TaskPriceEditor } from './TaskWorkflow.js';
 import {TaskPeople} from './TaskPeople.js';
 import {TaskMeta} from './TaskMeta.js';
-import {activeTaskApproval,approvalTurn,canComplete,canSetApprovedDeadline,taskNextAction} from '../shared/actions.js';
+import {activeTaskApproval,approvalTurn,canReview,canComplete,canSetApprovedDeadline,taskNextAction} from '../shared/actions.js';
 import { History as TaskHistory } from './History.js';
 import { Operations } from './Operations.js';
 import {api,ApiError,loadWorkspace,viewAs} from './api.js';
@@ -114,7 +117,7 @@ export function App(){
  const [selected,setSelected]=useState<string|null>(null),[detail,setDetail]=useState<TaskDetail|null>(null),[drawerTab,setDrawerTab]=useState('info'),[requestType,setRequestType]=useState<'deadline'|'completion'|null>(null),[mobileMenu,setMobileMenu]=useState(false);
  const [detailError,setDetailError]=useState('');
  const [demo,setDemo]=useState(true),[processDraft,setProcessDraft]=useState<ProcessDraft|null>(null);
- const [groups,setGroups]=useState<TaskGroupsData>({groups:[],items:{}}),[groupFilter,setGroupFilter]=useState('');
+ const [groups,setGroups]=useState<TaskGroupsData>({groups:[],items:{},companyGroups:[],companyItems:{}}),[groupFilter,setGroupFilter]=useState('');
  const [editor,setEditor]=useState<{task:Task|null;copyOf?:Task;companyId?:string;parent?:Task}|null>(null);
  const [completingTask,setCompletingTask]=useState<Task|null>(null);
  const [boardMove,setBoardMove]=useState<{id:string;deadline?:string}|null>(null);
@@ -327,8 +330,10 @@ export function App(){
   if(!history.state?.ruspet)history.replaceState({ruspet:true,depth:0},'',location.href);
   const follow=()=>{setCanGoBack(Boolean(history.state?.ruspet&&history.state.depth));linkHandler.current(location.search===routeFromUrl.current);};
   linkHandler.current();
+  const advanced=()=>{routeFromUrl.current=location.search;setCanGoBack(true);};
   window.addEventListener('popstate',follow);
-  return()=>window.removeEventListener('popstate',follow);
+  window.addEventListener('ruspet:section-step',advanced);
+  return()=>{window.removeEventListener('popstate',follow);window.removeEventListener('ruspet:section-step',advanced);};
  },[data?.user.id]);
  const now=data?new Date(data.serverTime):new Date();
  const onApproval=(t:Task)=>!!data?.approvals.some(a=>activeTaskApproval(t,a));
@@ -337,7 +342,7 @@ export function App(){
   const next=await api<TaskGroupsData>('/task-groups');setGroups(next);
  }
  useEffect(()=>{
-  if(!data||viewingEmployee){setGroups({groups:[],items:{}});return;}
+  if(!data||viewingEmployee){setGroups({groups:[],items:{},companyGroups:[],companyItems:{}});return;}
   let active=true;
   void api<TaskGroupsData>('/task-groups').then(next=>{if(active)setGroups(next);}).catch(()=>{});
   return()=>{active=false;};
@@ -347,7 +352,7 @@ export function App(){
   if(f.startsWith('day:'))return t.status==='active'&&!onApproval(t)&&!!t.deadline&&businessDay(t.deadline)===f.slice(4);
   const deadline=taskQueue(t,now);
   switch(f){
-   case 'all':return true;
+   case 'all':return !!linkedIds||t.status!=='completed';
    case 'unaccepted':return t.assignment_pending===true;
    case 'risk':return t.customer_risk===true&&t.status!=='completed';
    case 'planned_today':return !onApproval(t)&&plannedToday(t,now);
@@ -381,6 +386,8 @@ export function App(){
     <td className="mono">{t.transfer_count||'—'}</td>
     <td><div className="task-row-actions">
      {!viewingEmployee&&t.assignee_id===data!.user.id&&t.assignment_pending&&<button type="button" className="button secondary" onClick={()=>void openTask(t.id)}>Принять</button>}
+     {!viewingEmployee&&t.status==='review'&&canReview(data!.user,t)&&approval?.type!=='deadline'&&(!approval?.clarification_requested_at||!!approval.clarification_answered_at)&&
+      <button type="button" className="button primary" disabled={busy} onClick={()=>void act(`/tasks/${t.id}/review`,{action:'accept',comment:'',expectedVersion:t.version},'POST','Результат принят, задача завершена.')}>Принять результат</button>}
      {!viewingEmployee&&canComplete(data!.user,t,data!.approvalScope)&&!approval&&!data!.pendingAssignmentIds?.includes(t.id)&&
       <button type="button" className="button secondary" disabled={busy} onClick={()=>{setError('');setCompletingTask(t);}}>Завершить</button>}
     </div></td>
@@ -408,7 +415,8 @@ export function App(){
  const requestedScope=trainingStep?.page==='tasks'?trainingStep.scope??taskView:taskView;
  const currentScope=requestedScope==='company'&&!company?'mine':requestedScope==='team'&&!teamAllowed?'mine':requestedScope??'mine';
  const members=new Set(data.teamIds);
- const scopedTasks=groupFilter&&!linkedIds?data.tasks.filter(t=>groups.items[t.id]===groupFilter):linkedIds?data.tasks.filter(t=>linkedIds.includes(t.id)):currentScope==='mine'?data.tasks.filter(t=>t.assignee_id===data.user.id):
+ const inEpic=(task:Task)=>!groupFilter||groups.items[task.id]===groupFilter||groups.companyItems[task.id]===groupFilter;
+ const scopedTasks=linkedIds?data.tasks.filter(t=>linkedIds.includes(t.id)):currentScope==='mine'?data.tasks.filter(t=>t.assignee_id===data.user.id):
   currentScope==='created'?data.tasks.filter(t=>t.creator_id===data.user.id):
   currentScope==='team'?data.tasks.filter(t=>members.has(t.assignee_id)):data.tasks;
  const taskIndex=new Map(data.tasks.map(task=>[task.id,task]));
@@ -424,13 +432,13 @@ export function App(){
  function moveBoardTask(task:Task,deadline?:string){
   if(canMoveBoardTask(task)){setError('');setBoardMove({id:task.id,deadline});}
  }
- const matchingTasks=scopedTasks.filter(t=>(!groupFilter||groups.items[t.id]===groupFilter)&&(priceFilter==='all'||priceBand(t)===priceFilter)&&(branch==='all'||t.branch_id===branch)&&(currentScope==='mine'&&!linkedIds||!selectedOwners.size||selectedOwners.has(t.assignee_id))&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${taskNumber(t)} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.trim().replace(/^#\s*/,'').toLowerCase()));
+ const matchingTasks=scopedTasks.filter(t=>inEpic(t)&&(priceFilter==='all'||priceBand(t)===priceFilter)&&(branch==='all'||t.branch_id===branch)&&(currentScope==='mine'&&!linkedIds||!selectedOwners.size||selectedOwners.has(t.assignee_id))&&(!fromDate||!!t.deadline&&businessDay(t.deadline)>=fromDate)&&(!toDate||!!t.deadline&&businessDay(t.deadline)<=toDate)&&`${t.title} ${taskNumber(t)} ${t.id} ${userById(t.assignee_id)?.name}`.toLowerCase().includes(search.trim().replace(/^#\s*/,'').toLowerCase()));
  const unaccepted=data.tasks.filter(task=>task.assignee_id===data.user.id&&task.assignment_pending).sort((a,b)=>b.updated_at.localeCompare(a.updated_at));
  const visible=filterTasks(matchingTasks).sort((a,b)=>(currentScope==='mine'?Number(!!b.assignment_pending)-Number(!!a.assignment_pending):0)||(sort==='price_desc'?(taskPrice(b)??-1)-(taskPrice(a)??-1):sort==='urgency'?Number(!!b.critical)-Number(!!a.critical)||Number(b.priority==='high')-Number(a.priority==='high')||(a.deadline||'9999').localeCompare(b.deadline||'9999'):sort==='work_priority'?compareWorkPlan(a,b,workDay||businessDay(now)):sort==='title'?a.title.localeCompare(b.title,'ru'):sort==='transfers'?b.transfer_count-a.transfer_count:(a.deadline||'9999').localeCompare(b.deadline||'9999')));
  const myWork=workQueue(data),myActionCount=workCount(myWork);
  const myApprovals=pending.filter(a=>approvalTurn(a).userId===data.user.id);
  const scopedMetrics=summarize(matchingTasks,now,pendingTasks);
- const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(filter==='unaccepted'||matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'К принятию',count:matchingTasks.filter(t=>t.assignment_pending).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
+ const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.filter(t=>linkedIds||t.status!=='completed').length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(filter==='unaccepted'||matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'К принятию',count:matchingTasks.filter(t=>t.assignment_pending).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
  const cardApproval=detail?.approvals.some(a=>activeTaskApproval(detail.task,a));
  const cardCanComplete=!!detail&&!viewingEmployee&&!cardApproval&&!detail.personalPlan?.needsAcceptance&&canComplete(data.user,detail.task,detail.approvalScope);
  const title=page==='guide'?'Гайд':page==='notifications'?'Уведомления':nav.find(n=>n.id===page)?.label;
@@ -477,7 +485,8 @@ export function App(){
      {filter!=='unaccepted'&&<button type="button" className="button secondary" onClick={()=>go('tasks','unaccepted','mine')}>Показать все</button>}
     </div>
     {filter!=='unaccepted'&&<ul>{unaccepted.slice(0,3).map(task=><li key={task.id}>
-     <button type="button" className="text-button assignment-title" onClick={()=>void openTask(task.id)}>#{taskNumber(task)} · {task.title}</button>
+     <div><button type="button" className="text-button assignment-title" onClick={()=>void openTask(task.id)}>#{taskNumber(task)} · {task.title}</button>
+      {task.description&&<p className="muted assignment-description">{task.description.trim().slice(0,160)}{task.description.trim().length>160?'…':''}</p>}</div>
      <button type="button" className="button primary" onClick={()=>void openTask(task.id)}>Принять и запланировать</button>
     </li>)}</ul>}
    </section>}
@@ -485,20 +494,23 @@ export function App(){
    <TaskRoleSwitch value={!linkedIds&&(currentScope==='mine'||currentScope==='created')?currentScope:undefined} change={scope=>go('tasks','all',scope)}/>
    {teamAllowed&&<button className={'button '+(!linkedIds&&currentScope==='team'?'primary':'secondary')} onClick={()=>go('tasks','all','team')}>Задачи команды</button>}
    {company&&<button className={'button '+(!linkedIds&&currentScope==='company'?'primary':'secondary')} onClick={()=>go('tasks','all','company')}>Вся компания</button>}
-  </div><TaskViewSwitch board={showKanban} change={setTaskPresentation}/></div>{company&&currentScope==='company'&&!linkedIds&&<details className="report-more" open={showTaskMetrics} onToggle={e=>setShowTaskMetrics(e.currentTarget.open)}>
+  </div>{!viewingEmployee&&<details className="work-filters"><summary className="button secondary">Эпики</summary><div className="panel work-filter-panel">
+   <TaskGroupPicker value="" creationOnly onChange={async()=>{await refreshGroups();}}/>
+   {data.user.role==='admin'&&<TaskGroupPicker value="" company creationOnly onChange={async()=>{await refreshGroups();}}/>}
+  </div></details>}<TaskViewSwitch board={showKanban} change={setTaskPresentation}/></div>{company&&currentScope==='company'&&!linkedIds&&<details className="report-more" open={showTaskMetrics} onToggle={e=>setShowTaskMetrics(e.currentTarget.open)}>
    <summary>Сводка по ценам и срокам</summary>
    {showTaskMetrics&&<><Dashboard key={data.user.id} data={data} now={now} go={(f,id,price)=>{go('tasks',f,'company');setOwner(id||'all');if(price)setPriceFilter(price);}}/>
     {data.source&&<details className="report-more"><summary>Источник и свежесть данных</summary><p>{data.source.file_name} · {data.source.sheet_name} · {data.source.row_count} задач</p>
      {data.selection&&<p>В рабочей выборке: {data.selection.included}. Исключено: {data.selection.checklist} с чек-листами и {data.selection.unfinishedAnalysis} на анализ невыполненных задач.</p>}
      <dl className="freshness"><div><dt>Импорт в систему</dt><dd>{moscowTimestamp(data.source.imported_at)}</dd></div><div><dt>Последнее изменение задач</dt><dd>{moscowTimestamp(data.lastTaskChange)}</dd></div><div><dt>Расчёт показателей</dt><dd>{moscowTimestamp(data.serverTime)}</dd></div></dl>
     </details>}</>}
-  </details>}{teamDirectory?<TeamTasks tasks={scopedTasks} users={data.users} now={now} paused={pendingTasks} onSelect={(id,f)=>{go('tasks',f,'team');setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">Выборка из сохранённого отчёта · показано текущее состояние доступных задач.<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={setFilter} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel" data-presentation={showKanban?'board':'list'}><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label>{groups.groups.length>0&&!viewingEmployee&&<select aria-label="Моя подборка" value={groupFilter} onChange={e=>{setGroupFilter(e.target.value);setTablePage(0);}}>
-    <option value="">Все подборки</option>{groups.groups.map(group=><option key={group.id} value={group.id}>{group.name}</option>)}
+  </details>}{teamDirectory?<TeamTasks tasks={scopedTasks} users={data.users} now={now} paused={pendingTasks} onSelect={(id,f)=>{go('tasks',f,'team');setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">Выборка из сохранённого отчёта · показано текущее состояние доступных задач.<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={value=>{pushSectionStep({view:'tasks',scope:currentScope,filter:value==='all'?null:value});setFilter(value);}} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel" data-presentation={showKanban?'board':'list'}><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label>{(groups.groups.length>0||groups.companyGroups.length>0)&&!viewingEmployee&&<select aria-label="Эпик" value={groupFilter} onChange={e=>{setGroupFilter(e.target.value);setTablePage(0);}}>
+    <option value="">Все эпики</option>{groups.groups.length>0&&<optgroup label="Мои эпики">{groups.groups.map(group=><option value={group.id} key={group.id}>{group.name}</option>)}</optgroup>}{groups.companyGroups.length>0&&<optgroup label="Эпики компании">{groups.companyGroups.map(group=><option value={group.id} key={group.id}>{group.name}</option>)}</optgroup>}
    </select>}{showKanban&&<button type="button" className="button secondary" aria-expanded={showBoardFilters} aria-controls="task-filter-options" onClick={()=>setShowBoardFilters(value=>!value)}><Filter size={16}/> Фильтры</button>}<div id="task-filter-options" className="task-filter-options" hidden={showKanban&&!showBoardFilters}><SearchFilter label="Филиал" value={branch} onChange={setBranch} empty={{value:'all',label:'Все филиалы'}} placeholder="Название подразделения" options={[...new Set(data.tasks.map(t=>t.branch_id))].sort((a,b)=>a.localeCompare(b,'ru')).map(value=>({value,label:value}))}/>{(currentScope!=='mine'||linkedIds)&&<EmployeeFilter label="Исполнители" values={ownerSelection} onChange={ids=>setOwner(writeFilterSelection(ids))} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>selectedOwners.has(u.id)||scopedOwners.has(u.id))}/>}<label className="date-filter">Крайний срок от<input aria-label="Крайний срок от" type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></label><label className="date-filter">до<input aria-label="Крайний срок до" type="date" min={fromDate} value={toDate} onChange={e=>setToDate(e.target.value)}/></label><select aria-label="Категория цены" value={priceFilter} onChange={e=>{setPriceFilter(e.target.value);setTablePage(0)}}><option value="all">Любая цена</option>{Object.entries(priceLabels).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select><select aria-label="Сортировка" value={sort} onChange={e=>setSort(e.target.value)}><option value="deadline">По сроку</option><option value="price_desc">По цене: сначала дороже</option><option value="work_priority">Порядок работы: просрочки и цена</option><option value="urgency">По критичности и приоритету</option><option value="title">По названию</option><option value="transfers">По переносам</option></select></div></div>{(search||(currentScope!=='mine'||linkedIds)&&!!selectedOwners.size||branch!=='all'||fromDate||toDate||priceFilter!=='all'||workDay)&&<div className="active-filter"><span>{[search&&'Поиск: '+search,(currentScope!=='mine'||linkedIds)&&ownerNames,branch!=='all'&&branch,fromDate&&'С '+fromDate,toDate&&'По '+toDate,priceFilter!=='all'&&priceLabels[priceFilter as keyof typeof priceLabels],workDay&&'На '+workDay].filter(Boolean).join(' · ')}</span><button className="text-button" onClick={()=>go('tasks','all')}>Сбросить фильтры</button></div>}{!showKanban&&<>{renderTaskTable(visible)}{visible.length>50&&<div className="pagination"><button className="button secondary" disabled={tablePage===0} onClick={()=>setTablePage(p=>p-1)}>Назад</button><span>{tablePage+1} / {Math.ceil(visible.length/50)}</span><button className="button secondary" disabled={(tablePage+1)*50>=visible.length} onClick={()=>setTablePage(p=>p+1)}>Далее</button></div>}<div className="panel-footer"><span>Найдено {visible.length} из {scopedTasks.length}</span></div></>}</section>
    {showKanban&&<TaskKanban tasks={visible} users={data.users} now={now} pending={pendingTasks} filtered={filter!=='all'||visible.length!==scopedTasks.length||!!linkedIds}
     open={id=>void openTask(id)} canMove={canMoveBoardTask} move={moveBoardTask}/>}</>}</>}
 
-  {page==='approvals'&&<ApprovalWorkspace readOnly={viewingEmployee||!!tour} startOnMine={!!tour} data={data} render={a=><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask}/>}/>}
+  {page==='approvals'&&new URLSearchParams(location.search).get('weekly')&&!viewingEmployee?<DirectorWeeklyTasks week={new URLSearchParams(location.search).get('weekly')!} open={id=>void openTask(id)}/>:page==='approvals'&&<ApprovalWorkspace readOnly={viewingEmployee||!!tour} startOnMine={!!tour} data={data} render={a=><ApprovalCard a={a} data={data} busy={busy} act={act} openTask={openTask}/>}/>}
   {page==='checks'&&<QualityWorkspace key={data.user.id} data={data} open={(id,tab)=>void openTask(id,tab)} settings={viewingEmployee?undefined:()=>openSettings('rules')}/>}
   {page==='reports'&&<WorkspaceSection label="Загружаем отчёты…"><Reports key={data.user.id+':'+(trainingStep?.scope??reportView??'default')} initialView={trainingStep?.scope??reportView??undefined} initialReport={reportOpen} downloadPdf={reportPdf} readOnly={viewingEmployee} data={data} refresh={refresh} openAutomation={company&&!viewingEmployee?()=>openSettings('automation'):undefined}/></WorkspaceSection>}
   {page==='people'&&managed(data.user)&&<Performance data={data} open={openTask} canObserve={company&&!viewingEmployee}/>}
@@ -640,6 +652,10 @@ export function App(){
     {drawerTab==='links'&&<section className="task-card-section">
      {!viewingEmployee&&detail.task.company_id&&canUseOkb(data.user)&&<CompanyReference key={detail.task.company_id} id={detail.task.company_id} open={id=>{go('okb');setOkbCompany(id);}}/>}
      {!viewingEmployee&&detail.task.client_refs?.map(client=><ClientNotes key={detail.task.id+client.id} id={client.id} name={client.name} taskId={detail.task.id}/>)}
+     {!viewingEmployee&&(data.user.role==='admin'||detail.task.creator_id===data.user.id)&&<TaskGroupPicker company canCreate={data.user.role==='admin'}
+      key={'company:'+detail.task.id} value={groups.companyItems[detail.task.id]??''} onChange={async epicId=>{
+       await api('/tasks/'+encodeURIComponent(detail.task.id)+'/company-epic','PUT',{epicId:epicId||null});await refreshGroups();
+      }}/>}
      {!viewingEmployee&&(detail.task.assignee_id===data.user.id||detail.task.creator_id===data.user.id)&&<TaskGroupPicker
       key={detail.task.id} value={groups.items[detail.task.id]??''} onChange={async groupId=>{
        await api('/tasks/'+encodeURIComponent(detail.task.id)+'/group','PUT',{groupId:groupId||null});await refreshGroups();
@@ -815,7 +831,7 @@ function RequestModal({type,task,initialDeadline,min,busy,error,close,submit}:{
  return <div className="modal-backdrop"><form className="modal" role="dialog" aria-modal="true" aria-label="Новый запрос" onSubmit={event=>{
   event.preventDefault();
   const fields=new FormData(event.currentTarget);
-  const change=type==='deadline'?{proposedDeadline:new Date(String(fields.get('deadline'))+':00+03:00').toISOString()}:{plan:fields.get('plan')};
+  const change=type==='deadline'?{proposedDeadline:new Date(String(fields.get('deadline'))+'T'+String(fields.get('deadlineTime'))+':00+03:00').toISOString()}:{plan:fields.get('plan')};
   void submit({type,reason:fields.get('reason'),expectedVersion:task.version,...change});
  }}>
   <div className="panel-heading"><h2>{type==='deadline'?'Запросить перенос срока':'Запросить закрытие'}</h2>
@@ -825,10 +841,10 @@ function RequestModal({type,task,initialDeadline,min,busy,error,close,submit}:{
   {error&&<div className="alert error" role="alert">{error}</div>}
   {type==='deadline'&&<>
    <p className="muted">Текущий крайний срок: {date(task.deadline,true)}{task.deadline?' МСК':''}</p>
-   <label>Новый крайний срок · МСК<input autoFocus name="deadline" type="datetime-local" defaultValue={initialDeadline} required/></label>
+   <div className="editor-grid"><label>Новая дата крайнего срока<input autoFocus name="deadline" type="date" defaultValue={initialDeadline?.slice(0,10)} required/></label><label>Время · МСК<input name="deadlineTime" type="time" defaultValue={initialDeadline?.slice(11)||'18:00'} required/></label></div>
   </>}
   <label>Причина запроса<textarea autoFocus={type==='completion'} name="reason" required minLength={min} maxLength={4000} placeholder="Что изменилось и почему требуется решение…"/></label>
-  {type==='completion'?<label>Результат выполненной работы<textarea name="plan" required minLength={min} maxLength={4000}/></label>:
+  {type==='completion'?<label>Результат выполненной работы<textarea name="plan" required={taskRequiresResult(task)} minLength={taskRequiresResult(task)?min:undefined} maxLength={4000}/></label>:
    <p className="muted">Если требуется согласование, текущий крайний срок сохранится до решения.</p>}
   <div className="drawer-actions"><button type="button" className="button secondary" onClick={close} disabled={busy}>Отмена</button>
    <button disabled={busy} className="button primary">{type==='deadline'?'Отправить запрос':'Отправить на согласование'}</button>

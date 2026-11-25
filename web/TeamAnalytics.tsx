@@ -3,6 +3,7 @@ import {HelpHint} from './Management.js';
 import {useEffect,useState} from 'react';
 import {ChartNoAxesCombined,ChevronRight,RefreshCw} from 'lucide-react';
 import type {AnalyticsDay,AnalyticsOverview,AnalyticsRow,CompletedWork,RemainingWork} from '../shared/team-analytics.js';
+import {useSectionParam} from './section-history.js';
 import {api} from './api.js';
 import './team-analytics.css';
 
@@ -100,7 +101,11 @@ function Teams({rows,period,nextLabel,onGroup}:{rows:AnalyticsRow[];period:Perio
 }
 
 export function TeamAnalytics(){
- const [period,setPeriod]=useState<Period>('day'),[selection,setSelection]=useState<string[]>([]);
+ const [periodParam,changePeriod]=useSectionParam('period'),[group,changeGroup]=useSectionParam('analytics-group');
+ const period:Period=periodParam==='week'?'week':'day';
+ const selection=group.split('|').filter(Boolean);
+ const setPeriod=(value:Period)=>changePeriod(value==='day'?'':value);
+ const setSelection=(path:string[])=>changeGroup(path.join('|'));
  const [loaded,setLoaded]=useState<{key:string;data:AnalyticsOverview}|null>(null);
  const [error,setError]=useState(''),[refreshing,setRefreshing]=useState(true),[request,setRequest]=useState(0);
  const query=new URLSearchParams({period});selection.forEach(part=>query.append('group',part));

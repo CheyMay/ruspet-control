@@ -27,7 +27,7 @@ import {reportPdf} from './report-pdf.js';
 import {taskSyncStatus} from './task-sync.js';
 import {reminderInput,listTaskReminders,saveTaskReminder,disableTaskReminder,acknowledgeAlert,userAlerts} from './reminders.js';
 import {botView,botClick,botText,clearBotDraft,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
-import {taskGroups,createTaskGroup,groupTask} from './task-groups.js';
+import {taskGroups,createTaskGroup,groupTask,groupCompanyTask} from './task-groups.js';
 import {clientNotes,addClientNote} from './client-notes.js';
 import {parseMoscowInput} from './bot.js';
 import {parseVoiceIntent} from './voice-intent.js';
@@ -57,7 +57,7 @@ import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,editTaskPrice,newTaskAssignees,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
 import {approvalHierarchy,setApprovalHierarchy,setApprovalWatch} from './approval-hierarchy.js';
-import {directorBatchTasks} from './management-notices.js';
+import {directorBatchStatus,directorBatchTasks,sendDirectorBatch,weeklyDirectorTasks} from './management-notices.js';
 import {taskWrite} from './task-write.js';
 import {trainingMaterials} from '../shared/training-materials.js';
 import type { User } from '../shared/types.js';
@@ -299,7 +299,11 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   res.json({transcript,values,deadline,assigneeId:person?.id});
  });
  app.get('/api/task-groups',async(req,res)=>res.json(await taskGroups(req.actor)));
- app.post('/api/task-groups',async(req,res)=>res.status(201).json(await createTaskGroup(req.actor,z.object({name:z.string().trim().min(1).max(80)}).parse(req.body).name)));
+ app.post('/api/task-groups',async(req,res)=>{
+  const input=z.object({name:z.string().trim().min(1).max(80),company:z.boolean().optional()}).parse(req.body);
+  res.status(201).json(await createTaskGroup(req.actor,input.name,input.company));
+ });
+ app.put('/api/tasks/:id/company-epic',async(req,res)=>res.json(await groupCompanyTask(req.actor,String(req.params.id),z.object({epicId:z.uuid().nullable()}).parse(req.body).epicId)));
  app.put('/api/tasks/:id/group',async(req,res)=>res.json(await groupTask(req.actor,String(req.params.id),z.object({groupId:z.uuid().nullable()}).parse(req.body).groupId)));
  app.get('/api/okb/companies/:id/notes',async(req,res)=>res.json(await clientNotes(req.actor,{companyId:z.uuid().parse(req.params.id),taskId:z.string().max(100).optional().parse(req.query.task)},z.uuid().optional().parse(req.query.before))));
  app.post('/api/okb/companies/:id/notes',async(req,res)=>res.status(201).json(await addClientNote(req.actor,{companyId:z.uuid().parse(req.params.id),taskId:z.string().max(100).optional().parse(req.query.task)},z.object({body:z.string().trim().min(1).max(20000)}).parse(req.body).body)));
@@ -350,6 +354,9 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   res.json(await approvalHierarchy(pool));
  });
 
+ app.get('/api/director-approval-batches',async(req,res)=>res.json(await directorBatchStatus(req.actor)));
+ app.post('/api/director-approval-batches',async(req,res)=>res.json(await sendDirectorBatch(req.actor)));
+ app.get('/api/director-weekly-tasks',async(req,res)=>res.json(await weeklyDirectorTasks(req.actor,z.iso.date().parse(req.query.week))));
  app.get('/api/director-approval-batches/:id',async(req,res)=>res.json(await directorBatchTasks(req.actor,z.uuid().parse(req.params.id))));
  app.put('/api/approval-hierarchy',async(req,res)=>{
   const input=z.object({branchId:z.string().min(1).max(100),salesId:z.string().min(1).max(100),approveAll:z.boolean().optional(),

@@ -23,10 +23,17 @@ export const staffWorkInput=z.object({minutes:z.number().int().min(0).max(1440).
 export async function registerTaskAcceptance(db:Db,task:Task){
  if(task.status!=='active'||task.assignee_id===task.creator_id)return false;
  const user=(await db.query<User>('SELECT * FROM users WHERE id=$1',[task.assignee_id])).rows[0];
- if(!user||user.root_access||!(isSalesManager(user)||/^тестовый менеджер$/iu.test(user.position.trim()))||!canSee(user,task))return false;
- await db.query(`INSERT INTO personal_task_plans(task_id,assignment_epoch,user_id,requires_acceptance)
+ if(!user||user.root_access||!canSee(user,task))return false;
+ if(!isSalesManager(user)&&!/^тестовый менеджер$/iu.test(user.position.trim())&&
+  !/руководитель филиала|руководител\p{L}* отдела управления продажами|координатор отдела продаж/iu.test(user.position))return false;
+ const result=await db.query(`INSERT INTO personal_task_plans(task_id,assignment_epoch,user_id,requires_acceptance)
   VALUES($1,$2,$3,true) ON CONFLICT(task_id,assignment_epoch) DO NOTHING`,[task.id,taskEpoch(task),user.id]);
- return true;
+ return !!result.rowCount||(await taskPersonalPlan(user,task,db))?.needsAcceptance===true;
+}
+
+export function checkAssignmentPlanDeadline(plannedAt:string,deadline:string|null){
+ if(deadline)assert(Date.parse(plannedAt)<=Date.parse(deadline),400,
+  'Плановое время должно быть не позже '+planReminderTime.format(new Date(deadline))+' МСК, крайнего срока задачи.');
 }
 
 async function assignmentPlanRow(task:Task,db:Db){
@@ -74,6 +81,7 @@ export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof task
   assert(current.revision===input.revision,409,'План уже изменился. Обновите карточку.');
   assert(current.needsAcceptance===input.accept,409,current.needsAcceptance?'Сначала примите задачу.':'Назначение уже принято.');
   assert(+when>now,400,'Выберите будущее плановое время.');
+  if(input.accept)checkAssignmentPlanDeadline(plannedAt,task.deadline);
   const row=(await db.query<PlanRow>(`INSERT INTO personal_task_plans AS p(task_id,assignment_epoch,user_id,planned_at,revision,next_step)
    VALUES($1,$2,$3,$4,1,$6) ON CONFLICT(task_id,assignment_epoch) DO UPDATE SET
    planned_at=excluded.planned_at,next_step=excluded.next_step,revision=p.revision+1,

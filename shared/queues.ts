@@ -20,3 +20,10 @@ export function taskCode(title:string){
  const match=name.match(/^([^*#]*)([*#])/),code=match?.[0]||'';
  return {code,legacy:code.endsWith('#'),valid:code.endsWith('#')||/^[РЕ][ЗПОВ][БМ]\*$/.test(code)};
 }
+export function resultRequiredByCode(title:string):boolean|undefined{
+ const letter=taskCode(title).code.match(/^[РЕ]?([ЗП])[БМ]?[*#]$/u)?.[1];
+ return letter?letter==='П':undefined;
+}
+export function taskRequiresResult(task:Pick<Task,'title'|'result_required'>){
+ return resultRequiredByCode(task.title)??task.result_required??true;
+}

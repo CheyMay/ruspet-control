@@ -1,8 +1,10 @@
 import {useEffect,useState,type ReactNode} from 'react';
 import {taskNumber} from '../shared/task-number.js';
+import {DirectorBatchPanel} from './DirectorApprovals.js';
 import {Search} from 'lucide-react';
 import {businessDay} from '../shared/queues.js';
 import type {Approval,Bootstrap} from '../shared/types.js';
+import {useSectionParam} from './section-history.js';
 import {api} from './api.js';
 import {EmployeeFilter,matchesFilter} from './SearchFilter.js';
 import {activeTaskApproval,approvalTurn} from '../shared/actions.js';
@@ -16,9 +18,12 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
   return !!task&&activeTaskApproval(task,approval);
  };
  const mine=data.approvals.filter(a=>active(a)&&current(a)===data.user.id).length;
- const [section,setTab]=useState<'mine'|'open'|'requests'|'history'>(()=>mine||startOnMine?'mine':data.user.role==='employee'?'requests':'open');
+ const [tab,setTab]=useSectionParam('approval-tab');
+ const section=tab==='mine'||tab==='open'||tab==='requests'||tab==='history'?tab:mine||startOnMine?'mine':data.user.role==='employee'?'requests':'open';
  const [query,setQuery]=useState('');
- const [owner,setOwner]=useState('all'),[actor,setActor]=useState('all'),[type,setType]=useState<'deadline'|'completion'|null>(null);
+ const [owner,setOwner]=useState('all'),[actor,setActor]=useState('all');
+ const [typeParam,setType]=useSectionParam('approval-kind');
+ const type=typeParam==='deadline'||typeParam==='completion'?typeParam:null;
  const [from,setFrom]=useState(''),[to,setTo]=useState(''),[status,setStatus]=useState('all'),[limit,setLimit]=useState(12);
  const waiting=(a:Approval)=>!!a.clarification_requested_at&&!a.clarification_answered_at;
  useEffect(()=>{if(!readOnly)void api('/approvals/history-refresh','POST',{}, {timeout:8000}).catch(()=>{});},
@@ -44,11 +49,11 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
     <div className="approval-list">{group.map(a=><div key={a.id}>{render(a)}</div>)}</div></section>;
   })}</>;
  }
- const tabLabels={mine:'От меня ждут решения',open:'Все открытые',requests:'Мои запросы',history:'История'};
+ const tabLabels={mine:'От меня ждут решения',open:'Все открытые запросы',requests:'Мои открытые запросы',history:'История'};
  const states={pending:'На решении',clarification:'Нужно уточнение',approved:'Согласовано',rejected:'Отклонено',stale:'Неактуально',canceled:'Отменено'};
  const state=(a:Approval)=>a.canceled_at?'canceled':active(a)?waiting(a)?'clarification':'pending':a.state==='pending'?'stale':a.state;
  const scoped=data.approvals.filter(a=>section==='mine'?active(a)&&current(a)===data.user.id:
-  section==='open'?active(a):section==='requests'?a.requester_id===data.user.id:!active(a));
+  section==='open'?active(a):section==='requests'?active(a)&&a.requester_id===data.user.id:!active(a)&&(data.user.role!=='employee'||a.requester_id===data.user.id||a.route.some(step=>step.userId===data.user.id)));
  const owners=new Set(scoped.map(a=>taskIndex.get(a.task_id)?.assignee_id));
  const actors=new Set(scoped.map(current));
  const items=scoped.filter(a=>{
@@ -60,11 +65,12 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
  const selectedType=type??(startOnMine||items.some(a=>a.type==='deadline')?'deadline':'completion');
  const queue=items.filter(a=>a.type===selectedType);
  const filtered=!!(query||owner!=='all'||actor!=='all'||from||to||status!=='all');
- const openStates=section==='mine'||section==='open';
+ const openStates=section!=='history';
  return <>
+  {!readOnly&&data.user.role==='admin'&&<DirectorBatchPanel refreshKey={data.serverTime}/>}
   <div className="tabs approval-kind-tabs" aria-label="Показать согласования">
    {(Object.keys(tabLabels) as (keyof typeof tabLabels)[]).map(key=><button type="button" key={key} className={section===key?'selected':''}
-    aria-pressed={section===key} onClick={()=>{setTab(key);setType(null);setStatus('all');setOwner('all');setActor('all');setLimit(12);}}>
+    aria-pressed={section===key} onClick={()=>{setTab(key);setStatus('all');setOwner('all');setActor('all');setLimit(12);}}>
     {tabLabels[key]}{key==='mine'&&<small>{mine}</small>}
    </button>)}
   </div>

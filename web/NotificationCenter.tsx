@@ -49,6 +49,7 @@ export function NotificationCenter({items,readOnly,open,refresh}:{items:Notifica
       {latest.staff_review&&!readOnly&&<a className="text-button" href="/?view=registrations">Открыть заявки</a>}
       {latest.management_notice?.kind==='director-approvals'&&<a className="text-button" href={'/?view=approvals&batch='+latest.management_notice.batchId}>Открыть пакет</a>}
       {latest.management_notice?.kind==='approval-batch-ready'&&<a className="text-button" href="/?view=approvals">Открыть согласования</a>}
+      {latest.management_notice?.kind==='weekly-deadline-watch'&&<a className="text-button" href={'/?view=approvals&weekly='+latest.management_notice.week}>Выбрать задачи для согласования</a>}
       {latest.management_notice?.kind==='morning-report'&&<a className="text-button" href={'/?view=reports&report='+latest.management_notice.reportId}>Открыть отчёт</a>}
       {latest.management_notice?.kind==='inactivity'&&<a className="text-button" href="/?view=tasks&scope=team&filter=overdue">Проверить просрочки</a>}
       {workdayReports(latest.management_notice).map(report=><a key={report.id} className="text-button" href={'/?view=reports&report='+report.id}>{report.label}</a>)}

@@ -4,7 +4,7 @@ import {businessDay} from '../shared/queues.js';
 import {remind,makeReport,event} from './service.js';
 import type {User} from '../shared/types.js';
 import {nextRuns,jobLabel} from '../shared/schedule.js';
-import {morningManagementReport,reviewInactivity} from './management-notices.js';
+import {morningManagementReport,reviewInactivity,sendMondayTaskReview} from './management-notices.js';
 import {prepareWorkdayDigests} from './workday-digests.js';
 export async function operationsStatus(){
  const config=(await pool.query('SELECT * FROM automation_config WHERE id=1')).rows[0];
@@ -30,6 +30,7 @@ export async function tick(now=new Date()){
   if(!actor)return;
   const batch=async(kinds:string[],slot:string)=>{const ids:string[]=[];for(const kind of kinds)ids.push((await makeReport(actor,kind,slot,now)).id);return ids;};
   const jobs:{key:string;run:()=>Promise<string[]>}[]=[];
+  if(weekday===1&&hhmm>=cfg.morning)jobs.push({key:`weekly-deadline-watch:${day}`,run:async()=>{await sendMondayTaskReview(now);return [];}});
   if(workday&&hhmm>=cfg.morning)jobs.push({key:`reports-v5:morning:${day}`,run:()=>batch(['snapshot'],'scheduled-morning')});
   if(workday&&hhmm>=cfg.morning&&hhmm<'12:00')jobs.push({key:`management:morning:${day}`,run:async()=>{
    const ids=await batch(['snapshot'],'scheduled-morning');

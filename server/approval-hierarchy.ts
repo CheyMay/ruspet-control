@@ -7,10 +7,11 @@ import {taskCode} from '../shared/queues.js';
 import {staffWorkIds} from './staff-rollout.js';
 import {isSelfTask} from '../shared/actions.js';
 import {priceBand} from '../shared/pricing.js';
+import {isSalesManager} from '../shared/personal-calendar.js';
 import type {Approval,ApprovalScope,Step,Task,User} from '../shared/types.js';
 
 type Hierarchy={branch_manager_id:string;sales_head_id:string;sales_head_approves_all:boolean;direct_assignee_ids:string[]|null;
- creator_approver_id:string|null;extra_deadline_assignee_ids:string[];only_self_direct:boolean};
+ creator_approver_id:string|null;extra_deadline_assignee_ids:string[];only_self_direct:boolean;creator_first:boolean};
 type Overrides={creatorApproverId?:string|null;extraDeadlineAssigneeIds?:string[];onlySelfDirect?:boolean};
 export async function approvalHierarchy(db:Db,forNewRequest=false){
  return (await db.query<Hierarchy>('SELECT * FROM approval_hierarchy WHERE id=1'+(forNewRequest?' FOR SHARE':''))).rows[0]??null;
@@ -24,13 +25,13 @@ export function requiresDeadlineApproval(hierarchy:Hierarchy|null,task:Task,requ
  if(hierarchy?.only_self_direct)return !(isSelfTask(task)&&requesterId===task.creator_id);
  return !!(hierarchy&&configuredApprovalRoute(hierarchy,task,requesterId))||inControlScope(hierarchy,task.assignee_id);
 }
-const codeRequiresReview=(task:Task)=>taskCode(task.title).code.replace(/[*#]$/u,'').includes('В');
+export const codeRequiresReview=(task:Task)=>taskCode(task.title).code.replace(/[*#]$/u,'').includes('В');
 async function hasWatch(db:Db,taskId:string,directorId:string){
  return !!(await db.query('SELECT 1 FROM task_approval_watch WHERE task_id=$1 AND user_id=$2',[taskId,directorId])).rowCount;
 }
 export async function approvalWatch(actor:User,task:Task,db:Db=pool){
  const hierarchy=await approvalHierarchy(db);
- if(!hierarchy||hierarchy.direct_assignee_ids)return null;
+ if(!hierarchy||hierarchy.direct_assignee_ids&&!hierarchy.creator_first)return null;
  return {manual:await hasWatch(db,task.id,hierarchy.sales_head_id),byCode:codeRequiresReview(task),canChange:actor.id===hierarchy.sales_head_id};
 }
 export async function setApprovalWatch(actor:User,id:string,enabled:boolean){
@@ -39,13 +40,14 @@ export async function setApprovalWatch(actor:User,id:string,enabled:boolean){
   const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
   assert(task&&canSee(actor,task),404,'Задача недоступна.');
   const hierarchy=await approvalHierarchy(db);
-  assert(!hierarchy?.direct_assignee_ids,409,'Контроль сейчас определяется списком сотрудников.');
+  assert(!hierarchy?.direct_assignee_ids||hierarchy.creator_first,409,'Контроль сейчас определяется списком сотрудников.');
   assert(hierarchy?.sales_head_id===actor.id,403,'Отметку контроля ставит руководитель продаж.');
   assert(task.status!=='completed',409,'Задача уже завершена.');
   const was=await hasWatch(db,id,actor.id);
   if(was===enabled)return {enabled};
   if(enabled)await db.query('INSERT INTO task_approval_watch(task_id,user_id) VALUES($1,$2) ON CONFLICT(task_id) DO UPDATE SET user_id=excluded.user_id,created_at=now()',[id,actor.id]);
   else await db.query('DELETE FROM task_approval_watch WHERE task_id=$1 AND user_id=$2',[id,actor.id]);
+  if(hierarchy.creator_first)await alignPolicyRequests(db,actor.id,hierarchy,id);
   await event(db,id,actor.id,'approval_watch_changed',enabled?'Руководитель продаж взял задачу на контроль':'Руководитель продаж снял отметку контроля',{enabled});
   return {enabled};
  });
@@ -86,8 +88,8 @@ export async function setApprovalHierarchy(actor:User,branchId:string,salesId:st
    sales_head_approves_all=excluded.sales_head_approves_all,direct_assignee_ids=excluded.direct_assignee_ids,
    creator_approver_id=excluded.creator_approver_id,extra_deadline_assignee_ids=excluded.extra_deadline_assignee_ids,
    only_self_direct=excluded.only_self_direct RETURNING *`,[branchId,salesId,all,direct,creator,deadlineIds,onlySelf])).rows[0];
-  if(direct&&(!sameScope||current?.sales_head_id!==salesId))await applyDirectScope(db,actor.id,saved,direct);
-  if(!direct&&!onlySelf&&all&&!current?.sales_head_approves_all){
+  if(!saved.creator_first&&direct&&(!sameScope||current?.sales_head_id!==salesId))await applyDirectScope(db,actor.id,saved,direct);
+  if(!saved.creator_first&&!direct&&!onlySelf&&all&&!current?.sales_head_approves_all){
    const updated=await db.query<{id:string;task_id:string}>(`UPDATE approvals a SET route=a.route || $2::jsonb
     FROM tasks t WHERE a.task_id=t.id AND a.task_version=t.version AND t.status<>'completed'
     AND a.state='pending' AND a.canceled_at IS NULL AND a.requester_id<>$1
@@ -152,21 +154,40 @@ export function configuredApprovalRoute(hierarchy:Hierarchy,task:Task,requesterI
  return route;
 }
 
-async function alignPolicyRequests(db:Db,actorId:string,hierarchy:Hierarchy){
+export async function creatorFirstRoute(db:Db,hierarchy:Hierarchy,task:Task,requesterId:string):Promise<Step[]|null>{
+ const head=hierarchy.sales_head_id;
+ if(isSelfTask(task)&&requesterId===task.creator_id)
+  return head!==requesterId&&await hasWatch(db,task.id,head)?directRoute(head):null;
+ const route:Step[]=task.creator_id===requesterId?[]:[{userId:task.creator_id,label:'Постановщик'}];
+ if(head!==task.creator_id&&head!==requesterId){
+  const employee=(await db.query<User>('SELECT * FROM users WHERE id=$1',[task.assignee_id])).rows[0];
+  const sales=employee&&needsSalesDeadlineApproval(employee);
+  if(sales||codeRequiresReview(task)||await hasWatch(db,task.id,head))route.push(...directRoute(head));
+ }
+ return route.length?route:null;
+}
+export const needsSalesDeadlineApproval=(user:User)=>isSalesManager(user)||/руководитель филиала/iu.test(user.position);
+
+async function alignPolicyRequests(db:Db,actorId:string,hierarchy:Hierarchy,taskId?:string){
  const {rows}=await db.query<Approval&{task:Task}>(`SELECT a.*,row_to_json(t) AS task FROM approvals a JOIN tasks t ON t.id=a.task_id
   WHERE a.type='deadline' AND a.state='pending' AND a.canceled_at IS NULL AND a.task_version=t.version AND t.status<>'completed'
-   AND ($1 OR t.creator_id=$2 OR t.assignee_id=ANY($3))
-  ORDER BY a.id FOR UPDATE OF a`,[hierarchy.only_self_direct,hierarchy.creator_approver_id,hierarchy.extra_deadline_assignee_ids]);
+   AND ($4::text IS NULL OR a.task_id=$4)
+   AND (CASE WHEN $5 THEN a.current_step=0 ELSE $1 OR t.creator_id=$2 OR t.assignee_id=ANY($3) END)
+  ORDER BY a.id FOR UPDATE OF a`,[hierarchy.only_self_direct,hierarchy.creator_approver_id,hierarchy.extra_deadline_assignee_ids,taskId??null,hierarchy.creator_first]);
  for(const approval of rows){
-  const route=configuredApprovalRoute(hierarchy,approval.task,approval.requester_id);
+  const route=hierarchy.creator_first?await creatorFirstRoute(db,hierarchy,approval.task,approval.requester_id):configuredApprovalRoute(hierarchy,approval.task,approval.requester_id);
   if(!route||route.length===approval.route.length&&route.every((step,i)=>step.userId===approval.route[i].userId))continue;
-  await db.query(`UPDATE approvals SET route=$2,current_step=0,state=$3,action_revision=action_revision+1,deferred_until=NULL,approved_deadline=NULL,
+  const sameApprover=hierarchy.creator_first&&!!route[0]&&route[0].userId===approval.route[approval.current_step]?.userId;
+  await db.query(`UPDATE approvals SET route=$2,current_step=0,state=$3,action_revision=action_revision+1,
+   deferred_until=CASE WHEN $4 THEN deferred_until END,approved_deadline=CASE WHEN $4 THEN approved_deadline END,
    canceled_at=CASE WHEN $3='stale' THEN now() ELSE NULL END,
-   clarification_question=NULL,clarification_answer=NULL,clarification_requested_at=NULL,clarification_answered_at=NULL WHERE id=$1`,
-   [approval.id,JSON.stringify(route.length?route:approval.route),route.length?'pending':'stale']);
-  await db.query("UPDATE outbox SET withdrawn_at=now() WHERE dedupe_key LIKE $1 AND withdrawn_at IS NULL",['approval:'+approval.id+':%']);
+   clarification_question=CASE WHEN $4 THEN clarification_question END,clarification_answer=CASE WHEN $4 THEN clarification_answer END,
+   clarification_requested_at=CASE WHEN $4 THEN clarification_requested_at END,clarification_answered_at=CASE WHEN $4 THEN clarification_answered_at END WHERE id=$1`,
+   [approval.id,JSON.stringify(route.length?route:approval.route),route.length?'pending':'stale',sameApprover]);
   await event(db,approval.task_id,actorId,'approval_route_changed','Маршрут открытого согласования обновлён',
    {approvalId:approval.id,previousRoute:approval.route,route});
+  if(sameApprover)continue;
+  await db.query("UPDATE outbox SET withdrawn_at=now() WHERE dedupe_key LIKE $1 AND withdrawn_at IS NULL",['approval:'+approval.id+':%']);
   const approver=route[0]?.userId;
   if(approver)await notify(db,approval.task_id,approver,'Требуется решение по задаче #'+approval.task_id,
    'approval:'+approval.id+':route:'+String(approval.action_revision+1));
@@ -175,7 +196,16 @@ async function alignPolicyRequests(db:Db,actorId:string,hierarchy:Hierarchy){
  }
 }
 
+export async function applyCreatorFirstToPending(actor:User){
+ assert(actor.root_access,403,'Открытые маршруты перенастраивает владелец.');
+ await transaction(async db=>{
+  const hierarchy=await approvalHierarchy(db,true);
+  if(hierarchy?.creator_first)await alignPolicyRequests(db,actor.id,hierarchy);
+ });
+}
+
 export async function hierarchyRoute(db:Db,hierarchy:Hierarchy,task:Task,requesterId:string){
+ if(hierarchy.creator_first)return await creatorFirstRoute(db,hierarchy,task,requesterId)??[];
  const people=(await db.query<User>(`SELECT * FROM users WHERE NOT root_access
   AND (role IN ('branch_manager','admin') OR id=$1 OR id=$2)`,[hierarchy.sales_head_id,task.creator_id])).rows;
  const head=people.find(person=>person.id===hierarchy.sales_head_id);

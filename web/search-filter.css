@@ -1,4 +1,6 @@
 .search-filter { position:relative; min-width:0; color:var(--theme-text); }
+.search-filter[data-open] { z-index: 30; }
+.panel:has(> .filters .search-filter[data-open]) { position: relative; z-index: 26; overflow: visible; }
 .panel:has(.search-filter-menu) { overflow:visible; }
 .filters > .search-filter { flex:0 1 220px; }
 .search-filter-caption { display:block; margin-bottom:5px; color:var(--muted); font-size:13px; }

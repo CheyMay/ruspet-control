@@ -9,11 +9,13 @@ import type {User} from '../shared/types.js';
 export async function managementProgress(u:User,range:{from?:string;to?:string;owner?:string}={}){
  assert(canManage(u),403,'Раздел доступен руководителю.');
  const mark=(await pool.query('SELECT * FROM management_observations WHERE user_id=$1',[u.id])).rows[0]||null;
- const tasks=(await visibleTasks(u)).filter(t=>!range.owner||t.assignee_id===range.owner),ids=tasks.map(t=>t.id);
+ const inactive=new Set((await pool.query<{user_id:string}>(`SELECT user_id FROM staff_directory
+  WHERE user_id IS NOT NULL GROUP BY user_id HAVING NOT bool_or(enabled)`)).rows.map(row=>row.user_id));
+ const tasks=(await visibleTasks(u)).filter(t=>!inactive.has(t.assignee_id)&&(!range.owner||t.assignee_id===range.owner)),ids=tasks.map(t=>t.id);
  const from=range.from?range.from+'T00:00:00+03:00':mark?.started_at||null;
  const to=range.to?range.to+'T23:59:59.999+03:00':new Date().toISOString();
  assert(!from||Date.parse(from)<=Date.parse(to),400,'Начало периода позже окончания.');
- const events=(await pool.query("SELECT e.*,u.name actor_name FROM task_events e LEFT JOIN users u ON u.id=e.actor_id WHERE e.task_id=ANY($1) AND ($2::timestamptz IS NULL OR e.created_at>=$2) AND e.created_at<=$3 AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id AND r.created_at<=$3) ORDER BY e.created_at DESC,e.id",[ids,from,to])).rows;
+ const events=(await pool.query("SELECT e.*,u.name actor_name FROM task_events e LEFT JOIN users u ON u.id=e.actor_id WHERE e.task_id=ANY($1) AND ($2::timestamptz IS NULL OR e.created_at>=$2) AND e.created_at<=$3 AND (e.kind<>'approval_rejected' OR NOT EXISTS(SELECT 1 FROM approvals a WHERE a.id::text=e.data->>'approvalId' AND a.type='completion')) AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id AND r.created_at<=$3) ORDER BY e.created_at DESC,e.id",[ids,from,to])).rows;
  const counts=(list:typeof events)=>({completed:list.filter(e=>e.kind==='task_completed').length,answers:list.filter(e=>e.kind==='explanation'||e.kind==='approval_clarification_answered').length,returned:list.filter(e=>e.kind==='review_returned').length,rejected:list.filter(e=>e.kind==='approval_rejected').length,transfers:list.filter(e=>e.kind==='deadline_changed').length,submissions:list.filter(e=>e.kind==='review_submitted').length});
  const users=(await pool.query('SELECT id,name FROM users WHERE id=ANY($1) ORDER BY name',[[...new Set(tasks.map(t=>t.assignee_id))]])).rows;
  return {mark,from,to,totals:counts(events),rows:users.map(person=>{const own=tasks.filter(t=>t.assignee_id===person.id),ownIds=new Set(own.map(t=>t.id));return {...person,...summarize(own,new Date()),...counts(events.filter(e=>ownIds.has(e.task_id))),completedNow:own.filter(t=>t.status==='completed').length}}),

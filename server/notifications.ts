@@ -8,7 +8,9 @@ import type {Notification,User} from '../shared/types.js';
 
 export async function personalNotifications(user:User,unread=false,db:Db=pool){
  const tasks=(await visibleTasks(user,db)).map(task=>task.id);
- return (await db.query<Notification>(`SELECT id,task_id,recipient_id,body,state,created_at,read_at,task_notice,management_notice,task_assignment,dedupe_key LIKE 'staff-review:%' AS staff_review
+ return (await db.query<Notification>(`SELECT o.id,o.task_id,o.recipient_id,CASE WHEN o.task_assignment AND o.body LIKE 'У вас новая задача #%'
+   THEN replace(o.body,'#'||o.task_id||' ·','#'||coalesce((SELECT l.external_id::text FROM bitrix_task_links l WHERE l.task_id=o.task_id),o.task_id)||' ·')
+   ELSE o.body END AS body,o.state,o.created_at,o.read_at,o.task_notice,o.management_notice,o.task_assignment,o.dedupe_key LIKE 'staff-review:%' AS staff_review
   FROM outbox o WHERE recipient_id=$1 AND withdrawn_at IS NULL AND ${visibleAssignmentNotice} AND ${visiblePlanNotice}
    AND ${visibleControlNotice} AND ${visibleDeadlineNotice}
    AND (task_id IS NULL OR task_id=ANY($2)) AND (NOT $3 OR read_at IS NULL)

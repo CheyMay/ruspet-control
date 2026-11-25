@@ -77,7 +77,10 @@ async function planNotice(db:Db,user:User,now:Date,previous:NoticeRecord[],chann
     AND o.created_at<=$4 AND (o.task_id=ANY($5::text[]) OR o.read_at IS NULL AND o.created_at>=greatest($3::timestamptz,$4::timestamptz-interval '2 days'))
     AND ${latestTaskAssignment} AND NOT EXISTS(${alreadyDelivered})
    ORDER BY o.created_at,o.id`,[user.id,[...byId.keys()],delivery.since,stamp,acceptanceIds])).rows:[];
-  const ready=readyAssignments(rows,now),hasOverdue=!!(overdue.length||elapsedToday.length);
+  const pendingIds=new Set(acceptanceIds);
+  const matured=readyAssignments(rows,now);
+  const ready=[...matured.filter(row=>pendingIds.has(row.task_id)).slice(0,3),...matured.filter(row=>!pendingIds.has(row.task_id))];
+  const hasOverdue=!!(overdue.length||elapsedToday.length);
   if(!hasOverdue&&!today.length&&!ready.length&&!checkpoint)return null;
 
   const assignments=[...new Set(ready.map(row=>row.task_id))].map(taskId=>byId.get(taskId)!);
@@ -132,8 +135,8 @@ function noticeContent(notice:TaskNotice,now:Date){
   sections.push({heading:label+' · '+total,lines});
  };
  if(needsAcceptance.length){
-  add(needsAcceptance.length===1?'Новая задача к принятию':'Новые задачи к принятию',needsAcceptance);
-  sections.at(-1)?.lines.push('Примите задачи и укажите плановое время.');
+  sections.push({heading:needsAcceptance.length===1?'У вас новая задача к принятию':'У вас новые задачи к принятию',
+   lines:needsAcceptance.map(task=>'#'+taskNumber(task)+' · '+compactTaskTitle(task.title,180))});
  }
  add('Просрочены с прошлых дней',notice.overdue);
  add('Время истекло сегодня',notice.elapsedToday);

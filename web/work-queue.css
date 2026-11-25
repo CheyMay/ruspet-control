@@ -2,6 +2,8 @@
 .work-toolbar, .work-results-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
 .work-search { flex: 1 1 250px; min-width: 0; }
 .work-filters { position: relative; margin-left: auto; }
+.work-filters[open] { z-index: 25; }
+.approval-queue-tools:has(.work-filters[open]) { position: relative; z-index: 25; overflow: visible; }
 .work-filters > summary { list-style: none; cursor: pointer; }
 .work-filters > summary::-webkit-details-marker { display: none; }
 .work-filter-panel {
@@ -22,7 +24,7 @@
   border: 1px solid var(--theme-border); border-radius: 5px; background: var(--theme-surface); font: inherit;
 }
 .work-filter-dates { display: grid; grid-template-columns: repeat(2,minmax(0,1fr)); gap: 8px; }
-.work-cards { display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); gap: 10px; }
+.work-cards { display: grid; grid-template-columns: repeat(5,minmax(0,1fr)); gap: 10px; }
 .work-card {
   display: grid; grid-template-columns: 1fr auto; align-items: start; gap: 4px 9px;
   min-width: 0; padding: 12px 14px; text-align: left; border: 1px solid var(--theme-border);

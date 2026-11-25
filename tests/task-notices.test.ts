@@ -236,7 +236,7 @@ test('branch inactivity is captured once and reaches the next working day report
  assert(morning.body.includes(worker.name));assert.equal(morning.management_notice.reportId,'fixture-report');
 });
 
-test('director is notified through the normal approval queue without a manual batch',async()=>{
+test('an admin can send a single batch for pending director decisions without including completion reviews',async()=>{
  const service=await import('../server/service.js');
  const adminUser=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
  const branch=(await db.pool.query<User>("SELECT * FROM users WHERE id='branch-fixture'")).rows[0];
@@ -251,7 +251,14 @@ test('director is notified through the normal approval queue without a manual ba
  assert.deepEqual(completion.route,[{userId:director.id,label:'Постановщик'}]);
  assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE recipient_id=$1 AND dedupe_key LIKE $2",[director.id,'approval:'+a.id+':%'])).rows[0].n,1);
  await login(adminUser);
- assert.equal((await api(adminUser,'/director-approval-batches','POST',{})).status,404);
+ const batch=await api(adminUser,'/director-approval-batches','POST',{});
+ assert.equal(batch.status,200);assert(batch.body.count>0);
+ assert.equal((await api(adminUser,'/director-approval-batches','POST',{})).body.count,0);
+ const packageId=(await db.pool.query("SELECT management_notice->>'batchId' id FROM outbox WHERE management_notice->>'kind'='director-approvals' AND recipient_id=$1",[director.id])).rows[0].id;
+ const {directorBatchTasks}=await import('../server/management-notices.js');
+ const items=await directorBatchTasks(director,packageId);
+ assert(items.some(item=>item.id===a.id));
+ assert(items.every(item=>item.task_id!==result));
  const bot=await import('../server/bot.js');
  const home=await bot.botView(director,'team-test');
  assert(home.buttons.flat().some(button=>button.text==='Мои задачи'));
@@ -653,12 +660,19 @@ test('Telegram accepts a new assignment directly from its notification and saves
  const notice=await notices.claimTelegramTaskNotice(manager,chatId,paired);
  assert(notice);
  const screen=await notices.taskNoticeScreen(manager,channel,notice,paired);
- assert.match(screen.text,/Новая задача к принятию/);
+ assert.match(screen.text,/У вас новая задача к принятию/);
+ assert.doesNotMatch(screen.text,/Фикстура уведомлений|Крайний срок/);
  const first=screen.buttons.flat().find(button=>button.text==='Принять #'+assigned);
  assert(first);
  const question=await bot.botClick(manager,channel,first.token);
  assert.match(question.text,/Когда планируете заняться задачей/);
- assert.equal((await service.detail(manager,assigned)).personalPlan?.needsAcceptance,true);
+ assert.match(question.text,/Не позднее 20\.03\.2035, 16:00 МСК/);
+ await assert.rejects(()=>bot.botText(manager,channel,'20.03.2035 16:01','plan-late'),/не позже/);
+ const beforePlan=(await service.detail(manager,assigned)).personalPlan!;
+ assert.equal(beforePlan.needsAcceptance,true);
+ assert.equal((await api(manager,'/tasks/'+assigned+'/personal-plan','PUT',{
+  epoch:beforePlan.epoch,revision:beforePlan.revision,accept:true,plannedAt:at('2035-03-20','16:01').toISOString()
+ })).status,400);
  const draft=await bot.botText(manager,channel,'19.03.2035 14:30','plan-stamp');
  const button=draft.buttons.flat().find(button=>button.text==='Принять задачу');
  assert(button);
@@ -672,4 +686,32 @@ test('Telegram accepts a new assignment directly from its notification and saves
  const nextFeed=await api(manager,'/notifications');
  assert(!nextFeed.body.some((item:{task_id:string;task_assignment?:boolean})=>item.task_id===assigned&&item.task_assignment));
  assert.equal(await notices.claimTelegramTaskNotice(manager,chatId,at('2035-03-13','10:10')),null);
+});
+
+test('creator decides first and the sales head only receives required or selected deadline requests',async()=>{
+ const service=await import('../server/service.js'),management=await import('../server/management-notices.js');
+ const creator=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
+ const branch=(await db.pool.query<User>("SELECT * FROM users WHERE id='branch-fixture'")).rows[0];
+ await db.pool.query('UPDATE login_accounts SET enabled=true WHERE user_id=ANY($1)',[[worker.id,other.id,branch.id]]);
+ await db.pool.query("UPDATE users SET position='Менеджер по продажам' WHERE id=$1",[worker.id]);
+ await db.pool.query('UPDATE approval_hierarchy SET creator_first=true WHERE id=1');
+ const make=async(assignee:User,title:string)=>(await workflow.createTask(creator,{title,assigneeId:assignee.id,description:'Проверка маршрута',
+  deadline:at('2035-03-28','16:00').toISOString(),plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null,price:500})).id;
+ const input={type:'deadline' as const,proposedDeadline:at('2035-03-29','16:00').toISOString(),reason:'Клиент подтвердил другую дату.',expectedVersion:1};
+ const salesTask=await make(worker,'Продажи · проверка первого этапа'),ordinaryTask=await make(other,'Закупки · проверка первого этапа');
+ const sales=await service.requestApproval(worker,salesTask,input),ordinary=await service.requestApproval(other,ordinaryTask,input);
+ const route=async(id:string)=>((await db.pool.query('SELECT route FROM approvals WHERE id=$1',[id])).rows[0].route as {userId:string}[]).map(step=>step.userId);
+ assert.deepEqual(await route(sales.id),[creator.id,director.id]);
+ assert.deepEqual(await route(ordinary.id),[creator.id]);
+ const watch=await import('../server/approval-hierarchy.js');
+ await watch.setApprovalWatch(director,ordinaryTask,true);
+ assert.deepEqual(await route(ordinary.id),[creator.id,director.id]);
+ const mine=await make(branch,'Закрытая задача в прошлой неделе');
+ await db.pool.query("UPDATE tasks SET created_at='2035-03-22T09:00:00+03:00' WHERE id=ANY($1)",[[salesTask,ordinaryTask,mine]]);
+ await setStatus(mine,'completed');
+ const monday=management.mondayOfWeek(at('2035-03-26','10:00'));
+ const rows=await management.weeklyDirectorTasks(director,monday,at('2035-03-26','10:00'));
+ assert(rows.some(row=>row.id===salesTask&&row.required));
+ assert(rows.some(row=>row.id===ordinaryTask&&row.watched));
+ assert(!rows.some(row=>row.id===mine));
 });

@@ -12,7 +12,8 @@ import {compactTaskTitle} from '../shared/task-title.js';
 import {responsibilityLabels} from '../shared/company-responsibility.js';
 export type {BotScreen} from './bot-ui.js';
 import {lastUndo,undoLastAction} from './undo.js';
-import {saveTaskPlan} from './personal-calendar.js';
+import {checkAssignmentPlanDeadline,saveTaskPlan} from './personal-calendar.js';
+import {linkedTaskNumber} from './task-numbers.js';
 import {moscowClock} from '../shared/personal-calendar.js';
 import {workQueueTitle} from '../shared/work-queue.js';
 import {formatPrice,priceBand,priceLabels,parsePrice,taskPrice} from '../shared/pricing.js';
@@ -25,7 +26,7 @@ import {assert,AppError,canRequest,canSee} from './domain.js';
 import {bootstrap,detail,addComment,answerControl,requestApproval,decide,answerClarification,config,getReport,listReports} from './service.js';
 import {canEditTaskPrice} from '../shared/task-edit.js';
 import {canDelegateTask,createTask,delegateTask,delegationClients,delegationTargets,editTask,editTaskPrice,reviewTask,taskAssignees,type TaskInput} from './workflow.js';
-import {elapsedToday,taskQueue} from '../shared/queues.js';
+import {elapsedToday,taskQueue,taskRequiresResult} from '../shared/queues.js';
 import {activeTaskApproval} from '../shared/actions.js';
 import {summarize} from '../shared/analytics.js';
 import {defaultReportView,reportViews,reportViewLabels,type ReportView} from '../shared/report-parameters.js';
@@ -155,8 +156,10 @@ function missingLabel(d:Dialog){
 }
 async function prompt(u:User,ch:string,d:Dialog,db:Db){
  const deadlineComment=d.payload.kind==='approve_with_deadline'&&d.fields[d.index]?.key==='comment';
- const heading=d.payload.id?'Задача #'+d.payload.id:'Новая задача';
- return screen(u,ch,heading+(deadlineComment?'\nИтоговый крайний срок: '+date(d.values.deadline)+' МСК':'')+'\n'+missingLabel(d),
+ const acceptance=d.payload.kind==='accept_assignment'?(await db.query<{deadline:string|null;bitrix_id:string|null}>(`SELECT deadline,${linkedTaskNumber} FROM tasks t WHERE id=$1`,[d.payload.id])).rows[0]:null;
+ const heading=d.payload.id?'Задача #'+(acceptance?.bitrix_id??d.payload.id):'Новая задача';
+ const limit=acceptance?.deadline?'\nНе позднее '+date(acceptance.deadline)+' МСК — крайний срок задачи.':'';
+ return screen(u,ch,heading+(deadlineComment?'\nИтоговый крайний срок: '+date(d.values.deadline)+' МСК':'')+'\n'+missingLabel(d)+limit,
   [...(deadlineComment?
    [[button('Согласовать без комментария','confirm',{...d.payload,op:'confirm',values:{...d.values,comment:''}})]]:[]),
    ...(d.payload.kind==='create_task'&&d.fields[d.index]?.key==='assignee'?
@@ -197,7 +200,7 @@ async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Dat
  const kind=payload.kind as typeof intent.kind|'complete';
  if(intent.values.dueDay)payload.values={dueDay:intent.values.dueDay};
  const submitting=kind==='submit'||kind==='complete';
- const optionalResult=submitting&&payload.id&&(await detail(u,payload.id,db)).task.result_required===false;
+ const optionalResult=submitting&&payload.id&&!taskRequiresResult((await detail(u,payload.id,db)).task);
  const fields:Field[]=optionalResult&&!intent.values.comment||!intent.values.comment&&(kind==='accept'||kind==='approve')?[]:
   taskActionFields(kind,(await config(db)).config.responseMinLength);
  const values:Record<string,string>={};
@@ -311,6 +314,10 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   return botView(u,ch,{op:'notices'});
  }
  if(p.op==='approval_watch'){await setApprovalWatch(u,p.id!,p.values?.enabled==='true');return botView(u,ch,{op:'task_more',id:p.id,list:p.list});}
+ if(p.op==='director_weekly_toggle'){
+  await setApprovalWatch(u,p.id!,p.values?.enabled==='true');
+  return botView(u,ch,{op:'director_weekly',target:p.target,page:p.page});
+ }
  if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','approval_deadline_prepare','assignee_prepare','undo_prepare','voice_select','voice_page','client_note_pick'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
@@ -357,7 +364,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   if(p.op==='form'){
    const min=(await config(db)).config.responseMinLength;
    if(p.kind?.startsWith('edit_')&&p.kind!=='edit_personal_plan'){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit||p.kind==='edit_price'&&canEditTaskPrice(u,d.task),403,'Нет права редактировать задачу.');}
-   const optionalResult=(p.kind==='complete'||p.kind==='submit')&&p.id&&(await detail(u,p.id,db)).task.result_required===false;
+   const optionalResult=(p.kind==='complete'||p.kind==='submit')&&p.id&&!taskRequiresResult((await detail(u,p.id,db)).task);
    const fields=optionalResult?[]:taskActionFields(p.kind,min,!p.target);
    const values={...p.values};
    if(p.kind==='deadline')delete values.plan;
@@ -474,6 +481,10 @@ async function handleBotText(db:Db,u:User,ch:string,text:string,inputId:string):
   }
   const f=d.fields[d.index];
   d.values[f.key]=await normalizeActionField(u,d.payload,f,text,db,parseMoscowInput);
+  if(d.payload.kind==='accept_assignment'&&f.key==='deadline'){
+   const task=(await db.query<{deadline:string|null}>('SELECT deadline FROM tasks WHERE id=$1',[d.payload.id])).rows[0];
+   if(task)checkAssignmentPlanDeadline(d.values.deadline,task.deadline);
+  }
   if(d.payload.kind==='delegate_client'){
    const id=d.payload.id!,clients=await delegationClients(u,id,d.values.client,db);
    if(clients.length)await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);

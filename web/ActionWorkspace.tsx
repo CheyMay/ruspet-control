@@ -1,15 +1,15 @@
 import {taskNumber} from '../shared/task-number.js';
 import {ArrowRight,CalendarClock,Clock3,ListChecks,Search,SlidersHorizontal} from 'lucide-react';
-import {useMemo,useState} from 'react';
+import {useEffect,useMemo,useState} from 'react';
 import {businessDay} from '../shared/queues.js';
 import {canComplete} from '../shared/actions.js';
-import {workLabels,workQueue,type WorkBucket,type WorkScope,type WorkTask} from '../shared/work-queue.js';
+import {workBuckets as buckets,workLabels,workQueue,type WorkBucket,type WorkScope,type WorkTask} from '../shared/work-queue.js';
 import type {Bootstrap,Task} from '../shared/types.js';
+import {pushSectionStep} from './section-history.js';
 import {EmployeeFilter,matchesFilter} from './SearchFilter.js';
 import './work-queue.css';
 
-const buckets=['overdue','today','next','waiting'] as const;
-const icons={overdue:Clock3,today:CalendarClock,next:ListChecks,waiting:Clock3};
+const icons={overdue:Clock3,today:CalendarClock,next:ListChecks,waiting:Clock3,planned:ListChecks};
 const time=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',hour:'2-digit',minute:'2-digit'});
 const shortDate=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
 const labels={answer:'Ответить',decision:'К согласованию',review:'Проверить результат',clarification:'К уточнению',
@@ -24,6 +24,7 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
  const [scope,setScope]=useState<WorkScope>('mine'),[bucket,setBucket]=useState<Filter>(initial);
  const [query,setQuery]=useState(''),[kind,setKind]=useState('all'),[owner,setOwner]=useState('all');
  const [dateField,setDateField]=useState<'deadline'|'since'>('deadline'),[from,setFrom]=useState(''),[to,setTo]=useState('');
+ useEffect(()=>{setBucket(initial);},[initial]);
  const [limits,setLimits]=useState<Partial<Record<WorkBucket,number>>>({});
  const queue=useMemo(()=>scope==='mine'&&personal?personal:workQueue(data,scope),[data,scope,personal]);
  const people=useMemo(()=>new Map(data.users.map(user=>[user.id,user.name])),[data.users]);
@@ -44,11 +45,12 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
  const earlier=displayed.overdue.filter(row=>row.deadlineState==='earlier').length;
  const expired=displayed.overdue.length-earlier;
  function changeScope(next:WorkScope){setScope(next);setOwner('all');setBucket('all');setLimits({});}
- function show(next:Filter){setBucket(next);setLimits({});}
- function clear(){setQuery('');setKind('all');setOwner('all');setFrom('');setTo('');setLimits({});}
+ function show(next:Filter){pushSectionStep({view:'actions',queue:next==='all'?null:next});setBucket(next);setLimits({});}
+ function clear(){setQuery('');setKind('all');setOwner('all');setFrom('');setTo('');setDateField('deadline');show('all');}
  const queueLabels={overdue:'С прошлых дней · '+earlier+' / Истекло сегодня · '+expired,
   today:'Крайний срок ещё впереди',next:'Приём новых задач, ответы и решения',
-  waiting:scope==='mine'?'По вашим задачам ход за другим участником':'На приёмке или согласовании'};
+  waiting:scope==='mine'?'По вашим задачам ход за другим участником':'На приёмке или согласовании',
+  planned:'Со сроком позже или без крайнего срока'};
  function row(item:WorkTask){
   const task=item.task,myStep=item.ownerId===data.user.id;
   const finish=complete&&myStep&&task.assignee_id===data.user.id&&!item.action&&!item.needsAcceptance&&!item.pendingApproval&&canComplete(data.user,task,data.approvalScope);

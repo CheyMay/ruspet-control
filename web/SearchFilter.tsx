@@ -76,7 +76,7 @@ export function SearchFilter(props:SearchFilterProps){
   }
  }
 
- return <div className="search-filter" onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget))close();}}>
+ return <div className="search-filter" data-open={expanded||undefined} onBlur={event=>{if(!event.currentTarget.contains(event.relatedTarget))close();}}>
   {caption&&<label className="search-filter-caption" htmlFor={id}>{caption}</label>}
   <div className="search-filter-control">
    <input ref={input} id={id} type="text" role="combobox" aria-label={label} aria-expanded={expanded}

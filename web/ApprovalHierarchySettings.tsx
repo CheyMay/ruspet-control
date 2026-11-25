@@ -5,10 +5,10 @@ import {canApproveBranch} from '../shared/branches.js';
 import {EmployeeFilter} from './SearchFilter.js';
 
 type Hierarchy={branch_manager_id:string;sales_head_id:string;sales_head_approves_all:boolean;direct_assignee_ids:string[]|null;
- creator_approver_id:string|null;extra_deadline_assignee_ids:string[];only_self_direct:boolean};
+ creator_approver_id:string|null;extra_deadline_assignee_ids:string[];only_self_direct:boolean;creator_first:boolean};
 export function ApprovalHierarchySettings({users}:{users:User[]}){
  const [branch,setBranch]=useState(''),[sales,setSales]=useState(''),[loaded,setLoaded]=useState(false);
- const [approveAll,setApproveAll]=useState(false);
+ const [approveAll,setApproveAll]=useState(false),[creatorFirst,setCreatorFirst]=useState(false);
  const [direct,setDirect]=useState(false),[assignees,setAssignees]=useState<string[]>([]),[query,setQuery]=useState('');
  const [creator,setCreator]=useState(''),[onlySelfDirect,setOnlySelfDirect]=useState(false);
  const [deadlineAssignees,setDeadlineAssignees]=useState<string[]>([]);
@@ -16,7 +16,7 @@ export function ApprovalHierarchySettings({users}:{users:User[]}){
  useEffect(()=>{
   let active=true;
   void api<Hierarchy|null>('/approval-hierarchy').then(value=>{
-   if(active){setBranch(value?.branch_manager_id??'');setSales(value?.sales_head_id??'');setApproveAll(!!value?.sales_head_approves_all);
+   if(active){setBranch(value?.branch_manager_id??'');setSales(value?.sales_head_id??'');setApproveAll(!!value?.sales_head_approves_all);setCreatorFirst(!!value?.creator_first);
     setDirect(!!value?.direct_assignee_ids);setAssignees(value?.direct_assignee_ids??[]);
     setCreator(value?.creator_approver_id??'');setOnlySelfDirect(!!value?.only_self_direct);
     setDeadlineAssignees(value?.extra_deadline_assignee_ids??[]);setLoaded(true);}
@@ -34,13 +34,13 @@ export function ApprovalHierarchySettings({users}:{users:User[]}){
   .map(person=><option key={person.id} value={person.id}>{person.name}</option>);
  return <form className="panel automation-settings" onSubmit={event=>{event.preventDefault();void save();}}>
   <h2>Маршрут согласования переносов срока</h2>
-  <label className="check"><input type="checkbox" checked={direct} onChange={e=>setDirect(e.target.checked)}/> Один согласующий для выбранных сотрудников</label>
-  <p className="muted">{direct?'Контроль сроков настраивается в разделе «Сотрудники и права».':'Первый этап обычного маршрута определяется филиалом задачи.'} Результат работы принимает постановщик задачи.</p>
+  {creatorFirst?<p>Первый этап — постановщик. Затем руководитель продаж рассматривает переносы менеджеров по продажам, руководителей филиалов и отмеченных задач. Результат принимает постановщик.</p>:<><label className="check"><input type="checkbox" checked={direct} onChange={e=>setDirect(e.target.checked)}/> Один согласующий для выбранных сотрудников</label>
+  <p className="muted">{direct?'Контроль сроков настраивается в разделе «Сотрудники и права».':'Первый этап обычного маршрута определяется филиалом задачи.'} Результат работы принимает постановщик задачи.</p></>}
   <div className="editor-grid">
-   {(!direct||!branch)&&<label>Приоритет в своём подразделении<select required value={branch} onChange={e=>setBranch(e.target.value)}><option value="">Выберите руководителя подразделения</option>{options(canApproveBranch)}</select></label>}
-   <label>{direct?'Согласующий':'Второй этап'}<select required value={sales} onChange={e=>setSales(e.target.value)}><option value="">Руководитель продаж или директор</option>{options(person=>person.role==='sales_head'||person.role==='director')}</select></label>
+   {!creatorFirst&&(!direct||!branch)&&<label>Приоритет в своём подразделении<select required value={branch} onChange={e=>setBranch(e.target.value)}><option value="">Выберите руководителя подразделения</option>{options(canApproveBranch)}</select></label>}
+   <label>{creatorFirst?'Руководитель продаж':direct?'Согласующий':'Второй этап'}<select required value={sales} onChange={e=>setSales(e.target.value)}><option value="">Руководитель продаж или директор</option>{options(person=>person.role==='sales_head'||person.role==='director')}</select></label>
   </div>
-  {direct?<details className="source-banner"><summary>Исполнители в отдельном маршруте · {assignees.length}</summary>
+  {!creatorFirst&&<>{direct?<details className="source-banner"><summary>Исполнители в отдельном маршруте · {assignees.length}</summary>
    <label>Поиск сотрудника<input type="search" value={query} onChange={e=>setQuery(e.target.value)} /></label>
    <div style={{maxHeight:240,overflow:'auto'}}>
     {users.filter(person=>person.role==='employee'&&(assignees.includes(person.id)||person.name.toLocaleLowerCase('ru-RU').includes(query.trim().toLocaleLowerCase('ru-RU'))))
@@ -59,7 +59,7 @@ export function ApprovalHierarchySettings({users}:{users:User[]}){
     empty={{value:'',label:'Добавить исполнителя'}}/>
    {deadlineAssignees.map(id=><label className="check" key={id}><input type="checkbox" checked
     onChange={()=>setDeadlineAssignees(ids=>ids.filter(value=>value!==id))}/> {users.find(person=>person.id===id)?.name??id}</label>)}
-  </details>
+  </details></>}
   <div className="task-card-buttons"><button className="button primary" disabled={!loaded||busy||!branch||!sales||branch===sales||direct&&!assignees.length}>Сохранить маршрут</button></div>
   {message&&<p role="status">{message}</p>}{error&&<p className="alert error" role="alert">{error}</p>}
  </form>;

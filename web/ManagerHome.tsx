@@ -13,7 +13,7 @@ const timestamp=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'n
 export function ManagerHome({data,queue,open,tasks,placed,actions,team,calendar,complete,busy=false}:Props){
  const own=data.tasks.filter(task=>task.assignee_id===data.user.id&&task.status!=='completed');
  const focus=[...queue.overdue,...queue.today];
- const metrics=[{bucket:'overdue',Icon:Clock3},{bucket:'today',Icon:CalendarDays},{bucket:'next',Icon:ListTodo},{bucket:'waiting',Icon:Clock3}] as const;
+ const metrics=[{bucket:'overdue',Icon:Clock3},{bucket:'today',Icon:CalendarDays},{bucket:'next',Icon:ListTodo},{bucket:'waiting',Icon:Clock3},{bucket:'planned',Icon:ListTodo}] as const;
  return <div className="personal-workspace">
   <section className="panel personal-intro">
    <div><h2>Мой рабочий день</h2><p>Незавершённые задачи: {own.length}</p></div>

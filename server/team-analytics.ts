@@ -3,6 +3,8 @@ import {localDayStart,nextBusinessDay} from '../shared/report-parameters.js';
 import type {AnalyticsGroup,AnalyticsNumbers,AnalyticsOverview,AnalyticsRow,CompletedWork} from '../shared/team-analytics.js';
 import type {Task,User} from '../shared/types.js';
 import {loadAnalyticsScope} from './analytics-scope.js';
+import {analyticsClientBranches} from './analytics-client-branches.js';
+import {unassignedBranch} from '../shared/branches.js';
 import {transaction,type Db} from './db.js';
 import {assert} from './domain.js';
 import {hasPendingTaskApproval} from './pending-task-work.js';
@@ -46,16 +48,17 @@ export async function analyticsOverview(user:User,selection:string[],period:'day
  return transaction(async db=>{
   await db.query('SET TRANSACTION ISOLATION LEVEL REPEATABLE READ READ ONLY');
   const scope=await loadAnalyticsScope(user,db);
-  const candidates=(await db.query<Task&{pending:boolean}>(`SELECT
-   t.id,t.title,t.branch_id,t.assignee_id,t.created_at,t.completed_at,t.status,t.deadline,
-   (t.status<>'completed' AND ${hasPendingTaskApproval}) AS pending FROM tasks t`)).rows.filter(scope.visible);
+  const raw=(await db.query<Task&{pending:boolean}>(`SELECT
+   t.id,t.title,t.branch_id,t.assignee_id,t.created_at,t.completed_at,t.status,t.deadline,t.company_id,t.source_fields,
+   (t.status<>'completed' AND ${hasPendingTaskApproval}) AS pending FROM tasks t`)).rows;
+  const clientBranches=await analyticsClientBranches(raw.filter(t=>scope.salesIds.has(t.assignee_id)),db);
+  const candidates=raw.map(task=>({...task,branch_id:clientBranches.get(task.id)??task.branch_id})).filter(scope.visible);
   const date=businessDay(now),nextWorkday=nextBusinessDay(date);
   const first=period==='week'?mondayOf(date):date,start=localDayStart(first);
   const history=await closures(db,candidates.filter(t=>t.status==='completed'&&(!t.completed_at||Date.parse(t.completed_at)>=+start)).map(t=>t.id),start,now);
   const paths=new Map<string,AnalyticsGroup[]>(),groups=new Map<string,AnalyticsRow>();
   const dayCounts=new Map<string,number>(),numbers=blank();
-  function count(task:Task,add:(numbers:AnalyticsNumbers)=>void){
-   const path=scope.path(task);
+  function countPath(path:AnalyticsGroup[],add:(numbers:AnalyticsNumbers)=>void){
    for(let depth=1;depth<=path.length;depth++)paths.set(JSON.stringify(path.slice(0,depth).map(p=>p.key)),path.slice(0,depth));
    if(!selection.every((key,i)=>path[i]?.key===key))return false;
    add(numbers);
@@ -67,6 +70,9 @@ export async function analyticsOverview(user:User,selection:string[],period:'day
    }
    return true;
   }
+  const count=(task:Task,add:(numbers:AnalyticsNumbers)=>void)=>countPath(scope.path(task),add);
+  for(const path of scope.emptyStaffPaths)countPath(path,()=>{});
+  const staffKeys=new Set(scope.emptyStaffPaths.flatMap(path=>path.map(part=>part.key)));
 
   for(const task of candidates){
    if(task.status==='completed'){
@@ -74,7 +80,8 @@ export async function analyticsOverview(user:User,selection:string[],period:'day
     if(!Number.isFinite(+at)||+at<+start||+at>+now){count(task,()=>{});continue;}
     const after=event?.after,occurred=after?.completed_at?Date.parse(after.completed_at):Date.parse(event?.created_at??'');
     const matching=!!event&&(occurred===+at||!after?.completed_at&&Math.abs(occurred-(+at))<=60_000);
-    const owner=matching&&after?.assignee_id&&after.branch_id?{...task,assignee_id:after.assignee_id,branch_id:after.branch_id,title:after.title??task.title}:task;
+    const owner=matching&&after?.assignee_id&&after.branch_id?{...task,assignee_id:after.assignee_id,
+     branch_id:after.branch_id===unassignedBranch?clientBranches.get(task.id)??after.branch_id:after.branch_id,title:after.title??task.title}:task;
     if(!scope.visible(owner))continue;
     const deadline=matching&&event?.before?event.before.deadline:task.deadline;
     const day=businessDay(at),kind=deadlineBucket(deadline,day,nextBusinessDay(day),at,true);
@@ -102,7 +109,7 @@ export async function analyticsOverview(user:User,selection:string[],period:'day
    if(day===date||!source.tracking||Date.parse(source.tracking)<+localDayStart(day)+dayMs||dayCounts.has(day))
     days.push({date:day,completed:dayCounts.get(day)??0});
   }
-  const rows=[...groups.values()].filter(({numbers:n})=>n.remaining.total||n.completed.total||n.approvals||n.review||n.outside)
+  const rows=[...groups.values()].filter(({key,numbers:n})=>staffKeys.has(key)||n.remaining.total||n.completed.total||n.approvals||n.review||n.outside)
    .sort((a,b)=>b.numbers.remaining.overdue-a.numbers.remaining.overdue||b.numbers.remaining.total-a.numbers.remaining.total||a.label.localeCompare(b.label,'ru'));
   return {access:scope.access,scope:scope.label,path,rows,numbers,days,
    generatedAt:now.toISOString(),date,nextWorkday,historyFrom:source.tracking,

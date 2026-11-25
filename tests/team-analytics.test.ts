@@ -97,7 +97,7 @@ after(async()=>{
 
 const person=(id:string)=>people.get(id)!;
 test('analytics totals reconcile by deadline, show Monday on Friday and count approvals separately',async()=>{
- const group=['branch:Крым','person:rep-crimea'];
+ const group=['sales:branches','branch:Крым','person:rep-crimea'];
  const today=await analytics.analyticsOverview(person('deputy'),group,'day',now);
  assert.equal(today.nextWorkday,'2026-11-23');
  assert.deepEqual(today.numbers.remaining,{total:5,overdue:2,today:1,nextWorkday:2});
@@ -123,7 +123,9 @@ test('director sees company, authorized deputy sees sales, org leader keeps empl
  assert(company.rows.some(row=>row.label==='Продажи'));
  const sales=await analytics.analyticsOverview(person('deputy'),[],'day',now);
  assert.equal(company.numbers.remaining.overdue,sales.numbers.remaining.overdue+1);
- assert(sales.rows.some(row=>row.label==='На сверку'&&row.numbers.remaining.today===1));
+ assert(sales.rows.some(row=>row.label==='Команда продаж'));
+ const branches=await analytics.analyticsOverview(person('deputy'),['sales:branches'],'day',now);
+ assert(branches.rows.some(row=>row.label==='На сверку'&&row.numbers.remaining.today===1));
  const lead=await analytics.analyticsOverview(person('head-crimea'),[],'day',now);
  assert.equal(person('head-crimea').role,'employee');
  assert.equal(lead.numbers.remaining.today,3);
@@ -166,7 +168,7 @@ test('analytics API enforces scopes and returns aggregate figures without task d
 test('a sales branch shows the shared director from the reporting tree when no local lead is assigned',async()=>{
  await db.pool.query("UPDATE users SET branch_id='AQUAS',position='Сотрудник AQUAS' WHERE id='head-crimea'");
  await db.pool.query("UPDATE org_reporting SET manager_id='director' WHERE employee_id='rep-crimea'");
- const overview=await analytics.analyticsOverview({...person('deputy'),role:'branch_manager'},[],'day',now);
+ const overview=await analytics.analyticsOverview({...person('deputy'),role:'branch_manager'},['sales:branches'],'day',now);
  assert.equal(overview.access,'sales');
  assert.equal(overview.rows.find(row=>row.key==='branch:Крым')?.caption,'Руководитель · Директор');
  assert(!overview.rows.some(row=>row.label==='Закупки'));

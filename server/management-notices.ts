@@ -1,7 +1,8 @@
 import {randomUUID} from 'node:crypto';
 import {pool,transaction,type Db} from './db.js';
 import {assert} from './domain.js';
-import {approvalHierarchy} from './approval-hierarchy.js';
+import {approvalHierarchy,codeRequiresReview,needsSalesDeadlineApproval} from './approval-hierarchy.js';
+import {linkedTaskNumber} from './task-numbers.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
 import {teamMemberIds} from './org.js';
 import {workKinds} from '../shared/report-summary.js';
@@ -23,6 +24,67 @@ export async function directorBatchTasks(actor:User,id:string){
   JOIN tasks t ON t.id=a.task_id
   WHERE i.batch_id=$1 AND a.type='deadline' AND a.state='pending' AND a.current_step=i.step AND a.action_revision=i.revision AND a.task_version=t.version
   AND a.route->a.current_step->>'userId'=$2 ORDER BY a.created_at,a.id`,[id,actor.id])).rows;
+}
+
+async function batchCandidates(db:Db,recipient:string,lock=false){
+ return (await db.query<{id:string;task_id:string;current_step:number;action_revision:number}>(`SELECT a.id,a.task_id,a.current_step,a.action_revision
+  FROM approvals a JOIN tasks t ON t.id=a.task_id
+  WHERE a.type='deadline' AND a.state='pending' AND a.canceled_at IS NULL AND a.task_version=t.version AND t.status='active'
+  AND a.route->a.current_step->>'userId'=$1 AND (a.task_change->>'routeIssue') IS DISTINCT FROM 'true'
+  AND (a.clarification_requested_at IS NULL OR a.clarification_answered_at IS NOT NULL)
+  AND (a.deferred_until IS NULL OR a.deferred_until<=now())
+  AND NOT EXISTS(SELECT 1 FROM director_approval_batch_items i WHERE i.approval_id=a.id AND i.step=a.current_step AND i.revision=a.action_revision)
+  ORDER BY a.created_at,a.id${lock?' FOR UPDATE OF a':''}`,[recipient])).rows;
+}
+export async function directorBatchStatus(actor:User){
+ assert(actor.role==='admin',403,'Пакет формирует администратор.');
+ const hierarchy=await approvalHierarchy(pool);
+ return {count:hierarchy?(await batchCandidates(pool,hierarchy.sales_head_id)).length:0};
+}
+export async function sendDirectorBatch(actor:User){
+ assert(actor.role==='admin',403,'Пакет отправляет администратор.');
+ return transaction(async db=>{
+  await db.query("SELECT pg_advisory_xact_lock(hashtext('director-approval-batch'))");
+  const hierarchy=await approvalHierarchy(db,true);
+  assert(hierarchy,409,'Руководитель продаж ещё не назначен.');
+  const recipient=hierarchy.sales_head_id,items=await batchCandidates(db,recipient,true);
+  if(!items.length)return {count:0};
+  const id=randomUUID();
+  await db.query('INSERT INTO director_approval_batches(id,recipient_id,created_by) VALUES($1,$2,$3)',[id,recipient,actor.id]);
+  await db.query(`INSERT INTO director_approval_batch_items(batch_id,approval_id,step,revision)
+   SELECT $1,i.id,i.current_step,i.action_revision FROM jsonb_to_recordset($2) i(id uuid,current_step integer,action_revision integer)`,[id,JSON.stringify(items)]);
+  await managementNotice(db,recipient,'Пакет согласований переносов. Запросов: '+items.length+'.','director-approvals:'+id,{kind:'director-approvals',batchId:id});
+  return {count:items.length};
+ });
+}
+
+export const mondayOfWeek=(now:Date)=>{
+ const day=new Date(businessDay(now)+'T12:00:00+03:00');
+ day.setUTCDate(day.getUTCDate()-(day.getUTCDay()+6)%7);
+ return businessDay(day);
+};
+async function tasksFromPreviousWeek(db:Db,head:string,week:string){
+ const {rows}=await db.query<Task&{name:string;position:string;role:User['role'];watched:boolean}>(`SELECT t.*, ${linkedTaskNumber},u.name,u.position,u.role,
+  EXISTS(SELECT 1 FROM task_approval_watch w WHERE w.task_id=t.id AND w.user_id=$1) AS watched
+  FROM tasks t JOIN users u ON u.id=t.assignee_id WHERE t.status='active' AND NOT u.root_access
+  AND t.created_at>=$2::timestamptz-interval '7 days' AND t.created_at<$2::timestamptz
+  ORDER BY t.created_at DESC,t.id`,[head,week+'T00:00:00+03:00']);
+ return rows.map(t=>({id:t.id,number:t.bitrix_id??t.id,title:t.title,assignee:t.name,watched:t.watched,
+  required:t.assignee_id!==t.creator_id&&(needsSalesDeadlineApproval(t)||codeRequiresReview(t)||t.creator_id===head)}));
+}
+export async function weeklyDirectorTasks(actor:User,week:string,now=new Date()){
+ const hierarchy=await approvalHierarchy(pool);
+ assert(hierarchy?.sales_head_id===actor.id,403,'Подборка доступна руководителю продаж.');
+ const date=new Date(week+'T12:00:00+03:00');
+ assert(Number.isFinite(+date)&&mondayOfWeek(date)===week&&week<=mondayOfWeek(now),400,'Укажите понедельник рабочей недели.');
+ return tasksFromPreviousWeek(pool,actor.id,week);
+}
+export async function sendMondayTaskReview(now:Date){
+ const hierarchy=await approvalHierarchy(pool);
+ if(!hierarchy?.creator_first)return;
+ const week=mondayOfWeek(now),rows=await tasksFromPreviousWeek(pool,hierarchy.sales_head_id,week);
+ await managementNotice(pool,hierarchy.sales_head_id,'Незавершённые задачи, поставленные на прошлой неделе · '+rows.length+
+  '\nОтметьте задачи, переносы которых хотите согласовывать.',`weekly-deadline-watch:${week}:${hierarchy.sales_head_id}`,{kind:'weekly-deadline-watch',week},now);
 }
 
 type Inactive={id:string;name:string;ids:string[]};

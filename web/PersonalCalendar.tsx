@@ -30,7 +30,7 @@ export function PersonalTaskPlan({task,plan,busy,error,act}:{task:Task;plan:Task
   {!plan.plannedAt&&!plan.needsAcceptance&&task.status==='active'&&<p>Добавьте задачу в личный календарь.</p>}
   {task.status==='active'&&(editing?<form onSubmit={async e=>{
    e.preventDefault();
-   if(!Number.isFinite(when))return;
+   if(!Number.isFinite(when)||plan.needsAcceptance&&laterThanDeadline)return;
    setSubmitted(true);
    if(await act('/tasks/'+encodeURIComponent(task.id)+'/personal-plan',
     {epoch:plan.epoch,revision:plan.revision,plannedAt:new Date(when).toISOString(),accept:plan.needsAcceptance,nextStep},'PUT',
@@ -38,13 +38,13 @@ export function PersonalTaskPlan({task,plan,busy,error,act}:{task:Task;plan:Task
   }}>
    <label>Следующий шаг<input value={nextStep} maxLength={500} onChange={e=>setNextStep(e.target.value)} placeholder="Например, отправить клиенту расчёт"/></label>
    <label>{plan.needsAcceptance?'Плановая дата и время · МСК':'Дата и время шага · МСК'}
-    <input type="datetime-local" required value={value} onChange={e=>setValue(e.target.value)}/>
+    <input type="datetime-local" required value={value} max={plan.needsAcceptance&&task.deadline?moscowClock(task.deadline):undefined} onChange={e=>setValue(e.target.value)}/>
    </label>
-   <p className="muted">Это ваш личный план. Крайний срок задачи сохраняется.</p>
-   {laterThanDeadline&&<p className="calendar-warning">Шаг запланирован позже крайнего срока задачи.</p>}
+   <p className="muted">{plan.needsAcceptance&&task.deadline?'Плановое время должно быть не позже '+planTime.format(new Date(task.deadline))+' МСК.':'Это ваш личный план. Крайний срок задачи сохраняется.'}</p>
+   {laterThanDeadline&&<p className="calendar-warning">Выбранное время позже крайнего срока задачи.</p>}
    {submitted&&error&&<p className="calendar-warning" role="alert">{error}</p>}
    <div className="calendar-actions">
-    <button type="submit" className="button primary" disabled={busy||!value}>{plan.needsAcceptance?'Принять и запланировать':'Сохранить план'}</button>
+    <button type="submit" className="button primary" disabled={busy||!value||!!(plan.needsAcceptance&&laterThanDeadline)}>{plan.needsAcceptance?'Принять и запланировать':'Сохранить план'}</button>
     <button type="button" className="button secondary" disabled={busy} onClick={()=>setEditing(false)}>Отмена</button>
    </div>
   </form>:<button type="button" className={'button '+(plan.needsAcceptance?'primary':'secondary')} disabled={busy}

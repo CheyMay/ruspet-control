@@ -3,7 +3,8 @@ import {businessDay} from './queues.js';
 import type {Bootstrap,Task} from './types.js';
 
 export const workQueueTitle='Сроки и действия';
-export const workLabels={overdue:'Просрочено',today:'На сегодня',next:'Ответы и решения',waiting:'Ждут решения'} as const;
+export const workLabels={overdue:'Просрочено',today:'Крайний срок сегодня',next:'Ждут моего действия',waiting:'Ждут действия коллеги',planned:'Остальные в работе'} as const;
+export const workBuckets=['overdue','today','next','waiting','planned'] as const;
 export type WorkBucket=keyof typeof workLabels;
 export type WorkScope='mine'|'team';
 export type WorkTask={
@@ -27,7 +28,7 @@ function deadlineState(task:Task,now:Date,today:string):WorkTask['deadlineState'
 export const workCount=(queue:WorkQueue)=>queue.overdue.length+queue.today.length+queue.next.length;
 
 export function workQueue(data:Bootstrap,scope:WorkScope='mine'):WorkQueue{
- const queue:WorkQueue={overdue:[],today:[],next:[],waiting:[]};
+ const queue:WorkQueue={overdue:[],today:[],next:[],waiting:[],planned:[]};
  const user=data.user,now=new Date(data.serverTime),today=businessDay(now);
  if(scope==='team'&&user.role==='employee')return queue;
  const allVisible=user.role==='admin'||user.role==='director',members=new Set(data.teamIds??[]);
@@ -60,6 +61,7 @@ export function workQueue(data:Bootstrap,scope:WorkScope='mine'):WorkQueue{
   if(waiting)bucket='waiting';
   else if(execution&&deadline)bucket=deadline==='today'?'today':'overdue';
   else if(related||needsAcceptance)bucket='next';
+  else if(execution)bucket='planned';
   else continue;
   const action=waiting?null:related;
   const accept=needsAcceptance&&!pendingApproval;
@@ -68,7 +70,7 @@ export function workQueue(data:Bootstrap,scope:WorkScope='mine'):WorkQueue{
   queue[bucket].push({task,bucket,deadlineState:deadline,ownerId:action?.ownerId??turn?.userId??null,
    action,needsAcceptance:accept,pendingApproval,label,tab});
  }
- for(const bucket of ['overdue','today','waiting','next'] as const){
+ for(const bucket of workBuckets){
   queue[bucket].sort((a,b)=>(bucket==='next'?
    (a.action?.since??a.task.created_at).localeCompare(b.action?.since??b.task.created_at):
    (a.task.deadline??'9999').localeCompare(b.task.deadline??'9999'))||a.task.id.localeCompare(b.task.id,'ru',{numeric:true}));

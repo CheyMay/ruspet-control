@@ -12,7 +12,7 @@ import {summarize} from '../shared/analytics.js';
 import {bootstrap,getReport,visibleTasks} from './service.js';
 import {assert,canManage} from './domain.js';
 import {hasCompanyOverview} from '../shared/report-parameters.js';
-import {directorBatchTasks} from './management-notices.js';
+import {directorBatchTasks,weeklyDirectorTasks} from './management-notices.js';
 import {lastUndo} from './undo.js';
 import {pool,type Db} from './db.js';
 import {personalNotifications} from './notifications.js';
@@ -123,6 +123,19 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  const taskIndex=new Map(data.tasks.map(task=>[task.id,task]));
  const activeApprovals=new Map(data.approvals.filter(a=>activeTaskApproval(taskIndex.get(a.task_id)!,a)).map(a=>[a.task_id,a]));
  const pausedTasks=new Set(activeApprovals.keys());
+ if(p.op==='director_weekly'){
+  const tasks=await weeklyDirectorTasks(u,p.target!);
+  const page=Math.max(0,Math.min(p.page??0,Math.ceil(tasks.length/5)-1));
+  const rows=tasks.slice(page*5,page*5+5);
+  return htmlScreen(u,ch,'<b>Задачи с прошлой недели в работе · '+tasks.length+'</b>\n\n'+
+   (rows.length?rows.map(task=>h((task.watched||task.required?'☑ ':'☐ ')+'#'+task.number+' · '+compactTaskTitle(task.title,100))).join('\n'):'Задач за этот период нет.'),[
+    ...rows.map(task=>[task.required?button('В маршруте · #'+task.number,'task',{id:task.id}):
+     button((task.watched?'☑ ':'☐ ')+'Согласовывать #'+task.number,'director_weekly_toggle',{id:task.id,target:p.target,page,values:{enabled:String(!task.watched)}})]),
+    [...(page?[button('‹ Назад','director_weekly',{target:p.target,page:page-1})]:[]),
+     ...(page*5+5<tasks.length?[button('Дальше ›','director_weekly',{target:p.target,page:page+1})]:[])],
+    [button('Меню','home')]
+   ],db);
+ }
  if(p.op==='director_batch'){
   const batch=await directorBatchTasks(u,p.target!);
   const tasks=new Map(data.tasks.map(task=>[task.id,task]));
@@ -187,9 +200,10 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
    }
    const earlier=queue.overdue.filter(item=>item.deadlineState==='earlier').length;
    const expired=queue.overdue.length-earlier;
-   return htmlScreen(u,ch,`<b>${workQueueTitle}</b>\n\nПросрочено с прошлых дней · ${earlier}\nИстекло сегодня · ${expired}\nНа сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}\nЖдут решения других · ${queue.waiting.length}`,[
-    [button('Просрочено · '+queue.overdue.length,'inbox',{filter:'overdue'}),button('На сегодня · '+queue.today.length,'inbox',{filter:'today'})],
-    [button('Ответы и решения · '+queue.next.length,'inbox',{filter:'next'}),button('Ждут решения · '+queue.waiting.length,'inbox',{filter:'waiting'})],
+   return htmlScreen(u,ch,`<b>${workQueueTitle}</b>\n\nПросрочено с прошлых дней · ${earlier}\nИстекло сегодня · ${expired}\nКрайний срок сегодня · ${queue.today.length}\nЖдут моего действия · ${queue.next.length}\nЖдут действия коллеги · ${queue.waiting.length}\nОстальные в работе · ${queue.planned.length}`,[
+    [button('Просрочено · '+queue.overdue.length,'inbox',{filter:'overdue'}),button('Крайний срок сегодня · '+queue.today.length,'inbox',{filter:'today'})],
+    [button('Ждут моего действия · '+queue.next.length,'inbox',{filter:'next'})],
+    [button('Ждут действия коллеги · '+queue.waiting.length,'inbox',{filter:'waiting'}),button('Остальные в работе · '+queue.planned.length,'inbox',{filter:'planned'})],
     [button('Меню','home')]
    ],db);
   }

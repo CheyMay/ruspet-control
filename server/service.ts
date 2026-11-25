@@ -5,7 +5,7 @@ import {keepTaskApprovals} from './approval-updates.js';
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
-import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,hierarchyRoute,requiresDeadlineApproval} from './approval-hierarchy.js';
+import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,creatorFirstRoute,hierarchyRoute,requiresDeadlineApproval} from './approval-hierarchy.js';
 import {branchCovers,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
@@ -18,7 +18,7 @@ import {parseWrittenRule} from '../shared/written-rules.js';
 import {exclusionReason} from '../shared/task-selection.js';
 import {reportAnalysis} from '../shared/reporting.js';
 import {plannedMinutesOn,plannedInterval} from '../shared/analytics.js';
-import { taskQueue } from '../shared/queues.js';
+import { taskQueue, taskRequiresResult } from '../shared/queues.js';
 import { randomUUID } from 'node:crypto';
 import { pool, transaction, type Db } from './db.js';
 import type { Task, User, Rules, Approval, ControlRequest, Step, BitrixDiscussion, TaskApprovalProgress } from '../shared/types.js';
@@ -52,7 +52,9 @@ export async function notifyTaskAssignment(db:Db,task:Task,actorId:string|null,l
  const key=`task-assignment:${task.id}:${task.version}`;
  await db.query('UPDATE outbox SET withdrawn_at=now() WHERE task_assignment AND task_id=$1 AND dedupe_key<>$2 AND withdrawn_at IS NULL',[task.id,key]);
  if(task.assignee_id===actorId&&!acceptance)return;
- const body=acceptance?'Примите задачу и укажите плановое время · #'+task.id+' · '+task.title:label+' #'+task.id+' · '+task.title;
+ const link=(await db.query<{number:string}>('SELECT external_id::text AS number FROM bitrix_task_links WHERE task_id=$1',[task.id])).rows[0];
+ const number=link?.number??task.id;
+ const body=acceptance?'У вас новая задача #'+number+' · '+task.title+'\nПримите задачу и укажите плановое время.':label+' #'+number+' · '+task.title;
  await notify(db,task.id,task.assignee_id,body,key,true);
 }
 export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{requiredPrice:true,showPlanning:false,writtenRules:[],...row.config}}; }
@@ -262,10 +264,11 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   const cfg=await config(db),min=cfg.config.responseMinLength;
   const plan=input.type==='completion'?input.plan?.trim()??'':'';
   assert(input.reason.trim().length>=min,400,`Причина запроса: минимум ${min} символов.`);
-  if(input.type==='completion'&&task.result_required!==false)assert(plan.length>=min,400,`Результат: минимум ${min} символов.`);
+  if(input.type==='completion'&&taskRequiresResult(task))assert(plan.length>=min,400,`Результат: минимум ${min} символов.`);
   if(input.type==='deadline') { assert(input.proposedDeadline&&new Date(input.proposedDeadline)>new Date(),400,'Новый срок должен быть в будущем.'); assert(new Date(input.proposedDeadline).getTime()!==new Date(task.deadline||0).getTime(),400,'Новый срок совпадает с текущим.'); }
   const hierarchy=await approvalHierarchy(db,true);
-  if(input.type==='deadline'&&!requiresDeadlineApproval(hierarchy,task,user.id)){
+  const creatorRoute=input.type==='deadline'&&hierarchy?.creator_first?await creatorFirstRoute(db,hierarchy,task,user.id):undefined;
+  if(input.type==='deadline'&&(creatorRoute===null||creatorRoute===undefined&&!requiresDeadlineApproval(hierarchy,task,user.id))){
    const next=(await db.query<Task>('UPDATE tasks SET deadline=$2,transfer_count=transfer_count+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.proposedDeadline])).rows[0];
    await adapters.tasks.applyApprovedChange(db,next,task.version);
    await event(db,id,user.id,'deadline_changed','Изменён крайний срок',{before:task,after:next,reason:input.reason});
@@ -273,7 +276,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
    return {id,applied:true};
   }
   const route=input.type==='completion'?completionApprovalRoute(task):
-   hierarchy?await hierarchyRoute(db,hierarchy,task,user.id):await routeFor(db,task,cfg.config.routes.deadline);
+   creatorRoute??(hierarchy?await hierarchyRoute(db,hierarchy,task,user.id):await routeFor(db,task,cfg.config.routes.deadline));
   assert(route.length>0,422,input.type==='completion'?'Завершите свою задачу напрямую.':'Маршрут не настроен.');
   if(input.type==='deadline')assert(!route.some(s=>s.userId===user.id),422,'Согласовать собственный запрос нельзя.');
   const approvalId=randomUUID();

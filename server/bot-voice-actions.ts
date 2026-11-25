@@ -102,7 +102,9 @@ export async function normalizeActionField(actor:User,payload:Payload,f:Field,in
  assert(value.length>=f.min&&value.length<=(f.max||4000),400,`Ответ: от ${f.min} до ${f.max||4000} символов.`);
  if(f.key==='deadline'){
   if(payload.kind==='create_task'&&/^без срока$/iu.test(value))return 'none';
-  return parseDate(spokenDeadline(value,now,payload.values?.dueDay)?.stamp||value);
+  const spoken=spokenDeadline(value,now,payload.values?.dueDay);
+  const defaultTime=spoken&&!spoken.rest&&['create_task','deadline','approve_with_deadline'].includes(payload.kind??'');
+  return parseDate(spoken?.stamp||(defaultTime?spoken.day+' 18:00':value));
  }
  if(f.key==='assignee'){
   const person=await resolveAssignee(actor,payload,value,db);
