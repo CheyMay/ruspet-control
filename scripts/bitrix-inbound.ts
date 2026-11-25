@@ -3,7 +3,7 @@ import {parseArgs} from 'node:util';
 import {setTimeout as delay} from 'node:timers/promises';
 import {pool} from '../server/db.js';
 import {assert,AppError} from '../server/domain.js';
-import {bitrixClient,BitrixError} from '../server/bitrix-rest.js';
+import {bitrixClient,BitrixError,inboundTransportAllowed} from '../server/bitrix-rest.js';
 import {bitrixId} from '../server/bitrix-sync.js';
 import {readEventToken,taskWebhookEvents} from '../server/bitrix-events.js';
 import {discoverInboundTasks,enqueueInboundSnapshot,reconcileInboundTasks,tickInboundTasks} from '../server/bitrix-inbound.js';
@@ -27,7 +27,7 @@ try{
   console.log(JSON.stringify({capture,queue,issues,conflicts},null,2));
  }else{
   assert(process.env.BITRIX_INBOUND_TASKS==='true'&&process.env.BITRIX_WRITE_ENABLED==='false'&&
-   process.env.BITRIX_TRANSPORT==='balancer',409,'Укажите режим входящих задач, отключите запись и выберите балансировщик.');
+   inboundTransportAllowed(process.env.BITRIX_TRANSPORT),409,'Включите чтение задач по согласованному маршруту и отключите запись в этом обработчике.');
   const field=process.env.BITRIX_INBOUND_PRICE_FIELD;
   assert(!field||/^UF_[A-Z0-9_]+$/.test(field),400,'Для цены нужен точный код UF-поля.');
   const request=await bitrixClient();

@@ -9,6 +9,10 @@ const knownErrors=new Set(['QUERY_LIMIT_EXCEEDED','OPERATION_TIME_LIMIT','NO_AUT
 const inboundMethods=new Set<BitrixMethod>(['tasks.task.list','tasks.task.get','tasks.task.getFields','tasks.task.history.list','user.get','im.dialog.messages.get','task.commentitem.getlist','tasks.task.result.list']);
 export class BitrixError extends Error {constructor(message:string,public disposition:'rejected'|'uncertain'='rejected',public code:string|null=null,public retryAt:string|null=null){super(message);}}
 
+export function inboundTransportAllowed(mode:string|undefined){
+ return mode==='balancer'||mode==='direct'&&process.env.BITRIX_INBOUND_ALLOW_DIRECT==='true';
+}
+
 export function webhookBase(secret:string,portal:string){
  const url=new URL(secret);
  if(url.protocol!=='https:'||url.hostname!==portal.toLowerCase()||url.port||url.username||url.password||url.search||url.hash||!/^\/rest\/\d+\/[a-zA-Z0-9_-]+\/$/.test(url.pathname)){
@@ -57,8 +61,8 @@ export async function bitrixClient(options:{application?:boolean}={}):Promise<Bi
  let transport:Awaited<ReturnType<typeof createBitrixTransport>>;
  try{transport=await createBitrixTransport(base.origin);}catch(e){throw new BitrixError(e instanceof BitrixTransportError?e.message:'Не удалось настроить транспорт Битрикс24.');}
  const request:BitrixRequest=async<T>(method:BitrixMethod,params:object,observe?:(metadata:BitrixMeta)=>void,options?:BitrixSendOptions):Promise<T>=>{
-  if(process.env.BITRIX_INBOUND_TASKS==='true'&&(application||transport.mode!=='balancer'||!inboundMethods.has(method))){
-   throw new BitrixError('В режиме входящей синхронизации разрешено только чтение задач через балансировщик.');
+  if(process.env.BITRIX_INBOUND_TASKS==='true'&&(application||!inboundTransportAllowed(transport.mode)||!inboundMethods.has(method))){
+   throw new BitrixError('Во входящей синхронизации разрешено только чтение задач по согласованному маршруту.');
   }
   const db=await acquirePortalLock();
   try{

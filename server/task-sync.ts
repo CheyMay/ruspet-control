@@ -26,6 +26,8 @@ export async function taskSyncStatus(){
   (SELECT enabled FROM bitrix_event_capture WHERE id=1) AS "eventsEnabled",
   (SELECT max(received_at) FROM bitrix_event_inbox) AS "lastEvent",
   (SELECT max(updated_at) FROM bitrix_refresh_queue WHERE resource LIKE 'task_inbound%' AND state='done') AS "lastInbound",
+  (SELECT min(updated_at) FROM bitrix_refresh_queue WHERE resource IN ('task_inbound','task_inbound_new')
+   AND generation>done_generation AND state IN ('pending','failed')) AS "oldestTaskRefresh",
   (SELECT count(*)::int FROM bitrix_refresh_queue WHERE resource LIKE 'task_inbound%' AND state IN ('pending','processing')) AS "inboundWaiting",
   (SELECT count(*)::int FROM bitrix_refresh_queue WHERE resource LIKE 'task_inbound%' AND state IN ('failed','blocked')) AS "inboundErrors",
   (SELECT enabled FROM bitrix_live_config WHERE id=1) AS "writesEnabled",

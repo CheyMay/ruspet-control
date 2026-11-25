@@ -32,7 +32,7 @@ type RecordStatus={at:string;ok:boolean|null;copies:number|null;tasks:number|nul
 type Status={
  telegram:{enabled:boolean;deliveryEnabled:boolean;bindings:number;lastPoll:string|null;error:string|null;pending:number;delivery:{state:string;count:number}[];timings:{kind:string;samples:number;errors:number;median:number|null;p95:number|null}[]};
  reports:{enabled:boolean;alive:boolean;heartbeat:string|null;runs:{state:string;finished_at:string|null}[]};
- bitrix:{linked:number;conflicts:number;lastSuccess:string|null;eventsEnabled:boolean;lastEvent:string|null;lastInbound:string|null;inboundWaiting:number;inboundErrors:number;writesEnabled:boolean;outboundWaiting:number;outboundErrors:number;lastWrite:string|null};
+ bitrix:{linked:number;conflicts:number;lastSuccess:string|null;eventsEnabled:boolean;lastEvent:string|null;lastInbound:string|null;oldestTaskRefresh:string|null;inboundWaiting:number;inboundErrors:number;writesEnabled:boolean;outboundWaiting:number;outboundErrors:number;lastWrite:string|null};
  okbBackups:Status['backups'];
  offsiteBackup?:{backup:RecordStatus;attempt:RecordStatus};
  backups:{backup:RecordStatus;restore:RecordStatus;backupAttempt:RecordStatus;restoreAttempt:RecordStatus};
@@ -45,6 +45,9 @@ export function SystemHealth(){
  const {value,error,busy,refresh}=usePanelData<Status>('/system/status',30000);
  const tg=value?.telegram, reports=value?.reports, backups=value?.backups;
  const currentPoll=!!tg?.lastPoll&&Date.now()-Date.parse(tg.lastPoll)<90000;
+ const bitrix=value?.bitrix;
+ const bitrixWaiting=!!bitrix&&(bitrix.inboundWaiting+bitrix.inboundErrors+bitrix.outboundWaiting>0);
+ const bitrixStalled=bitrixWaiting&&(!bitrix?.lastSuccess||Date.now()-Date.parse(bitrix.lastSuccess)>5*60000);
  const delivery=(state:string)=>tg?.delivery.find(row=>row.state===state)?.count??0;
  return <section className="panel automation-settings">
   <div className="automation-heading"><div><h2>Состояние системы</h2><p className="muted">Telegram, обмен с Битрикс24, автоматические отчёты и резервные копии.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
@@ -59,10 +62,11 @@ export function SystemHealth(){
     <div><span>Пробное восстановление</span><strong>{backups.restore?.tasks!=null?backups.restore.tasks+' задач в проверенной копии':'Нет данных'}</strong><small>Проверено · {moscowTimestamp(backups.restore?.at)}</small><small>По воскресеньям в 04:15 МСК</small>{isLate(backups.restore,170)&&<small className="red-text">Проверка просрочена</small>}{backups.restoreAttempt?.ok===false&&<small className="red-text">Ошибка последней попытки · {moscowTimestamp(backups.restoreAttempt.at)}</small>}</div>
     <div><span>Резервные копии ОКБ</span><strong>{value.okbBackups.backup?.copies!=null?value.okbBackups.backup.copies+' на сервере':'Нет данных'}</strong><small>Копия · {moscowTimestamp(value.okbBackups.backup?.at)}</small><small>Пробное восстановление · {moscowTimestamp(value.okbBackups.restore?.at)}</small>{(value.okbBackups.backupAttempt?.ok===false||value.okbBackups.restoreAttempt?.ok===false)&&<small className="red-text">Ошибка последней попытки</small>}</div>
     <div><span>Копия на втором VPS</span><strong>{value.offsiteBackup?.backup?'Обе базы в зашифрованном архиве':'Копия пока не подтверждена'}</strong><small>Загрузка · {moscowTimestamp(value.offsiteBackup?.backup?.at)}</small>{isLate(value.offsiteBackup?.backup??null,26)&&<small className="red-text">Копия старше 26 часов</small>}{value.offsiteBackup?.attempt?.ok===false&&<small className="red-text">Последняя отправка завершилась ошибкой</small>}</div>
-    <div><span>Битрикс24 → РУСПЭТ</span><strong>{!value.bitrix.eventsEnabled?'Приём событий выключен':value.bitrix.inboundErrors?'Есть ошибки приёма':'Приём событий включён'}</strong>
+    <div><span>Битрикс24 → РУСПЭТ</span><strong>{!value.bitrix.eventsEnabled?'Приём событий выключен':bitrixStalled?'Нет ответа на запросы к Битрикс24':value.bitrix.inboundErrors?'Часть обновлений требует проверки':'Приём событий включён'}</strong>
      <small>Последнее принятое событие · {moscowTimestamp(value.bitrix.lastEvent)}</small><small>Последняя обработка · {moscowTimestamp(value.bitrix.lastInbound)}</small>
+     {value.bitrix.oldestTaskRefresh&&<small>Старейшее обновление задачи в очереди · {moscowTimestamp(value.bitrix.oldestTaskRefresh)}</small>}
      <small>В очереди · {value.bitrix.inboundWaiting} · С ошибкой · {value.bitrix.inboundErrors}</small></div>
-    <div><span>РУСПЭТ → Битрикс24</span><strong>{!value.bitrix.writesEnabled?'Отправка на паузе':value.bitrix.outboundErrors?'Есть операции для проверки':'Отправка включена'}</strong>
+    <div><span>РУСПЭТ → Битрикс24</span><strong>{!value.bitrix.writesEnabled?'Отправка на паузе':bitrixStalled?'Ожидаем связи с Битрикс24':value.bitrix.outboundErrors?'Есть операции для проверки':'Отправка включена'}</strong>
      <small>Последняя запись · {moscowTimestamp(value.bitrix.lastWrite)}</small>
      {value.bitrix.outboundErrors>0&&<small className="red-text">Записи одной задачи идут по порядку. Ошибка может задержать следующие изменения по ней.</small>}<small>В очереди · {value.bitrix.outboundWaiting} · Требуют проверки · {value.bitrix.outboundErrors}</small>
      <small>Связано задач · {value.bitrix.linked} · Конфликты · {value.bitrix.conflicts}</small><small>Последний ответ REST · {moscowTimestamp(value.bitrix.lastSuccess)}</small></div>

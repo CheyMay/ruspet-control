@@ -7,6 +7,7 @@ import {tmpdir} from 'node:os';
 import {join} from 'node:path';
 import {createHmac} from 'node:crypto';
 import {createBitrixTransport,BitrixTransportError} from '../server/bitrix-transport.js';
+import {inboundTransportAllowed} from '../server/bitrix-rest.js';
 import {parseBalancerExample,saveBalancerFiles} from '../server/balancer-config.js';
 const source=`const BALANCER_URL = 'https://balancer.example/forward';
 const BALANCER_PUBLIC = 'fixture-public';
@@ -14,6 +15,21 @@ const BALANCER_PRIVATE = 'fixture-private';
 const BITRIX_WEBHOOK = 'https://thebest.bitrix24.ru/rest/1/fixture-webhook/';
 throw new Error('MUST NEVER EXECUTE');`;
 const envKeys=['BITRIX_TRANSPORT','BITRIX_BALANCER_CONFIG_FILE','BITRIX_BALANCER_TIMEOUT_MS'] as const;
+
+test('direct inbound exchange requires explicit authorization',()=>{
+ const key='BITRIX_INBOUND_ALLOW_DIRECT',saved=process.env[key];
+ try{
+  delete process.env[key];
+  assert.equal(inboundTransportAllowed('balancer'),true);
+  assert.equal(inboundTransportAllowed('direct'),false);
+  process.env[key]='true';
+  assert.equal(inboundTransportAllowed('direct'),true);
+  assert.equal(inboundTransportAllowed(undefined),false);
+ }finally{
+  if(saved===undefined)delete process.env[key];
+  else process.env[key]=saved;
+ }
+});
 async function fixture(run:(folder:string)=>Promise<void>){
  const folder=await mkdtemp(join(tmpdir(),'ruspet-balancer-test-')),saved=Object.fromEntries(envKeys.map(k=>[k,process.env[k]])),fetch=globalThis.fetch,now=Date.now;
  let restoreStat=()=>{};
