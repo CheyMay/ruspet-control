@@ -604,7 +604,8 @@ export function App(){
     ]}/>
     <div className="drawer-body" key={drawerTab} data-tab={drawerTab} role="tabpanel">
     {error&&<div className="alert error" role="alert">{error}</div>}
-    {drawerTab==='info'&&!viewingEmployee&&detail.personalPlan?.needsAcceptance&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}/>}
+    {drawerTab==='info'&&!viewingEmployee&&detail.personalPlan?.needsAcceptance&&<PersonalTaskPlan key={detail.task.id+':'+detail.personalPlan.epoch} task={detail.task} plan={detail.personalPlan} busy={busy} error={error} act={act}
+     deadlineAction={cardApproval?{label:'К согласованию',run:()=>setDrawerTab('approvals')}:allowedRequest(data.user,detail.task)?{label:'Предложить новый срок',run:()=>setRequestType('deadline')}:undefined}/>}
     {drawerTab==='info'&&<div className="task-card-overview">
      <div>
       {detail.editAccess.canDecide&&!viewingEmployee&&<section className="task-card-section">

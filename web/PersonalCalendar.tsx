@@ -15,13 +15,19 @@ const dateOf=(day:string)=>new Date(day+'T12:00:00+03:00');
 const weekdays=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
 
-export function PersonalTaskPlan({task,plan,busy,error,act}:{task:Task;plan:TaskPersonalPlan;busy:boolean;error:string;act:Act}){
+export function PersonalTaskPlan({task,plan,busy,error,act,deadlineAction}:{task:Task;plan:TaskPersonalPlan;busy:boolean;error:string;act:Act;deadlineAction?:{label:string;run:()=>void}}){
  const [editing,setEditing]=useState(plan.needsAcceptance);
  const [submitted,setSubmitted]=useState(false);
  const [value,setValue]=useState(plan.plannedAt?moscowClock(plan.plannedAt):'');
  const [nextStep,setNextStep]=useState(plan.nextStep??'');
  const when=value?Date.parse(value+':00+03:00'):NaN;
  const laterThanDeadline=task.deadline&&when>Date.parse(task.deadline);
+ const missedDeadline=plan.needsAcceptance&&task.deadline&&Date.parse(task.deadline)<=Date.now();
+ if(missedDeadline)return <section className="task-card-section personal-task-plan awaiting-acceptance" aria-label="Приём задачи">
+  <h3><CalendarDays size={16}/> Крайний срок уже прошёл</h3>
+  <p>Плановое время можно выбрать после изменения крайнего срока.</p>
+  {deadlineAction&&<button type="button" className="button primary" disabled={busy} onClick={deadlineAction.run}>{deadlineAction.label}</button>}
+ </section>;
  return <section className={'task-card-section personal-task-plan'+(plan.needsAcceptance?' awaiting-acceptance':'')} aria-label="Мой план задачи">
   <h3><CalendarDays size={16}/> {plan.needsAcceptance?'Принять задачу и запланировать':'Мой план'}</h3>
   {plan.plannedAt&&<p><strong>{planTime.format(new Date(plan.plannedAt))} МСК</strong>{plan.acceptedAt?' · задача принята':''}</p>}

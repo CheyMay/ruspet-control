@@ -686,6 +686,16 @@ test('Telegram accepts a new assignment directly from its notification and saves
  const nextFeed=await api(manager,'/notifications');
  assert(!nextFeed.body.some((item:{task_id:string;task_assignment?:boolean})=>item.task_id===assigned&&item.task_assignment));
  assert.equal(await notices.claimTelegramTaskNotice(manager,chatId,at('2035-03-13','10:10')),null);
+ const expired=await makeTask('Назначение с прошедшим сроком',new Date(Date.now()-86400000),manager);
+ await assignmentTime(expired,paired);
+ const expiredNotice=await notices.claimTelegramTaskNotice(manager,chatId,at('2035-03-13','10:15'));
+ assert(expiredNotice);
+ const expiredScreen=await notices.taskNoticeScreen(manager,channel,expiredNotice,paired);
+ const expiredAccept=expiredScreen.buttons.flat().find(item=>item.text==='Принять #'+expired);
+ assert(expiredAccept);
+ const expiredPrompt=await bot.botClick(manager,channel,expiredAccept.token);
+ assert.match(expiredPrompt.text,/Крайний срок прошёл/);
+ assert(expiredPrompt.buttons.flat().some(item=>item.text==='Предложить новый срок'));
 });
 
 test('creator decides first and the sales head only receives required or selected deadline requests',async()=>{

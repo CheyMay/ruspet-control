@@ -158,6 +158,16 @@ async function prompt(u:User,ch:string,d:Dialog,db:Db){
  const deadlineComment=d.payload.kind==='approve_with_deadline'&&d.fields[d.index]?.key==='comment';
  const acceptance=d.payload.kind==='accept_assignment'?(await db.query<{deadline:string|null;bitrix_id:string|null}>(`SELECT deadline,${linkedTaskNumber} FROM tasks t WHERE id=$1`,[d.payload.id])).rows[0]:null;
  const heading=d.payload.id?'Задача #'+(acceptance?.bitrix_id??d.payload.id):'Новая задача';
+ if(acceptance?.deadline&&Date.parse(acceptance.deadline)<=Date.now()){
+  const {task,approvalProgress}=await detail(u,d.payload.id!,db);
+  await db.query('DELETE FROM bot_sessions WHERE actor_id=$1 AND channel=$2',[u.id,ch]);
+  const expired='Крайний срок прошёл '+date(acceptance.deadline)+' МСК.';
+  return screen(u,ch,heading+'\n'+expired+' '+(approvalProgress?'Запрос уже на согласовании.':'Запросите перенос, чтобы выбрать плановое время.'),[
+   approvalProgress?[button('К согласованию','task_approval',{id:task.id,list:d.payload.list})]:
+    canRequest(u,task)?[deadlineProposalButton(task,d.payload.list)]:[],
+   [button('К задаче','task',{id:task.id,list:d.payload.list})]
+  ],db);
+ }
  const limit=acceptance?.deadline?'\nНе позднее '+date(acceptance.deadline)+' МСК — крайний срок задачи.':'';
  return screen(u,ch,heading+(deadlineComment?'\nИтоговый крайний срок: '+date(d.values.deadline)+' МСК':'')+'\n'+missingLabel(d)+limit,
   [...(deadlineComment?
