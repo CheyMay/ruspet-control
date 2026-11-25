@@ -46,8 +46,8 @@ export function SystemHealth(){
  const tg=value?.telegram, reports=value?.reports, backups=value?.backups;
  const currentPoll=!!tg?.lastPoll&&Date.now()-Date.parse(tg.lastPoll)<90000;
  const bitrix=value?.bitrix;
- const bitrixWaiting=!!bitrix&&(bitrix.inboundWaiting+bitrix.inboundErrors+bitrix.outboundWaiting>0);
- const bitrixStalled=bitrixWaiting&&(!bitrix?.lastSuccess||Date.now()-Date.parse(bitrix.lastSuccess)>5*60000);
+ const bitrixStalled=!!bitrix?.oldestTaskRefresh&&Date.now()-Date.parse(bitrix.oldestTaskRefresh)>5*60000&&
+  (!bitrix.lastSuccess||Date.now()-Date.parse(bitrix.lastSuccess)>5*60000);
  const delivery=(state:string)=>tg?.delivery.find(row=>row.state===state)?.count??0;
  return <section className="panel automation-settings">
   <div className="automation-heading"><div><h2>Состояние системы</h2><p className="muted">Telegram, обмен с Битрикс24, автоматические отчёты и резервные копии.</p></div><button className="button secondary" disabled={busy} onClick={refresh}>Обновить</button></div>
