@@ -364,5 +364,9 @@ test('readiness passes a fully prepared two-manager fixture and blocks again whe
   process.env.DEMO_AUTH='false';process.env.PUBLIC_ORIGIN='https://fixture.example';process.env.BITRIX_PORTAL='thebest.bitrix24.ru';process.env.BITRIX_WEBHOOK_FILE=file;
   const readiness=await(await import('../server/pilot-readiness.js')).pilotReadiness();assert.equal(readiness.ready,true,JSON.stringify(readiness.checks.filter(c=>c.level==='block')));
   await db.pool.query("UPDATE login_accounts SET enabled=false WHERE username='pilot-anna'");const revoked=await(await import('../server/pilot-readiness.js')).pilotReadiness();assert.equal(revoked.ready,false);assert(revoked.checks.some(c=>c.level==='block'&&c.message.includes('веб-вход')));
+  await db.pool.query('UPDATE bitrix_task_links SET live_enabled=false');
+  await db.pool.query('UPDATE bitrix_live_config SET sync_linked_tasks=true,group_id=NULL,price_field=NULL WHERE id=1');
+  const linked=await(await import('../server/pilot-readiness.js')).pilotReadiness();
+  assert.equal(linked.ready,true,JSON.stringify(linked.checks.filter(c=>c.level==='block')));
  }finally{restoreStat();for(const [key,value] of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await rm(folder,{recursive:true,force:true});}
 });

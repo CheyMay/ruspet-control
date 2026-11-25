@@ -19,13 +19,13 @@ export async function pilotReadiness(){
  add(process.env.DEMO_AUTH==='false','Демонстрационный вход должен быть выключен (DEMO_AUTH=false).');
  let https=false;try{https=new URL(process.env.PUBLIC_ORIGIN||'').protocol==='https:'}catch{}
  add(https,'Для ссылок и защищённых cookies нужен HTTPS PUBLIC_ORIGIN.');
- if(linkedExchange)add(links.rows.some(row=>row.live_enabled),'Обмен по активированным связям: нужна хотя бы одна связанная задача.');
+ if(linkedExchange)add(links.rowCount,'Есть задачи, связанные с Битрикс24.');
  else add(managers.length===2&&leaders.length>0,'Для ограниченного режима обмена нужны два менеджера и руководитель.');
  let secretReady=false;try{const file=process.env.BITRIX_WEBHOOK_FILE!;await access(file);const info=await stat(file);if(info.isFile()&&(info.mode&0o077)===0){await bitrixClient();secretReady=true;}}catch{}
  add(secretReady&&process.env.BITRIX_PORTAL==='thebest.bitrix24.ru','Нужны доступные закрытые файлы вебхука и выбранного транспорта портала thebest.bitrix24.ru (права 600).');
  const rest=(await pool.query('SELECT portal,last_success_at FROM bitrix_rest_gate WHERE id=1')).rows[0];
  add(rest?.portal==='thebest.bitrix24.ru'&&rest.last_success_at&&Date.now()-Date.parse(rest.last_success_at)<600000,'Нужен успешный ответ REST нужного портала за последние 10 минут.');
- add(cfg.rows[0]?.group_id&&cfg.rows[0]?.price_field,'Должны быть выбраны проект и поле цены Битрикс24.');
+ if(!linkedExchange)add(cfg.rows[0]?.group_id&&cfg.rows[0]?.price_field,'Для ограниченного режима должны быть выбраны проект и поле цены Битрикс24.');
  add(telegram.rows[0]?.enabled&&telegram.rows[0]?.delivery,'Для пилота должны быть включены бот и доставка.');
  add(runtime.rows[0]?.last_poll_at&&Date.now()-Date.parse(runtime.rows[0].last_poll_at)<120000&&!runtime.rows[0].error,'Нужен свежий heartbeat бота без ошибки.');
  const selectorRole={branchManager:'branch_manager',salesHead:'sales_head',director:'director'};
