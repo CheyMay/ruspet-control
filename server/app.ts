@@ -475,7 +475,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/owner/work-log.xlsx',(req,res)=>{
   assert(req.actor.root_access,403,'Хронология работ доступна владельцу.');
   res.setHeader('Cache-Control','private, no-store');
-  res.download(resolve('.secrets/ruspet-work-log.xlsx'),'РУСПЭТ — хронология работ.xlsx');
+  res.download(resolve('.secrets/ruspet-work-log.xlsx'),'РУСПЭТ — хронология работ.xlsx',{dotfiles:'allow'});
  });
  app.get('/api/owner/training/:id',(req,res)=>{
   res.setHeader('Cache-Control','private, no-store');
