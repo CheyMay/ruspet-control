@@ -156,6 +156,20 @@ function writeFields(before:Task,after:Task,cfg:Config){
  return changeFields.filter(key=>!same(old[key],next[key])&&(!cfg.sync_linked_tasks||
   (key!=='price'||!!cfg.price_field)&&(key!=='status'||next.status!=='review')));
 }
+type QueueOperation={state:string;payload:{kind:string;data?:{before?:Task;after?:Task}}};
+function independentDeadline(head:QueueOperation|null,next:QueueOperation|null,cfg:Config):Task|null{
+ if(!cfg.sync_linked_tasks||!head||!next||!['uncertain','blocked'].includes(head.state)||next.payload.kind!=='deadline_changed')return null;
+ const {before,after}=next.payload.data??{};
+ if(!before||!after||!equal(writeFields(before,after,cfg),['deadline'])||
+  before.creator_id!==after.creator_id||before.assignee_id!==after.assignee_id||before.status!==after.status)return null;
+ if(head.payload.kind==='comment')return before;
+ const earlier=head.payload.data;
+ if(head.payload.kind==='task_edited'&&earlier?.before&&earlier.after&&
+  earlier.before.creator_id===earlier.after.creator_id&&earlier.before.assignee_id===earlier.after.assignee_id&&
+  earlier.before.status===earlier.after.status&&
+  writeFields(earlier.before,earlier.after,cfg).every(field=>field==='title'||field==='description'||field==='price'))return before;
+ return null;
+}
 export function canRestoreLinkedFields(before:Task,after:Task,cfg:Config){
  // These are portal fields we can restore and verify with the existing outbound worker.
  const restore=writeFields(after,before,cfg);
@@ -225,9 +239,17 @@ export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:strin
    await pool.query('UPDATE bitrix_task_links SET live_polled_at=now() WHERE task_id=$1',[id]);
    const op=await transaction(async db=>{
     await lockDelegationChain(db,id);
-    const candidate=(await db.query("SELECT * FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 1 FOR UPDATE",[id])).rows[0];
+    const [head,next]=(await db.query("SELECT * FROM bitrix_operations WHERE task_id=$1 AND state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 2 FOR UPDATE",[id])).rows;
+    const independent=independentDeadline(head,next,cfg);
+    const candidate=independent?next:head;
     if(!candidate||!['pending','failed'].includes(candidate.state)||candidate.retry_at&&Date.parse(candidate.retry_at)>Date.now())return candidate?{...candidate,skip:true}:null;
-    await db.query("UPDATE bitrix_operations SET state='processing',phase='reading',attempts=attempts+1 WHERE event_id=$1",[candidate.event_id]);return candidate;
+    if(independent){
+     const current=(await db.query('SELECT creator_id,assignee_id,status FROM tasks WHERE id=$1',[id])).rows[0];
+     if(!current||current.creator_id!==independent.creator_id||current.assignee_id!==independent.assignee_id||
+      current.status!==independent.status)return {...candidate,skip:true};
+    }
+    await db.query("UPDATE bitrix_operations SET state='processing',phase='reading',attempts=attempts+1 WHERE event_id=$1",[candidate.event_id]);
+    return {...candidate,independent};
    });
    if(op?.skip||cfg.sync_linked_tasks&&!op)continue;
    let writing=false;
@@ -251,6 +273,8 @@ export async function tickLiveSync(request:BitrixRequest,options:{taskIds?:strin
     const data=op.payload.data||{},before=data.before as Task|undefined,after=data.after as Task|undefined;
     if(after){
      assert(before,409,'У операции нет исходного состояния для безопасной сверки.');
+     if(op.independent)assert(remote.assignee_id===op.independent.assignee_id&&remote.status===op.independent.status,409,
+      'Исполнитель или статус изменились в Битрикс24. Сначала сверьте задачу.');
      const plan=await outboundFields(before,after,raw,cfg);
      if(Object.keys(plan.fields).length)await write('tasks.task.update',{taskId:externalId,fields:plan.fields});
      if(plan.changed.includes('status'))await changeStatus(request,externalId,raw,after.status,write);
