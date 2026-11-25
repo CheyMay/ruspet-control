@@ -1,7 +1,7 @@
 import {activeTaskApproval,canReview,canSetApprovedDeadline,completionApprovalRoute} from '../shared/actions.js';
 import {loadDeadlineHistories,queueDeadlineHistories} from './deadline-history.js';
 import {taskPrice} from '../shared/pricing.js';
-import {keepTaskApprovals} from './approval-updates.js';
+import {cancelTaskApproval,keepTaskApprovals} from './approval-updates.js';
 import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
@@ -260,7 +260,8 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   if(input.type==='completion')await requireTaskAcceptance(user,task,db);
   assert(task.version===input.expectedVersion,409,'Задача изменилась. Обновите карточку.');
   assert(task.status!=='completed',409,'Задача уже завершена.');
-  assert(!(await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND state='pending'",[id])).rowCount,409,'У задачи уже есть активное согласование.');
+  const pending=(await db.query<Approval>("SELECT * FROM approvals WHERE task_id=$1 AND state='pending' FOR UPDATE",[id])).rows[0];
+  assert(!pending||input.type==='completion'&&pending.type==='deadline',409,'У задачи уже есть активное согласование.');
   const cfg=await config(db),min=cfg.config.responseMinLength;
   const plan=input.type==='completion'?input.plan?.trim()??'':'';
   assert(input.reason.trim().length>=min,400,`Причина запроса: минимум ${min} символов.`);
@@ -279,6 +280,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
    creatorRoute??(hierarchy?await hierarchyRoute(db,hierarchy,task,user.id):await routeFor(db,task,cfg.config.routes.deadline));
   assert(route.length>0,422,input.type==='completion'?'Завершите свою задачу напрямую.':'Маршрут не настроен.');
   if(input.type==='deadline')assert(!route.some(s=>s.userId===user.id),422,'Согласовать собственный запрос нельзя.');
+  if(pending)await cancelTaskApproval(db,pending,user.id,'Запрос на перенос снят при сдаче результата');
   const approvalId=randomUUID();
   await db.query("INSERT INTO approvals(id,task_id,requester_id,type,reason,plan,proposed_deadline,task_version,state,route,route_version) VALUES($1,$2,$3,$4,$5,$6,$7,$8,'pending',$9,$10)",[approvalId,id,user.id,input.type,input.reason,plan,input.proposedDeadline||null,task.version,JSON.stringify(route),cfg.version]);
   await db.query("UPDATE outbox SET withdrawn_at=now() WHERE task_id=$1 AND read_at IS NULL AND withdrawn_at IS NULL AND (dedupe_key LIKE 'control:%' OR dedupe_key LIKE 'remind:%')",[id]);

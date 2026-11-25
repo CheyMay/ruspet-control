@@ -469,8 +469,39 @@ test('pricing controls deadline approvals and only the creator accepts completio
  assert.match(boundaryNotice,/Комментарий: Клиент согласовал встречу утром\./);
 
  const work=await create(liza,other,5000);
+ await request(work,other);
+ assert.equal((await allow(work,liza)).state,'pending');
+ const transfer=await approval(work);
+ assert.equal(transfer.current_step,1);
+ await service.decide(director,transfer.id,{decision:'clarify',comment:'Почему нужно переносить крайний срок?',
+  expectedStep:transfer.current_step,expectedRevision:transfer.action_revision});
+ const asked=await approval(work);
+ await assert.rejects(()=>workflow.reviewTask(other,work,'submit','',1),/Укажите результат/);
+ assert.equal((await approval(work)).id,transfer.id);
+ assert.equal(await deadline(work),old);
+ const {prepareVoiceAction}=await import('../server/bot-voice-actions.js');
+ const {findVoiceTasks}=await import('../server/voice-task-search.js');
+ assert.equal((await findVoiceTasks(other,work,'submit',db.pool))[0].task.id,work);
+ assert.equal((await prepareVoiceAction(other,{kind:'submit',id:work,values:{}},db.pool)).payload.kind,'submit');
  await assert.rejects(()=>workflow.reviewTask(liza,work,'complete','',1),/приёмке/);
- assert.equal((await workflow.reviewTask(other,work,'submit','Результат подготовлен',1)).state,'review');
+ const submitChannel='finish-with-pending-deadline';
+ const submitView=await bot.botView(other,submitChannel,{op:'task',id:work});
+ const prompt=await click(other,submitChannel,submitView,'Сдать результат');
+ assert.match(prompt.text,/Опишите готовый результат/);
+ const submitDraft=await bot.botText(other,submitChannel,'Результат подготовлен','finish-draft');
+ assert.match(submitDraft.text,/Запрос на перенос снимется/);
+ assert.equal((await approval(work)).id,transfer.id);
+ assert.match((await click(other,submitChannel,submitDraft,'Подтвердить и отправить')).text,/Результат передан на приёмку/);
+ const taskAfter=(await db.pool.query('SELECT status,deadline,transfer_count FROM tasks WHERE id=$1',[work])).rows[0];
+ assert.deepEqual(taskAfter,{status:'review',deadline:old,transfer_count:0});
+ const withdrawn=(await db.pool.query('SELECT state,canceled_at,action_revision FROM approvals WHERE id=$1',[transfer.id])).rows[0];
+ assert.equal(withdrawn.state,'stale');assert(withdrawn.canceled_at);
+ assert.equal(withdrawn.action_revision,asked.action_revision+1);
+ const notices=(await db.pool.query('SELECT withdrawn_at FROM outbox WHERE task_id=$1 AND split_part(dedupe_key,\':\',2)=$2',[work,transfer.id])).rows;
+ assert(notices.length>0&&notices.every(row=>row.withdrawn_at));
+ assert.equal((await db.pool.query("SELECT count(*)::int AS n FROM decisions WHERE approval_id=$1 AND decision='approve'",[transfer.id])).rows[0].n,1);
+ await assert.rejects(()=>service.decide(director,transfer.id,{decision:'approve',comment:'',
+  expectedStep:asked.current_step,expectedRevision:asked.action_revision}),/Версия согласования изменилась/);
  assert.deepEqual(await route(work),[liza.id]);
  await assert.rejects(()=>allow(work,director),/постановщик/);
  const beforeEdit=await approval(work);
@@ -490,7 +521,6 @@ test('pricing controls deadline approvals and only the creator accepts completio
  assert.equal((await api(liza,'/tasks/'+work+'/price','PATCH',{price:4999.99,expectedVersion:4})).status,200);
  assert.deepEqual(await route(work),[liza.id]);assert.equal((await approval(work)).current_step,0);
  assert.equal((await approval(work)).task_change.routeChanged,false);
- const {prepareVoiceAction}=await import('../server/bot-voice-actions.js');
  const voice=await prepareVoiceAction(liza,{kind:'accept',id:work,values:{}},db.pool);
  assert.equal(voice.payload.kind,'approve');assert.equal(voice.payload.target,(await approval(work)).id);
  assert.equal((await allow(work,liza)).state,'approved');

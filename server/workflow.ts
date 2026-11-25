@@ -1,6 +1,6 @@
 import {groupTask,groupCompanyTask} from './task-groups.js';
 import {queueDeadlineHistories} from './deadline-history.js';
-import {editedApprovalFields,keepTaskApprovals} from './approval-updates.js';
+import {cancelTaskApproval,editedApprovalFields,keepTaskApprovals} from './approval-updates.js';
 import {canEditTaskPrice} from '../shared/task-edit.js';
 import {taskPrice} from '../shared/pricing.js';
 import {lockDelegationChain} from './delegation-lock.js';
@@ -222,13 +222,15 @@ async function reviewTaskCore(u:User,id:string,action:'submit'|'accept'|'return'
  else {assert(canReview(u,before),403,'Результат принимает постановщик задачи.');assert(before.status==='review',409,'Задача не ожидает приёмки.');}
  if(action==='return')assert(comment.trim().length>=5,400,'Укажите причину возврата, минимум 5 символов.');
  if((action==='submit'||action==='complete')&&taskRequiresResult(before))assert(comment.trim().length>=5,400,'Укажите результат, минимум 5 символов.');
- const pending=(await db.query<Approval>("SELECT * FROM approvals WHERE task_id=$1 AND state='pending' AND canceled_at IS NULL",[id])).rows[0];
+ const pending=(await db.query<Approval>("SELECT * FROM approvals WHERE task_id=$1 AND state='pending' AND canceled_at IS NULL FOR UPDATE",[id])).rows[0];
  if(pending?.type==='completion'&&activeTaskApproval(before,pending)&&(action==='accept'||action==='return')){
   const decision=await decideCore(u,pending.id,{decision:action==='accept'?'approve':'reject',comment,
    expectedStep:pending.current_step,expectedRevision:pending.action_revision});
   return {state:decision.state==='approved'?'completed':decision.state==='rejected'?'active':'review'};
  }
- assert(!pending,409,'Сначала завершите активное согласование.');
+ if(pending?.type==='deadline'&&(action==='submit'||action==='complete')){
+  await cancelTaskApproval(db,pending,u.id,action==='submit'?'Запрос на перенос снят при сдаче результата':'Запрос на перенос снят при завершении задачи');
+ }else assert(!pending,409,'Сначала завершите активное согласование.');
  const completing=action==='accept'||action==='complete';
  const status=action==='submit'?'review':completing?'completed':'active';
  const after=(await db.query("UPDATE tasks SET status=$2,completed_at=CASE WHEN $2='completed' THEN now() ELSE NULL END,version=version+1,updated_at=now() WHERE id=$1 RETURNING *",[id,status])).rows[0];

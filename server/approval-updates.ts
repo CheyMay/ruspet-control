@@ -24,6 +24,14 @@ export async function carryApprovalBatch(db:Db,approvalId:string,step:number,old
   WHERE approval_id=$1 AND step=$2 AND revision=$3 ON CONFLICT DO NOTHING`,[approvalId,step,oldRevision,newRevision]);
 }
 
+export async function cancelTaskApproval(db:Db,approval:Approval,actorId:string|null,reason:string,context:object={}){
+ await db.query("UPDATE approvals SET state='stale',canceled_at=now(),deferred_until=NULL,action_revision=action_revision+1 WHERE id=$1",[approval.id]);
+ await db.query(`UPDATE outbox SET withdrawn_at=now() WHERE task_id=$1 AND withdrawn_at IS NULL
+  AND split_part(dedupe_key,':',1) IN ('approval','clarify','clarification','clarification-answer','defer')
+  AND split_part(dedupe_key,':',2)=$2`,[approval.task_id,approval.id]);
+ await event(db,approval.task_id,actorId,'approval_canceled',reason,{...context,approvalId:approval.id});
+}
+
 // Call with the task locked and in the transaction that applies the new version.
 export async function keepTaskApprovals(db:Db,before:Task,after:Task,fields:readonly string[],source:ApprovalTaskChange['source'],actorId:string|null){
  const {rows}=await db.query<Approval>(`SELECT * FROM approvals WHERE task_id=$1
@@ -35,11 +43,11 @@ export async function keepTaskApprovals(db:Db,before:Task,after:Task,fields:read
   return {field,before:value(before),after:value(after)};
  });
  for(const approval of rows){
-  if(after.status==='completed'||approval.type==='completion'&&(isSelfTask(after)||before.status==='review'&&after.status==='active')){
-   const reason=after.status==='completed'?'Задача уже завершена':isSelfTask(after)?'Постановщик может завершить свою задачу':'Результат уже возвращён в работу';
-   await db.query("UPDATE approvals SET state='stale',canceled_at=now(),deferred_until=NULL,action_revision=action_revision+1 WHERE id=$1",[approval.id]);
-   await db.query("UPDATE outbox SET withdrawn_at=now() WHERE dedupe_key LIKE $1 AND withdrawn_at IS NULL",['approval:'+approval.id+':%']);
-   await event(db,after.id,actorId,'approval_canceled',reason,{approvalId:approval.id,source,fields});
+  const submitted=approval.type==='deadline'&&before.status==='active'&&after.status==='review';
+  if(after.status==='completed'||submitted||approval.type==='completion'&&(isSelfTask(after)||before.status==='review'&&after.status==='active')){
+   const reason=after.status==='completed'?'Задача уже завершена':submitted?'Запрос на перенос снят при сдаче результата':
+    isSelfTask(after)?'Постановщик может завершить свою задачу':'Результат уже возвращён в работу';
+   await cancelTaskApproval(db,approval,actorId,reason,{source,fields});
    continue;
   }
   if(!changes.length){

@@ -152,7 +152,7 @@ export async function prepareVoiceAction(actor:User,intent:VoiceIntent,db:Db){
  const payload:Payload={op:'form',id:task.id,kind,version:task.version};
  if(kind==='submit'||kind==='deadline'||kind==='complete'){
   assert(canRequest(actor,task)&&(task.status==='active'||kind==='complete'&&task.status==='review'),409,'Действие доступно по незавершённой задаче.');
-  assert(!pending,409,'Сначала завершите активное согласование.');
+  assert(!pending||pending.type==='deadline'&&kind!=='deadline',409,'Сначала завершите активное согласование.');
  }
  if(kind==='accept'||kind==='return')assert(reviewer&&!pending,409,'Результат должен ожидать вашей приёмки.');
  if(['approve','reject','clarify','clarification'].includes(kind)){

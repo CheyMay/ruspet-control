@@ -37,10 +37,14 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const name=(id:string)=>people.find(x=>x.id===id)?.name||id;
  const extra={id:t.id,list:p.list},back=[button('← К задаче','task',extra),button('Меню','home')];
  const form=(label:string,kind:string,target?:string,step?:number)=>button(label,'form',{...extra,kind,version:t.version,target,step,revision:target===pending?.id?pending?.action_revision:undefined});
+ const resultButton=t.status==='active'&&pending?.type!=='completion'&&!d.personalPlan?.needsAcceptance&&canRequest(u,t)?
+  canComplete(u,t,d.approvalScope)?form('Завершить задачу','complete'):
+   form(last?.state==='returned'?'Отправить доработку':'Сдать результат','submit'):null;
  const waiting=!!pending?.clarification_requested_at&&!pending.clarification_answered_at;
  const change=pending?.task_change;
  const approvalRows:ReturnType<typeof button>[][]=[];
  if(pending){
+  if(pending.type==='deadline'&&resultButton)approvalRows.push([resultButton]);
   if(waiting&&pending.requester_id===u.id)approvalRows.push([form('Ответить на уточнение','clarification',pending.id,pending.current_step)]);
   if(!waiting&&!change?.routeIssue&&pending.route[pending.current_step]?.userId===u.id){
    const resultReview=t.status==='review'&&pending.type==='completion';
@@ -166,10 +170,10 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   const mine=participant===u.id;
   if(participant)context.push(waiting?(mine?'От вас ждут уточнение':'Уточнение запрошено у '+name(participant)):'Решение за '+(mine?'вами':name(participant)));
   rows.push([button(mine?(waiting?'Ответить на уточнение':'Рассмотреть запрос'):'Посмотреть согласование','task_approval',extra)]);
+  if(resultButton)rows.push([resultButton]);
  }else if(t.status==='active'&&canRequest(u,t)){
   if(last?.state==='returned')context.push('Есть замечания к результату');
-  if(!plan?.needsAcceptance)rows.push([canComplete(u,t,d.approvalScope)?form('Завершить задачу','complete'):
-   form(last?.state==='returned'?'Отправить доработку':'Сдать результат','submit')]);
+  if(resultButton)rows.push([resultButton]);
   if(overdue){
    if(explained)context.push('Объяснение сохранено. Крайний срок истёк.');
    rows.push([deadlineProposalButton(t,p.list,explained)]);

@@ -199,7 +199,10 @@ async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string,offe
  const action=d.payload.kind==='accept_assignment'?'Принять и запланировать':d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='approve_with_deadline'?'Согласовать с новым сроком':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
  const title=heading??(d.payload.id?action+' · #'+d.payload.id:'Проверьте новую задачу');
  const redo={...d.payload,values:d.payload.kind==='reminder'?{days:d.values.days}:undefined};
- return screen(u,ch,`${title}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
+ const withdrawsDeadline=(d.payload.kind==='submit'||d.payload.kind==='complete')&&d.payload.id&&
+  (await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND type='deadline' AND state='pending' AND canceled_at IS NULL",[d.payload.id])).rowCount;
+ const hint=withdrawsDeadline?'\n\nЗапрос на перенос снимется. Крайний срок останется прежним.':'';
+ return screen(u,ch,`${title}${hint}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
   [button(d.payload.kind==='accept_assignment'?'Принять задачу':'Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],
   [...(offerResult?[button('Добавить результат','form',{...redo,withResult:true})]:
    d.fields.length?[button('Ввести заново','form',redo)]:[]),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]

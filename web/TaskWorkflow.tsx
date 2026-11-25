@@ -14,6 +14,7 @@ import {plannedInterval} from '../shared/analytics.js';
 import {unassignedBranch} from '../shared/branches.js';
 import {taskRequiresResult} from '../shared/queues.js';
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
+const deadlineWithdrawalNote='Запрос на перенос снимется. Крайний срок останется прежним.';
 export function TaskPriceEditor({task,busy,act}:{task:Task;busy:boolean;act:Act}){
  const [open,setOpen]=useState(false),[price,setPrice]=useState('');
  if(!open)return <button type="button" className="text-button" onClick={()=>{setPrice(String(taskPrice(task)??''));setOpen(true);}}>Изменить цену</button>;
@@ -29,16 +30,16 @@ export function TaskPriceEditor({task,busy,act}:{task:Task;busy:boolean;act:Act}
   </div>
  </form>;
 }
-export function ReviewActions({task,user,busy,act,scope}: {task:Task;user:User;busy:boolean;act:Act;scope?:ApprovalScope|null}){
+export function ReviewActions({task,user,busy,act,scope,withdrawsDeadline=false}: {task:Task;user:User;busy:boolean;act:Act;scope?:ApprovalScope|null;withdrawsDeadline?:boolean}){
  const [comment,setComment]=useState('');
  const submit=user.id===task.assignee_id||user.id===task.creator_id||['admin','director','sales_head','branch_manager'].includes(user.role);
  const reviewer=canReview(user,task,scope);
  if(canComplete(user,task,scope)||task.status==='completed'||task.status==='active'&&!submit||task.status==='review'&&!reviewer)return null;
  const requiresResult=taskRequiresResult(task);
- return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':requiresResult?'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.':'Передайте выполненную задачу постановщику. При необходимости добавьте комментарий.'}</p><label>{task.status==='review'?'Комментарий (при возврате обязателен)':requiresResult?'Результат работы':'Результат или комментарий · необязательно'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||((action==='return'||action==='submit'&&requiresResult)&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div></section>;
+ return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':requiresResult?'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.':'Передайте выполненную задачу постановщику. При необходимости добавьте комментарий.'}</p>{withdrawsDeadline&&<p className="muted">{deadlineWithdrawalNote}</p>}<label>{task.status==='review'?'Комментарий (при возврате обязателен)':requiresResult?'Результат работы':'Результат или комментарий · необязательно'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||((action==='return'||action==='submit'&&requiresResult)&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div></section>;
 }
-export function CompleteTaskDialog({task,users,busy,error,save,close}:{
- task:Task;users:User[];busy:boolean;error:string;save:(comment:string)=>Promise<boolean>;close:()=>void;
+export function CompleteTaskDialog({task,users,busy,error,save,close,withdrawsDeadline=false}:{
+ task:Task;users:User[];busy:boolean;error:string;save:(comment:string)=>Promise<boolean>;close:()=>void;withdrawsDeadline?:boolean;
 }){
  const [comment,setComment]=useState('');
  const requiresResult=taskRequiresResult(task);
@@ -48,6 +49,7 @@ export function CompleteTaskDialog({task,users,busy,error,save,close}:{
    <button className="icon-button" type="button" disabled={busy} onClick={close} aria-label="Закрыть">✕</button></div>
   <p className="eyebrow">#{taskNumber(task)}</p><h3>{task.title}</h3>
   <TaskPeople task={task} users={users}/>
+  {withdrawsDeadline&&<p className="muted">{deadlineWithdrawalNote}</p>}
   <label>{requiresResult?'Результат работы · обязательно':'Результат или комментарий · необязательно'}<textarea required={requiresResult} minLength={requiresResult?5:undefined} maxLength={4000} value={comment} onChange={event=>setComment(event.target.value)}/></label>
   {error&&<p className="alert error" role="alert">{error}</p>}
   <div className="drawer-actions"><button type="button" className="button secondary" disabled={busy} onClick={close}>Отмена</button>

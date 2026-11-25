@@ -179,12 +179,17 @@ test('explanations validate all fields, survive repeat checks, reject duplicate 
 });
 test('completion requests are accepted only by the task creator',async()=>{
  const id=(await request('admin','/tasks',taskInput)).data.id;
+ const deadlineRequest=await request('anna',`/tasks/${id}/approvals`,{type:'deadline',reason:'Для проверки предлагаю другой срок',
+  proposedDeadline:new Date(Date.now()+7*86400000).toISOString(),expectedVersion:1});
+ assert.equal(deadlineRequest.status,201);
  const a=await request('anna',`/tasks/${id}/approvals`,{type:'completion',reason:'Все действия по задаче выполнены полностью',plan:'Результат передан заказчику и проверен менеджером',expectedVersion:1});assert.equal(a.status,201);
+ assert.ok((await db.pool.query('SELECT canceled_at FROM approvals WHERE id=$1',[deadlineRequest.data.id])).rows[0].canceled_at);
  const path=`/approvals/${a.data.id}/decision`;
  assert.equal((await request('director',path,{decision:'approve'})).status,403);
  assert.equal((await request('anna',path,{decision:'approve'})).status,403);
  assert.equal((await request('admin',path,{decision:'approve'})).data.state,'approved');
- assert.equal((await db.pool.query('SELECT status FROM tasks WHERE id=$1',[id])).rows[0].status,'completed');
+ assert.deepEqual((await db.pool.query('SELECT status,deadline FROM tasks WHERE id=$1',[id])).rows[0],
+  {status:'completed',deadline:new Date(taskInput.deadline).toISOString()});
 });
 test('report snapshot is immutable and same-day generation is idempotent',async()=>{
  const a=await service.makeReport(users[0]);const b=await service.makeReport(users[0]);assert.equal(a.id,b.id);assert(a.rows.length>0);assert(a.rows.every(t=>t.status!=='completed'||a.summary?.activity.closedIds.includes(t.id)));

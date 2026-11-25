@@ -417,8 +417,11 @@ export function App(){
      {!viewingEmployee&&t.assignee_id===data!.user.id&&t.assignment_pending&&<button type="button" className="button secondary" onClick={()=>void openTask(t.id)}>Принять</button>}
      {!viewingEmployee&&t.status==='review'&&canReview(data!.user,t)&&approval?.type!=='deadline'&&(!approval?.clarification_requested_at||!!approval.clarification_answered_at)&&
       <button type="button" className="button primary" disabled={busy} onClick={()=>void act(`/tasks/${t.id}/review`,{action:'accept',comment:'',expectedVersion:t.version},'POST','Результат принят, задача завершена.')}>Принять результат</button>}
-     {!viewingEmployee&&canComplete(data!.user,t,data!.approvalScope)&&!approval&&!data!.pendingAssignmentIds?.includes(t.id)&&
+     {!viewingEmployee&&canComplete(data!.user,t,data!.approvalScope)&&approval?.type!=='completion'&&!data!.pendingAssignmentIds?.includes(t.id)&&
       <button type="button" className="button secondary" disabled={busy} onClick={()=>{setError('');setCompletingTask(t);}}>Завершить</button>}
+     {!viewingEmployee&&t.status==='active'&&approval?.type==='deadline'&&allowedRequest(data!.user,t)&&
+      !canComplete(data!.user,t,data!.approvalScope)&&!data!.pendingAssignmentIds?.includes(t.id)&&
+      <button type="button" className="button secondary" disabled={busy} onClick={()=>void openTask(t.id,'result')}>Сдать результат</button>}
     </div></td>
    </tr>;})}</tbody>
   </table></div>:<Empty>Задач с выбранными условиями нет. Попробуйте изменить фильтры.</Empty>;
@@ -508,8 +511,10 @@ export function App(){
  const myApprovals=pending.filter(a=>approvalTurn(a).userId===data.user.id);
  const scopedMetrics=summarize(matchingTasks,now,pendingTasks);
  const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.filter(t=>linkedIds||t.status!=='completed').length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(filter==='unaccepted'||matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'К принятию',count:matchingTasks.filter(t=>t.assignment_pending).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
- const cardApproval=detail?.approvals.some(a=>activeTaskApproval(detail.task,a));
- const cardCanComplete=!!detail&&!viewingEmployee&&!cardApproval&&!detail.personalPlan?.needsAcceptance&&canComplete(data.user,detail.task,detail.approvalScope);
+ const cardApproval=detail?.approvals.find(a=>activeTaskApproval(detail.task,a));
+ const cardCanComplete=!!detail&&!viewingEmployee&&cardApproval?.type!=='completion'&&!detail.personalPlan?.needsAcceptance&&canComplete(data.user,detail.task,detail.approvalScope);
+ const cardCanSubmit=!!detail&&!viewingEmployee&&!cardCanComplete&&!detail.personalPlan?.needsAcceptance&&
+  cardApproval?.type!=='completion'&&detail.task.status==='active'&&allowedRequest(data.user,detail.task);
  const title=page==='guide'?'Гайд':page==='notifications'?'Уведомления':nav.find(n=>n.id===page)?.label;
  const user=data.user;
  const guideEnabled=(area:Page)=>(!viewingEmployee||previewSections.has(area))&&canOpenWorkspacePage(user,area,data.analyticsAccess);
@@ -704,7 +709,7 @@ export function App(){
         {!cardApproval&&!viewingEmployee&&detail.task.status!=='completed'&&allowedRequest(data.user,detail.task)&&
          <button type="button" disabled={busy} className="button secondary" onClick={()=>setRequestType('deadline')}><CalendarDays size={15}/>Предложить новый срок</button>}
         {!cardApproval&&detail.task.status==='review'&&<button type="button" className="button primary" onClick={()=>setDrawerTab('result')}>К приёмке</button>}
-        {!cardApproval&&!cardCanComplete&&!viewingEmployee&&!detail.personalPlan?.needsAcceptance&&detail.task.status==='active'&&allowedRequest(data.user,detail.task)&&
+        {cardCanSubmit&&
          <button type="button" className="button secondary" onClick={()=>setDrawerTab('result')}>Сдать результат</button>}
        </div>
       </section>
@@ -740,9 +745,10 @@ export function App(){
      <TaskReminders readOnly={viewingEmployee} key={detail.task.id+data.user.id} task={detail.task} user={data.user} users={data.users}/>
     </section>}
     {drawerTab==='result'&&<>
-     {!viewingEmployee&&!cardApproval&&(detail.personalPlan?.needsAcceptance?
+     {!viewingEmployee&&(!cardApproval||detail.task.status==='active'&&cardApproval.type==='deadline')&&(detail.personalPlan?.needsAcceptance?
       <div className="task-card-section"><p>Перед сдачей результата примите задачу и выберите плановое время.</p><button type="button" className="button secondary" onClick={()=>setDrawerTab('info')}>К приёму задачи</button></div>:
-      <ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} scope={detail.approvalScope} busy={busy} act={act}/>)}
+      <ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} scope={detail.approvalScope}
+       withdrawsDeadline={cardApproval?.type==='deadline'} busy={busy} act={act}/>)}
      {detail.submissions.length?<section className="submission-history">{detail.submissions.map(s=><article key={s.id}>
       <strong>{s.restored_from?'Приёмка восстановлена после отмены':s.automatic?'Автоматическая сдача после приёмки поручений':'Сдача №'+s.round} · {({review:'Ожидает приёмки',returned:'Возвращена',accepted:'Принята'})[s.state]}</strong>
       <small>{userById(s.author_id)?.name} · {date(s.submitted_at,true)}</small><p>{s.result}</p>
@@ -764,6 +770,7 @@ export function App(){
   {commandPanel}
   {editor&&<TaskEditor key={editor.task?.id||editor.copyOf?.id||editor.parent?.id||editor.companyId||'new'} task={editor.task} copyOf={editor.copyOf} parent={editor.parent} companyId={editor.companyId} canLink={canUseOkb(data.user)} availableTasks={data.tasks} showPlanning={!!data.rules.showPlanning} users={data.users} user={data.user} busy={busy} saveError={error} save={async(path,body,method,message)=>{const saved=await act(path,body,method,message,editor.copyOf||editor.parent?id=>void openTask(id):undefined);if(saved)void refreshGroups().catch(()=>{});return saved;}} close={()=>setEditor(null)} onConditional={canOpenWorkspacePage(data.user,'processes')?draft=>{setProcessDraft(draft);setEditor(null);go('processes');}:undefined}/>}
   {completingTask&&<CompleteTaskDialog key={completingTask.id} task={completingTask} users={data.users} busy={busy} error={error}
+   withdrawsDeadline={data.approvals.some(approval=>approval.type==='deadline'&&activeTaskApproval(completingTask,approval))}
    close={()=>setCompletingTask(null)} save={comment=>act('/tasks/'+encodeURIComponent(completingTask.id)+'/review',
     {action:'complete',comment,expectedVersion:completingTask.version},'POST','Задача завершена')}/>}
   {toast&&<div className="toast" role="status"><CheckCheck size={18}/>{toast}</div>}
