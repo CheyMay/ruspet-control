@@ -285,26 +285,29 @@ async function chooseVoiceTask(u:User,ch:string,selection:VoiceSelection,db:Db,p
 export async function savedVoiceDraft(u:User,ch:string,inputId:string,db:Db=pool){
  return (await db.query('SELECT screen FROM bot_inputs WHERE actor_id=$1 AND channel=$2 AND input_id=$3',[u.id,ch,'voice:'+inputId])).rows[0]?.screen as BotScreen|undefined;
 }
-export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:string,at=new Date()):Promise<BotScreen>{
+export async function botVoiceDraft(u:User,ch:string,transcript:string,inputId:string,at=new Date(),source:'voice'|'text'='voice'):Promise<BotScreen>{
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
-  const cached=await savedVoiceDraft(u,ch,inputId,db);if(cached)return cached;
+  const key=(source==='voice'?'voice:':'text-draft:')+inputId;
+  const cached=(await db.query<{screen:BotScreen}>('SELECT screen FROM bot_inputs WHERE actor_id=$1 AND channel=$2 AND input_id=$3',[u.id,ch,key])).rows[0]?.screen;
+  if(cached)return cached;
   const existing=(await db.query('SELECT data FROM bot_sessions WHERE actor_id=$1 AND channel=$2 AND expires_at>now()',[u.id,ch])).rows[0]?.data as Dialog|undefined;
   const context=existing?.payload.op==='context'?existing.payload.id:undefined;
   const note=parseClientNote(transcript);
   const intent=note?null:parseVoiceIntent(transcript,at,context);
-  if(!note&&!intent&&existing&&!['context','search'].includes(existing.payload.op))return handleBotText(db,u,ch,transcript,'voice:'+inputId);
+  if(source==='voice'&&!note&&!intent&&existing&&!['context','search'].includes(existing.payload.op))return handleBotText(db,u,ch,transcript,key);
   let response:BotScreen;
   if(note)response=await draftClientNote(u,ch,note,db);
   else if(!intent){
-   response=await screen(u,ch,'Распознал: '+transcript.slice(0,600)+'\n\nНазовите действие и клиента или номер задачи. Например: «'+voiceExample+'»',[[button('Мои задачи','tasks'),button('Меню','home')]],db);
+   const help=source==='text'?'Укажите конкретное действие и, если нужно, название клиента или номер задачи.':'Распознал: '+transcript.slice(0,600)+'\n\nНазовите действие и клиента или номер задачи.';
+   response=await screen(u,ch,help+' Например: «'+voiceExample+'»',[[button('Мои задачи','tasks'),button('Меню','home')]],db);
   }else if(intent.id||intent.kind==='create_task'){
    response=await voiceActionDraft(u,ch,intent,db,at);
   }else{
    await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch]);
    response=await chooseVoiceTask(u,ch,{key:randomBytes(12).toString('hex'),intent,at:at.toISOString(),ids:[]},db);
   }
-  await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,'voice:'+inputId,JSON.stringify(response)]);
+  await db.query('INSERT INTO bot_inputs(actor_id,channel,input_id,screen) VALUES($1,$2,$3,$4)',[u.id,ch,key,JSON.stringify(response)]);
   return response;
  });
 }

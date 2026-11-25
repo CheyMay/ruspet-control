@@ -159,7 +159,7 @@ export async function taskBitrixResults(user:User,id:string,allowQueue=true){
  await taskFor(pool,id,user);
  return loadBitrixResults(id,allowQueue);
 }
-export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):Promise<BitrixDiscussion>{
+export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true,focus?:string):Promise<BitrixDiscussion>{
  await taskFor(pool,id,user);
  const portal=process.env.BITRIX_PORTAL;
  const origin=portal&&/^[a-z0-9.-]+$/i.test(portal)?'https://'+portal:null;
@@ -168,7 +168,7 @@ export async function taskBitrixDiscussion(user:User,id:string,allowQueue=true):
    WHERE task_id=$1 AND kind='comment' AND NOT EXISTS(
     SELECT 1 FROM bitrix_operations o WHERE o.task_id=a.task_id AND o.payload->>'kind'='comment'
     AND position('[ruspet:'||o.event_id::text||']' IN a.body)>0)
-   ORDER BY occurred_at DESC,external_id DESC LIMIT 100`,[id]),
+   ORDER BY (external_id::text=$2) DESC NULLS LAST,occurred_at DESC,external_id DESC LIMIT 100`,[id,focus??null]),
   pool.query<{external_id:string;state:string|null;stale:boolean|null}>(`SELECT l.external_id::text,q.state,q.updated_at<now()-interval '5 minutes' as stale FROM bitrix_task_links l
    LEFT JOIN bitrix_refresh_queue q ON q.portal=$2 AND q.resource='task_inbound_comments' AND q.external_id=l.external_id::text
    WHERE l.task_id=$1 AND NOT l.live_enabled`,[id,portal??null]),

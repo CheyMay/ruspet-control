@@ -1,4 +1,4 @@
-import {ArrowUpRight,Bell,BookOpen,CalendarDays,ChartNoAxesCombined,ArrowLeft,Users} from 'lucide-react';
+import {ArrowUpRight,Bell,BookOpen,CalendarDays,ChartNoAxesCombined,ArrowLeft,Search,Users} from 'lucide-react';
 import {useState,type ReactNode} from 'react';
 import type {User} from '../shared/types.js';
 import type {AnalyticsAccess} from '../shared/team-analytics.js';
@@ -10,7 +10,7 @@ import {PersonalCalendar} from './PersonalCalendar.js';
 import {WorkspaceGuide,WorkspaceTour} from './WorkspaceGuide.js';
 import type {TourStep} from './WorkspaceTraining.js';
 
-export function MobileWorkspace({user,refresh,unread,connectionNotice,calendarRefresh,analytics}:{user:User;refresh:()=>Promise<unknown>;unread:boolean;connectionNotice?:ReactNode;calendarRefresh:string;analytics?:AnalyticsAccess|null}){
+export function MobileWorkspace({user,refresh,unread,connectionNotice,calendarRefresh,analytics,onSearch}:{user:User;refresh:()=>Promise<unknown>;unread:boolean;connectionNotice?:ReactNode;calendarRefresh:string;analytics?:AnalyticsAccess|null;onSearch:()=>void}){
  const [screen,setScreen]=useState(()=>{const view=new URLSearchParams(location.search).get('view');return view==='notifications'||view==='calendar'||view==='guide'?view:'bot';});
  const [tour,setTour]=useState<{steps:TourStep[];index:number}|null>(null);
  const notices=screen==='notifications',calendar=screen==='calendar',guide=screen==='guide';
@@ -20,6 +20,7 @@ export function MobileWorkspace({user,refresh,unread,connectionNotice,calendarRe
   <header className="mobile-workspace-header">
    <div className="mobile-workspace-name">{(calendar||guide)&&<a href="/mobile" className="icon-button mobile-menu-link" aria-label="К рабочему боту"><ArrowLeft size={20}/></a>}<CapMark/><div><strong>РУСПЭТ</strong><small>{user.name}</small></div></div>
    <div className="mobile-workspace-links">
+    <button type="button" className="icon-button" aria-label="Команды и поиск" onClick={onSearch}><Search size={18}/></button>
     {!guide&&<a href="/?view=okb&full=1" className="icon-button" aria-label="Клиенты"><Users size={18}/></a>}
     {!guide&&analytics&&<a href="/?view=analytics" className="icon-button mobile-analytics-link" aria-label="Аналитика"><ChartNoAxesCombined size={18}/></a>}
     {!calendar&&<a href={user.root_access?'/time':'/mobile?view=calendar'} className="icon-button" aria-label="Мой календарь"><CalendarDays size={18}/></a>}

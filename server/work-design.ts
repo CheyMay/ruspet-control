@@ -182,7 +182,7 @@ export async function saveProcess(actor:User,body:unknown,existingId?:string){
 export async function listProcesses(actor:User){
  requireOkbAccess(actor);
  const items=(await pool.query('SELECT p.id,p.actor_id,p.name,p.definition,p.enabled,p.enabled_since,p.revision,p.published_revision,v.definition AS published_definition FROM business_processes p LEFT JOIN business_versions v ON v.process_id=p.id AND v.revision=p.published_revision ORDER BY p.created_at DESC LIMIT 100')).rows;
- const runs=(await pool.query(`SELECT r.process_id,r.branch,r.task_id,r.error,r.created_at,r.trace,r.process_revision,
+ const runs=(await pool.query(`SELECT r.process_id,r.event_id,r.branch,r.task_id,r.error,r.created_at,r.trace,r.process_revision,
   (SELECT json_agg(t.task_id ORDER BY t.task_id) FROM business_run_tasks t WHERE t.process_id=r.process_id AND t.event_id=r.event_id) AS task_ids
   FROM business_runs r ORDER BY created_at DESC LIMIT 30`)).rows;
  return {items,runs};

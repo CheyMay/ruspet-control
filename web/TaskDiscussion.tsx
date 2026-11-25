@@ -48,14 +48,15 @@ function bitrixText(body:string,origin:string|null,depth=0):ReactNode{
  return [...parts,body.slice(offset)];
 }
 
-function useBitrixContent<T extends {state:BitrixResults['state'];results?:BitrixResults}>(id:string,section:'discussion'|'results'){
+function useBitrixContent<T extends {state:BitrixResults['state'];results?:BitrixResults}>(id:string,section:'discussion'|'results',focus?:string){
  const [content,setContent]=useState<T|null>(null),[error,setError]=useState(false),[retry,setRetry]=useState(0);
  useEffect(()=>{
   let active=true,timer:ReturnType<typeof setTimeout>;
   async function load(){
    let delay=30000;
    try{
-    const result=await api<T>('/tasks/'+encodeURIComponent(id)+'/'+section,'GET',undefined,{timeout:10000});
+    const suffix=focus?'?focus='+encodeURIComponent(focus):'';
+    const result=await api<T>('/tasks/'+encodeURIComponent(id)+'/'+section+suffix,'GET',undefined,{timeout:10000});
     if(!active)return;
     setContent(result);setError(false);
     if(result.state==='pending'||result.results?.state==='pending')delay=4000;
@@ -64,7 +65,7 @@ function useBitrixContent<T extends {state:BitrixResults['state'];results?:Bitri
   }
   void load();
   return()=>{active=false;clearTimeout(timer);};
- },[id,section,retry]);
+ },[id,section,focus,retry]);
  return {content,error,reload:()=>setRetry(n=>n+1)};
 }
 
@@ -96,9 +97,13 @@ function ImportedResults({id,hasLocal}:{id:string;hasLocal:boolean}){
  </>;
 }
 
-export function TaskDiscussion({id,comments,users}:{id:string;comments:Comment[];users:User[]}){
- const {content:bitrix,error,reload}=useBitrixContent<BitrixDiscussion>(id,'discussion');
+export function TaskDiscussion({id,comments,users,focus}:{id:string;comments:Comment[];users:User[];focus?:string}){
+ const externalId=/^bitrix:([1-9]\d{0,17})$/.exec(focus??'')?.[1];
+ const {content:bitrix,error,reload}=useBitrixContent<BitrixDiscussion>(id,'discussion',externalId);
  const thread=useRef<HTMLDivElement>(null),pin=useRef(true),[showLatest,setShowLatest]=useState(false);
+ const target=useRef<HTMLLIElement>(null),shownFocus=useRef<string|undefined>(undefined);
+ const matchingResult=externalId?bitrix?.results?.items.find(result=>String(result.comment_id)===externalId):undefined;
+ const focusKey=matchingResult?'result:'+matchingResult.external_id:focus;
  function scrollToLatest(){
   const node=thread.current;
   if(node)node.scrollTop=node.scrollHeight;
@@ -106,8 +111,16 @@ export function TaskDiscussion({id,comments,users}:{id:string;comments:Comment[]
   setShowLatest(false);
  }
  useLayoutEffect(()=>{
+  if(focusKey&&focusKey!==shownFocus.current&&thread.current&&target.current){
+   const {current:node}=thread;
+   node.scrollTop+=target.current.getBoundingClientRect().top-node.getBoundingClientRect().top-12;
+   pin.current=false;shownFocus.current=focusKey;
+   setShowLatest(node.scrollHeight-node.scrollTop-node.clientHeight>=48);
+   return;
+  }
+  if(focusKey&&shownFocus.current!==focusKey)return;
   if(pin.current)scrollToLatest();
- },[comments,bitrix]);
+ },[comments,bitrix,focusKey]);
  const people=new Map(users.map(user=>[user.id,user.name]));
  const messages=discussionMessages(comments,id=>people.get(id)||'Сотрудник РУСПЭТ',bitrix);
  const status=error?'Не удалось загрузить обсуждение из Битрикс24.':!bitrix?'Загружаем обсуждение из Битрикс24…':
@@ -123,7 +136,7 @@ export function TaskDiscussion({id,comments,users}:{id:string;comments:Comment[]
    <ol className="discussion-messages">{messages.map(message=>{
     const external=message.source.includes('Битрикс24');
     const initials=message.author.trim().split(/\s+/).slice(0,2).map(part=>part[0]).join('').toUpperCase();
-    return <li className="discussion-message" key={message.key}>
+    return <li className="discussion-message" key={message.key} ref={message.key===focusKey?target:undefined} data-search-hit={message.key===focusKey||undefined}>
      <span aria-hidden="true" className={'discussion-avatar'+(external?' bitrix':'')}>{initials}</span>
      <div className="discussion-note"><div className="discussion-meta"><strong>{message.author}</strong><span className="discussion-source">{message.source}</span>
       {message.at&&<time dateTime={message.at} title="Московское время">{messageTime.format(new Date(message.at))}</time>}</div>

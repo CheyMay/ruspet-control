@@ -7,7 +7,10 @@ import {CompanyPicker} from './TaskComposeTools.js';
 import {Fragment,useEffect,useState,type FormEvent} from 'react';
 import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
-import type {User} from '../shared/types.js';
+import {activeTaskApproval} from '../shared/actions.js';
+import {elapsedToday,taskQueue} from '../shared/queues.js';
+import {taskNumber} from '../shared/task-number.js';
+import type {Approval,Task,User} from '../shared/types.js';
 
 export const companyStates={prospect:'Потенциальный клиент',active:'В работе',former:'Бывший клиент',unclassified:'Не указан'} as const;
 type CompanyState=keyof typeof companyStates;
@@ -95,11 +98,12 @@ const conditionFields:Record<string,string>={'company.status':'Новый ста
 const operators:Record<string,string>={'=':'равно','!=':'не равно',contains:'содержит',exists:'заполнено'};
 type Definition={monitor?:{subjectId:string;everyMinutes:number};graph?:ProcessGraph;trigger?:Trigger;companyId?:string|null;quietDays?:number;description?:string;customFields?:ProcessDraft['customFields'];name:string;field:string;operator:string;value:string;branch:'yes'|'no';title:string;assigneeId:string;price:number;deadlineHours:number|null};
 type Process={id:string;name:string;definition:Definition;enabled:boolean;enabled_since:string|null;revision:number;published_revision:number|null;published_definition:Definition|null};
-type Run={process_id:string;branch:'yes'|'no';task_id:string|null;error:string|null;created_at:string;process_revision:number|null;task_ids:string[]|null;trace:Trace[]|null};
+type Run={process_id:string;event_id:string;branch:'yes'|'no';task_id:string|null;error:string|null;created_at:string;process_revision:number|null;task_ids:string[]|null;trace:Trace[]|null};
 type Preview={branch:'yes'|'no';title:string|null;titles?:string[];trace?:Trace[];notices?:string[];subject?:string};
 export type ProcessDraft={companyId?:string|null;title:string;assigneeId:string;price:number;description:string;customFields:{label:string;value:string}[]};
 
-export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft:ProcessDraft|null;open:(id:string)=>void}){
+export function WorkDesign({user,users,draft,open,tasks,approvals,serverTime}:{user:User;users:User[];draft:ProcessDraft|null;
+ open:(id:string)=>void;tasks:Task[];approvals:Approval[];serverTime:string}){
  const [schedules,setSchedules]=useState<Schedule[]|null>(null),[processes,setProcesses]=useState<{items:Process[];runs:Run[]}|null>(null);
  const [reload,setReload]=useState(0),[busy,setBusy]=useState(false),[error,setError]=useState(''),[notice,setNotice]=useState('');
  const [operator,setOperator]=useState('='),[field,setField]=useState('company.status'),[branch,setBranch]=useState<'yes'|'no'>('yes'),[preview,setPreview]=useState<Preview|null>(null);
@@ -116,6 +120,11 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
   void api<Company>('/okb/companies/'+activation.definition.companyId).then(row=>{if(active)setActivationCompany(row);}).catch(()=>{});
   return()=>{active=false;};
  },[activation]);
+ const taskIndex=new Map(tasks.map(task=>[task.id,task]));
+ const pending=new Set(approvals.filter(a=>{const task=taskIndex.get(a.task_id);return task&&activeTaskApproval(task,a);}).map(a=>a.task_id));
+ const timestamp=new Date(serverTime);
+ const runTaskState=(task:Task)=>task.status==='completed'?'Завершена':pending.has(task.id)?'На согласовании':task.status==='review'?'На приёмке':
+  taskQueue(task,timestamp)==='overdue'||elapsedToday(task,timestamp)?'Просрочена':task.assignment_pending?'Ждёт принятия':'В работе';
  const template=editing?.definition??draft;
  const canProcess=canUseOkb(user);
  useEffect(()=>{
@@ -223,10 +232,19 @@ export function WorkDesign({user,users,draft,open}:{user:User;users:User[];draft
     {p.enabled&&<button className="button secondary" disabled={busy} onClick={()=>void toggle('/work-design/processes/'+p.id,false,p.revision)}>Остановить</button>}
     {(!p.enabled||p.revision!==p.published_revision)&&<button className="button primary" disabled={busy} onClick={()=>{setError('');setActivation(p);}}>
      {p.enabled?'Опубликовать версию':'Включить процесс'}</button>}</div></div>)}
-   {!!processes?.runs.length&&<details className="automation-log"><summary>Журнал последних запусков</summary>{processes.runs.map((r,i)=><details className="automation-log" key={r.process_id+i}>
+   {!!processes?.runs.length&&<details className="automation-log"><summary>Последние запуски и их задачи</summary>{processes.runs.map(r=><details className="automation-log" key={r.process_id+':'+r.event_id}>
     <summary>{moscowTimestamp(r.created_at)} · {processes.items.find(p=>p.id===r.process_id)?.name} {r.process_revision?'· версия '+r.process_revision:''}</summary>
     {r.error?<p className="red-text">{r.error}</p>:!r.task_id&&<p>Маршрут завершился без задачи.</p>}
-    {(r.task_ids??(r.task_id?[r.task_id]:[])).map(id=><button className="text-button" key={id} onClick={()=>open(id)}>#{id}</button>)}
+    {(r.task_ids??(r.task_id?[r.task_id]:[])).flatMap(id=>{
+     const task=taskIndex.get(id);
+     if(!task)return [];
+     const state=runTaskState(task);
+     return [<article className="automation-run" key={id}><div>
+      <button type="button" className="text-button" onClick={()=>open(id)}>#{taskNumber(task)} · {task.title}</button>
+      <p>{state} · {users.find(person=>person.id===task.assignee_id)?.name??'Исполнитель не указан'}
+       {task.deadline?' · До '+moscowTimestamp(task.deadline)+' МСК':''}</p>
+     </div></article>];
+    })}
     {r.trace&&<ol>{r.trace.map(step=><li key={step.nodeId}>{step.label}{step.branch?' → '+(step.branch==='yes'?'Да':'Нет'):''}</li>)}</ol>}
    </details>)}</details>}
   </section>}

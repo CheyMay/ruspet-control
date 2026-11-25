@@ -47,6 +47,7 @@ import { fileURLToPath } from 'node:url';
 import { z, ZodError } from 'zod';
 import { pool } from './db.js';
 import {resolveTaskNumber} from './task-numbers.js';
+import {workspaceSearch,workspaceSearchInput} from './workspace-search.js';
 import { AppError, assert } from './domain.js';
 import * as service from './service.js';
 import {accessDirectory,systemStatus} from './system-status.js';
@@ -68,7 +69,7 @@ const rules=z.object({requiredPrice:z.boolean().optional(),showPlanning:z.boolea
 const reportView=z.enum(['mine','created','team','company']);
 const reportParameters=z.object({view:reportView.optional(),actorId:z.string().max(100).optional(),from:date.optional(),to:date.optional(),assigneeId:z.string().max(100).optional(),creatorId:z.string().max(100).optional(),priceBand:z.enum(['low','medium','high','premium','unknown']).optional(),queue:z.enum(['all','front','overdue','today','review','completed','no_deadline']).optional()});
 const viewAsHeader='X-Ruspet-View-As';
-const viewAsReads=new Set(['/bootstrap','/journal','/management/progress','/alerts','/delegations','/reports']);
+const viewAsReads=new Set(['/bootstrap','/journal','/management/progress','/alerts','/delegations','/reports','/workspace-search']);
 const viewAsTaskRead=/^\/tasks\/[^/]+(?:\/(?:integration|delegation|reminders|discussion|results))?$/;
 const viewAsReportRead=/^\/reports\/[a-f0-9-]{36}$/i;
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
@@ -145,6 +146,10 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   res.setHeader('Cache-Control','no-store');
   res.json(await lastUndo(req.actor,z.string().min(1).max(100).optional().parse(req.query.taskId)));
  });
+ app.get('/api/workspace-search',compress,async(req,res)=>{
+  const input=workspaceSearchInput.parse(req.query);
+  res.json(await workspaceSearch(req.actor,input,req.get(viewAsHeader)!==undefined));
+ });
  app.get('/api/journal',async(req,res)=>res.json(await listJournal(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),actor:z.string().max(100).optional(),kind:z.string().max(100).optional(),q:z.string().max(200).optional(),page:z.coerce.number().int().min(0).max(10000).default(0)}).parse(req.query))));
  app.post('/api/undo',async(req,res)=>{const input=z.object({id:z.uuid(),confirmed:z.literal(true)}).parse(req.body);res.json(await undoLastAction(req.actor,input.id));});
  app.get('/api/tasks/:id/staff-undo',async(req,res)=>{
@@ -172,7 +177,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  });
  app.get('/api/tasks/:id/bitrix-activity',async(req,res)=>{assert(req.actor.role==='admin',403,'История интеграции доступна администратору.');res.json((await pool.query('SELECT kind,external_id,occurred_at,author,body FROM bitrix_task_activity WHERE task_id=$1 AND kind=$2 ORDER BY occurred_at DESC,external_id DESC LIMIT 100',[req.params.id,req.query.kind==='history'?'history':'comment'])).rows);});
  app.get('/api/tasks/:id/discussion',compress,async(req,res)=>res.json(
-  await service.taskBitrixDiscussion(req.actor,String(req.params.id),req.get(viewAsHeader)===undefined)));
+  await service.taskBitrixDiscussion(req.actor,String(req.params.id),req.get(viewAsHeader)===undefined,z.string().regex(/^[1-9]\d{0,17}$/).optional().parse(req.query.focus))));
  app.get('/api/tasks/:id/results',compress,async(req,res)=>res.json(
   await service.taskBitrixResults(req.actor,String(req.params.id),req.get(viewAsHeader)===undefined)));
  app.get('/api/tasks/:id/integration',async(req,res)=>res.json(await taskIntegration(req.actor,String(req.params.id))));
@@ -264,6 +269,10 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  });
  app.post('/api/bot/click',async(req,res)=>res.json(await botClick(req.actor,webBotChannel(req),z.object({token:z.string().max(64)}).parse(req.body).token)));
  app.post('/api/bot/text',async(req,res)=>{const input=z.object({text:z.string().min(1).max(4000),inputId:z.uuid()}).parse(req.body);res.json(await botText(req.actor,webBotChannel(req),input.text,input.inputId));});
+ app.post('/api/bot/text-draft',async(req,res)=>{
+  const {text,inputId}=z.object({text:z.string().trim().min(1).max(4000),inputId:z.uuid()}).parse(req.body);
+  res.json(await botVoiceDraft(req.actor,webBotChannel(req),text,inputId,new Date(),'text'));
+ });
  app.get('/api/bot/voice',async(req,res)=>res.json({enabled:voiceEnabled('web',req.actor.id)}));
  app.post('/api/bot/voice',express.raw({type:['audio/*','video/mp4'],limit:voiceMaxBytes,inflate:false}),async(req,res)=>{
   assert(voiceEnabled('web',req.actor.id),409,'Голосовые команды пока недоступны. Можно написать ответ текстом.');

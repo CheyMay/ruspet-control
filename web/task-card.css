@@ -43,6 +43,7 @@
 .discussion-latest { margin-top:8px; }
 .discussion-messages { list-style:none; padding:0; margin:0; display:grid; gap:12px; }
 .discussion-message { display:flex; align-items:flex-start; gap:10px; min-width:0; }
+.discussion-message[data-search-hit] .discussion-note { outline:2px solid var(--green); outline-offset:2px; }
 .discussion-avatar {
  display:grid; place-items:center; flex:none; width:32px; height:32px; border-radius:50%;
  background:var(--theme-surface-raised); color:var(--theme-text-secondary); font-size:12px; font-weight:650;

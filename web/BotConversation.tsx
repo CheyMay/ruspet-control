@@ -8,14 +8,15 @@ import {TaskRoleSwitch} from './TaskRoleSwitch.js';
 import type {PersonalTaskScope} from '../shared/types.js';
 
 type Entry='home'|'tasks'|'notices'|'inbox'|'search_prompt';
-type Props={mobile?:boolean;initial?:Entry;refresh:()=>Promise<unknown>};
+type Props={mobile?:boolean;initial?:Entry;textDraft?:boolean;refresh:()=>Promise<unknown>};
 
-export function BotConversation({mobile=false,initial='home',refresh}:Props){
+export function BotConversation({mobile=false,initial='home',textDraft=false,refresh}:Props){
  const [view,setView]=useState<BotScreen|null>(null),[text,setText]=useState(''),[busy,setBusy]=useState(false);
  const [error,setError]=useState(''),[voice,setVoice]=useState(false);
+ const [enterDraft,setEnterDraft]=useState(textDraft);
  const active=useRef(false);
  const revision=useRef(0);
- const pendingText=useRef<{text:string;id:string}|null>(null);
+ const pendingText=useRef<{text:string;id:string;draft:boolean}|null>(null);
  const query=mobile?'?channel=mobile':'';
  const field=useRef<HTMLTextAreaElement|null>(null);
  const message=useRef<HTMLDivElement|null>(null);
@@ -31,6 +32,7 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
   api<{enabled:boolean}>('/bot/voice','GET',undefined,{timeout:10000}).then(status=>{if(mounted)setVoice(status.enabled);}).catch(()=>{});
   return()=>{mounted=false;};
  },[query,initial]);
+ useEffect(()=>{setEnterDraft(textDraft);if(textDraft)field.current?.focus({preventScroll:true});},[textDraft]);
  async function run(path:string,body:unknown,focus=false){
   if(active.current)return false;
   revision.current++;
@@ -39,6 +41,7 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
    const next=await api<BotScreen>(path+query,'POST',body,{timeout:15000});
    pendingText.current=null;
    setView(next);setText('');
+   if(path==='/bot/text-draft')setEnterDraft(false);
    if(focus)window.requestAnimationFrame(()=>field.current?.focus());
    else if(mobile)window.requestAnimationFrame(()=>message.current?.scrollIntoView({block:'start'}));
    if(next.buttons.flat().some(button=>button.text==='Отменить последнее действие'||button.text==='К задаче'))void refresh().catch(()=>{});
@@ -51,12 +54,12 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
   finally{active.current=false;setBusy(false);}
  }
  function open(screen:Entry,scope?:PersonalTaskScope){void run('/bot/screen',{screen,scope},screen==='search_prompt');}
- function sendText(){
+ function sendText(draft=false){
   if(active.current||!text.trim())return;
   const previous=pendingText.current;
-  const id=previous?.text===text?previous.id:crypto.randomUUID();
-  pendingText.current={text,id};
-  void run('/bot/text',{text,inputId:id});
+  const id=previous?.text===text&&previous.draft===draft?previous.id:crypto.randomUUID();
+  pendingText.current={text,id,draft};
+  void run(draft?'/bot/text-draft':'/bot/text',{text,inputId:id});
  }
  async function sendVoice(audio:Blob,id:string){
   if(active.current)throw new Error('Дождитесь ответа бота.');
@@ -87,11 +90,12 @@ export function BotConversation({mobile=false,initial='home',refresh}:Props){
    {view?.links?.filter(link=>!mobile||link.text!=='Войти на сайт').map(link=><a key={link.url} className="text-button" href={link.url} target="_blank" rel="noreferrer">{link.text}</a>)}
    {view&&<div className="bot-buttons">{view.buttons.map((row,i)=><div key={i}>{row.map(b=><button disabled={busy} key={b.token} onClick={()=>void run('/bot/click',{token:b.token},b.text==='Поиск')}>{b.text}</button>)}</div>)}</div>}
    {error&&<div className="alert error" role="alert"><span>{error}</span>{!view&&<button className="button secondary" disabled={busy} onClick={()=>open(initial)}>Повторить</button>}</div>}
-   <form className="bot-compose" onSubmit={event=>{event.preventDefault();sendText();}}>
-    <textarea ref={field} aria-label="Ответ боту" value={text} maxLength={4000} onChange={event=>setText(event.target.value)} placeholder="Ответ или номер задачи…"/>
+   <form className="bot-compose" onSubmit={event=>{event.preventDefault();sendText(enterDraft);}}>
+    <textarea ref={field} aria-label="Ответ боту" value={text} maxLength={4000} onChange={event=>setText(event.target.value)} placeholder={enterDraft?'Вставьте поручение или напишите команду…':'Ответ, номер задачи или поручение…'}/>
     <div className="bot-compose-actions">
      {!mobile&&voice&&<VoiceRecorder disabled={busy} onSend={sendVoice}/>}
-     <button className="button primary" disabled={busy||!text.trim()}><Send size={16}/> {busy?'Подождите…':'Отправить'}</button>
+     <button className="button primary" disabled={busy||!text.trim()}><Send size={16}/> {busy?'Подождите…':enterDraft?'Подготовить действие':'Отправить'}</button>
+     {!enterDraft&&<button type="button" className="button secondary" disabled={busy||!text.trim()} onClick={()=>sendText(true)}>Разобрать как команду</button>}
     </div>
    </form>
   </div>

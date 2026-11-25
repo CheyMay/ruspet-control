@@ -25,6 +25,7 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
  const [typeParam,setType]=useSectionParam('approval-kind');
  const type=typeParam==='deadline'||typeParam==='completion'?typeParam:null;
  const [from,setFrom]=useState(''),[to,setTo]=useState(''),[status,setStatus]=useState('all'),[limit,setLimit]=useState(12);
+ const [quickIds,setQuickIds]=useState<string[]|null>(null);
  const waiting=(a:Approval)=>!!a.clarification_requested_at&&!a.clarification_answered_at;
  useEffect(()=>{if(!readOnly)void api('/approvals/history-refresh','POST',{}, {timeout:8000}).catch(()=>{});},
   [data.user.id,readOnly]);
@@ -64,6 +65,13 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
  });
  const selectedType=type??(startOnMine||items.some(a=>a.type==='deadline')?'deadline':'completion');
  const queue=items.filter(a=>a.type===selectedType);
+ const quickQueue=section==='mine'&&!readOnly?queue.filter(a=>!a.task_change?.routeIssue&&
+  (!a.deferred_until||Date.parse(a.deferred_until)<=Date.parse(data.serverTime))):[];
+ if(quickIds&&section==='mine'&&!readOnly){
+  const selectedIds=new Set(quickIds);
+  return <QuickApprovals initialCount={quickIds.length} items={quickQueue.filter(a=>selectedIds.has(a.id))}
+   render={render} close={()=>setQuickIds(null)}/>;
+ }
  const filtered=!!(query||owner!=='all'||actor!=='all'||from||to||status!=='all');
  const openStates=section!=='history';
  return <>
@@ -99,6 +107,7 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
    </details>
    {filtered&&<button type="button" className="text-button" onClick={()=>{setQuery('');setOwner('all');setActor('all');setStatus('all');setFrom('');setTo('');setLimit(12);}}>Сбросить</button>}
    <span className="muted">Найдено {queue.length}</span>
+   {quickQueue.length>0&&<button type="button" className="button primary" onClick={()=>setQuickIds(quickQueue.map(a=>a.id))}>Быстрая обработка</button>}
   </div></section>
   <div className="approval-list">{queue.slice(0,limit).map(a=><div key={a.id}>{render(a)}</div>)}
    {queue.length>limit&&<button type="button" className="button secondary" onClick={()=>setLimit(limit+12)}>Показать ещё · {Math.min(queue.length-limit,12)}</button>}
@@ -106,4 +115,37 @@ export function ApprovalWorkspace({data,render,readOnly=false,startOnMine=false}
     <p>{filtered?'Проверьте поиск, сотрудника и даты.':section==='mine'?'Другие доступные запросы есть во вкладке «Все открытые».':'Выберите другой тип согласования или вкладку.'}</p></section>}
   </div>
  </>;
+}
+
+function QuickApprovals({items,initialCount,render,close}:{
+ items:Approval[];initialCount:number;render:(approval:Approval)=>ReactNode;close:()=>void;
+}){
+ const [selected,setSelected]=useState<string>();
+ const index=Math.max(0,items.findIndex(a=>a.id===selected));
+ const current=items[index];
+ function move(delta:number){
+  const next=items[(index+delta+items.length)%items.length];
+  if(next)setSelected(next.id);
+ }
+ useEffect(()=>{
+  if(items.length<2)return;
+  const key=(event:KeyboardEvent)=>{
+   if(!event.altKey||!['ArrowLeft','ArrowRight'].includes(event.key))return;
+   event.preventDefault();move(event.key==='ArrowLeft'?-1:1);
+  };
+  window.addEventListener('keydown',key);
+  return()=>window.removeEventListener('keydown',key);
+ },[items,index]);
+ return <div className="approval-list">
+  <section className="panel director-approval-panel">
+   <h2>Быстрая обработка</h2>
+   <p role="status">{items.length?'Осталось '+items.length+' из '+initialCount:'Очередь обработана'}</p>
+   <div className="task-card-buttons">
+    <button type="button" className="button secondary" onClick={close}>К списку</button>
+    {items.length>1&&<><button type="button" className="button secondary" onClick={()=>move(-1)}>Предыдущий</button>
+     <button type="button" className="button secondary" onClick={()=>move(1)}>Следующий</button></>}
+   </div>
+  </section>
+  {current&&<div key={current.id}>{render(current)}</div>}
+ </div>;
 }
