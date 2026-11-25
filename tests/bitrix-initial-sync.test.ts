@@ -79,6 +79,7 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   if(method==='user.get')return [{ID:'202',NAME:employee.name},{ID:'201',NAME:admin.name}] as T;
   if(method==='im.dialog.messages.get')return {messages:[{id:1234,date:baseline.created_at,text:'Обсуждение переназначенной задачи'}],users:[]} as T;
   if(method==='tasks.task.list'){
+   if(params.filter.ID?.includes('9007'))return {tasks:[{...task('9007'),status:'2',createdDate:baseline.created_at}]} as T;
    if(params.filter.ID)return {tasks:[{id,changedDate:baseline.created_at}]} as T;
    if(params.filter['>=CHANGED_DATE']){
     assert.equal(params.filter['>=CHANGED_DATE'],'2026-11-02T00:00:00Z');
@@ -158,6 +159,14 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   assert.equal((await db.pool.query("SELECT count(*)::int n FROM tasks WHERE id='9005'")).rows[0].n,1);
   assert.deepEqual(await inbound.discoverInboundTasks(inboundRequest,'2026-11-02T00:00:00Z',undefined,'changed'),{owners:2,queued:1});
   assert.equal((await inbound.tickInboundTasks(inboundRequest))?.id,'9006');
+  assert.deepEqual(await inbound.backfillInboundTasks(inboundRequest,['9007']),{
+   restored:1,alreadyPresent:0,ignored:0,inaccessible:[],failed:[]
+  });
+  assert.deepEqual(await inbound.backfillInboundTasks(inboundRequest,['9007']),{
+   restored:0,alreadyPresent:1,ignored:0,inaccessible:[],failed:[]
+  });
+  assert.equal((await db.pool.query("SELECT status FROM tasks WHERE id='9007'")).rows[0].status,'active');
+  assert.equal((await db.pool.query("SELECT count(*)::int n FROM outbox WHERE task_id='9007'")).rows[0].n,0);
   await db.pool.query(`INSERT INTO bitrix_task_activity(task_id,kind,external_id,occurred_at,author,body)
    VALUES($1,'comment','708',now(),'Сотрудник Битрикса','[B]Текст обсуждения[/B]'),
          ($1,'history','709',now(),'Сотрудник Битрикса','Служебная запись')`,[id]);
@@ -182,7 +191,7 @@ test('outgoing webhook refreshes exported tasks one way and preserves concurrent
   delete process.env.BITRIX_INBOUND_AUTHORITATIVE;
   delete process.env.BITRIX_INBOUND_NEW_TASKS;
   await db.pool.query('DELETE FROM bitrix_task_activity WHERE task_id=ANY($1)',[[id,'9004','9005']]);
-  await db.pool.query("DELETE FROM bitrix_task_links WHERE task_id=ANY($1)",[[id,'9002','9003','9004','9005','9006']]);
+  await db.pool.query("DELETE FROM bitrix_task_links WHERE task_id=ANY($1)",[[id,'9002','9003','9004','9005','9006','9007']]);
   await db.pool.query('DELETE FROM bitrix_user_links WHERE user_id=ANY($1)',[[admin.id,employee.id]]);
   await db.pool.query("DELETE FROM staff_directory WHERE source_key='fixture-inbound'");
  }

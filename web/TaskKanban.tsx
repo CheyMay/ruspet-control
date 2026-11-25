@@ -1,6 +1,6 @@
 import {taskNumber} from '../shared/task-number.js';
 import {useEffect,useLayoutEffect,useRef,useState,type DragEvent} from 'react';
-import {ArrowLeft,ArrowRight,CalendarClock,CalendarDays,Columns3,List} from 'lucide-react';
+import {ArrowLeft,ArrowRight,CalendarClock,CalendarDays,Columns3,List,UserRoundPen} from 'lucide-react';
 import {suggestedBoardDeadline,taskBoard,type TaskLaneId} from '../shared/task-board.js';
 import {formatPrice,taskPrice} from '../shared/pricing.js';
 import type {Task,User} from '../shared/types.js';
@@ -18,13 +18,17 @@ export function TaskViewSwitch({board,change}:{board:boolean;change:(view:'list'
  </div>;
 }
 
-function TaskBoardCard({task,names,now,open,startDrag,endDrag}:{task:Task;names:ReadonlyMap<string,string>;now:Date;open:(id:string)=>void;
+function TaskBoardCard({task,names,viewerId,now,open,startDrag,endDrag}:{task:Task;names:ReadonlyMap<string,string>;viewerId:string;now:Date;open:(id:string)=>void;
  startDrag?: (event:DragEvent<HTMLButtonElement>)=>void;endDrag:()=>void}){
  const deadline=task.deadline?new Date(task.deadline):null;
  const valid=deadline&&Number.isFinite(+deadline);
  const due=valid?(year.format(now)===year.format(deadline)?shortDate:fullDate).format(deadline):null;
+ const myRole=task.creator_id!==viewerId?null:task.assignee_id===viewerId?'Я постановщик и исполнитель':'Я постановщик';
  return <button type="button" className="kanban-card" draggable={!!startDrag} onDragStart={startDrag} onDragEnd={endDrag} onClick={()=>open(task.id)}>
-  <span className="kanban-card-reference"><span>#{taskNumber(task)}</span>{taskPrice(task)!==null&&<span>{formatPrice(task)}</span>}</span>
+  <span className="kanban-card-reference"><span>#{taskNumber(task)}</span><span className="kanban-card-meta">
+   {taskPrice(task)!==null&&<span>{formatPrice(task)}</span>}
+   {myRole&&<span className="kanban-card-creator" role="img" aria-label={myRole} title={myRole}><UserRoundPen size={15} aria-hidden="true"/></span>}
+  </span></span>
   <strong>{task.title}</strong>
   {(task.assignment_pending||task.priority==='high'||task.critical)&&<span className="task-flags">
    {task.assignment_pending&&<small>Не принята</small>}{task.priority==='high'&&<small>Высокий приоритет</small>}{task.critical&&<small>Критичная</small>}
@@ -38,7 +42,7 @@ function TaskBoardCard({task,names,now,open,startDrag,endDrag}:{task:Task;names:
  </button>;
 }
 
-export function TaskKanban({tasks,users,now,pending,filtered,open,canMove,move}:{tasks:Task[];users:User[];now:Date;
+export function TaskKanban({tasks,users,viewerId,now,pending,filtered,open,canMove,move}:{tasks:Task[];users:User[];viewerId:string;now:Date;
  pending:ReadonlySet<string>;filtered:boolean;open:(id:string)=>void;canMove:(task:Task)=>boolean;move:(task:Task,deadline?:string)=>void}){
  const board=useRef<HTMLDivElement>(null);
  const edge=useRef(0);
@@ -117,7 +121,7 @@ export function TaskKanban({tasks,users,now,pending,filtered,open,canMove,move}:
       <ul>{columnTasks.slice(0,shown).map(task=>{
        const movable=canMove(task);
        return <li key={task.id} data-movable={movable||undefined} data-dragging={drag?.task.id===task.id||undefined}>
-        <TaskBoardCard task={task} names={names} now={now} open={open} endDrag={endDrag}
+        <TaskBoardCard task={task} names={names} viewerId={viewerId} now={now} open={open} endDrag={endDrag}
          startDrag={movable?event=>{event.dataTransfer.effectAllowed='move';event.dataTransfer.setData('text/plain',task.id);setDrag({task,from:id});}:undefined}/>
         {movable&&<button type="button" className="icon-button kanban-move" title="Перенести срок"
          aria-label={'Перенести срок задачи '+task.id} onClick={()=>move(task)}><CalendarClock size={17}/></button>}

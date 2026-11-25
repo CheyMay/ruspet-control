@@ -6,15 +6,15 @@ import {assert,AppError} from '../server/domain.js';
 import {bitrixClient,BitrixError,inboundTransportAllowed} from '../server/bitrix-rest.js';
 import {bitrixId} from '../server/bitrix-sync.js';
 import {readEventToken,taskWebhookEvents} from '../server/bitrix-events.js';
-import {discoverInboundTasks,enqueueInboundSnapshot,reconcileInboundTasks,tickInboundTasks} from '../server/bitrix-inbound.js';
+import {backfillInboundTasks,discoverInboundTasks,enqueueInboundSnapshot,reconcileInboundTasks,tickInboundTasks} from '../server/bitrix-inbound.js';
 
 let stopped=false;
 for(const signal of ['SIGINT','SIGTERM'] as const)process.once(signal,()=>{stopped=true;});
 try{
- const {positionals,values}=parseArgs({allowPositionals:true,options:{id:{type:'string'},since:{type:'string'},comments:{type:'boolean'},owner:{type:'string'},changed:{type:'boolean'}}});
+ const {positionals,values}=parseArgs({allowPositionals:true,options:{id:{type:'string'},ids:{type:'string'},since:{type:'string'},comments:{type:'boolean'},owner:{type:'string'},changed:{type:'boolean'}}});
  const [command]=positionals;
  const id=values.id;
- assert(positionals.length===1&&(!id||bitrixId(id)),400,'Команды: status, prepare, verify --id ID, enqueue [--id ID], discover --since DATE [--changed], watch.');
+ assert(positionals.length===1&&(!id||bitrixId(id)),400,'Команды: status, prepare, verify --id ID, enqueue [--id ID], discover --since DATE [--changed], backfill --ids ID,ID, watch.');
  const portal=process.env.BITRIX_PORTAL;
  assert(portal,400,'Укажите BITRIX_PORTAL.');
  if(command==='status'){
@@ -53,6 +53,9 @@ try{
   }else if(command==='discover'){
    assert(process.env.BITRIX_INBOUND_NEW_TASKS==='true'&&values.since,400,'Включите приём новых задач и укажите --since с часовым поясом.');
    console.log({discovery:await discoverInboundTasks(request,values.since,values.owner,values.changed?'changed':'created')});
+  }else if(command==='backfill'){
+   assert(process.env.BITRIX_INBOUND_NEW_TASKS==='true'&&values.ids,400,'Включите приём задач и укажите --ids.');
+   console.log(JSON.stringify(await backfillInboundTasks(request,values.ids.split(','))));
   }else if(command==='watch'){
    let nextSnapshot=Date.now()+10*60*1000;
    while(!stopped){

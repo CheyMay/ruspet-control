@@ -62,7 +62,7 @@ async function peopleFor(request:BitrixRequest,raw:Record<string,unknown>,db:Db=
  assert(new Set(known.values()).size===known.size,409,'В справочнике один сотрудник связан с несколькими ID Битрикс24.');
  return known;
 }
-async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=false){
+async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=false,historical=false){
  const remote=remoteTask(raw);
  if(await linkCreatedTaskFromEvent(request.portal!,raw))return {changed:false,conflict:false,linkedCreation:true};
  if(adopt&&remote.responsibleId){
@@ -88,6 +88,7 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
   await lockDelegationChain(db,id);
   const task=(await db.query<Task>('SELECT * FROM tasks WHERE id=$1 FOR UPDATE',[id])).rows[0];
   const link=(await db.query('SELECT * FROM bitrix_task_links WHERE task_id=$1 FOR UPDATE',[id])).rows[0];
+  if(task&&historical)return {changed:false,conflict:false};
   assert(task?(link?String(link.external_id)===remote.id&&!link.live_enabled:String(task.source_fields?.ID)===id):adopt&&!link,
    409,'Связь задачи с исходной выгрузкой не подтверждена.');
   const sourceDate=readDate(raw,'CREATED_DATE');
@@ -114,8 +115,9 @@ async function applyTask(request:BitrixRequest,raw:Record<string,unknown>,adopt=
    await db.query('INSERT INTO bitrix_task_links(task_id,external_id,baseline,linked_version,checked_at) VALUES($1,$2,$3,$4,now())',
     [id,remote.id,JSON.stringify({...baseline,inbound:baseline}),created.version]);
    await resumeInboundDiscussion(db,request.portal!,remote.id);
-   await event(db,id,null,'imported','Новая задача получена из Битрикс24',{source:'bitrix24',initialSnapshot:created});
-   if(created.status==='active')await notifyTaskAssignment(db,created,created.creator_id);
+   await event(db,id,null,'imported',historical?'Задача восстановлена при сверке с Битрикс24':'Новая задача получена из Битрикс24',
+    {source:'bitrix24',initialSnapshot:created});
+   if(!historical&&created.status==='active')await notifyTaskAssignment(db,created,created.creator_id);
    await refreshTaskFindings(db,created,owner);
    return {changed:true,conflict:false,created:true};
   }
@@ -191,6 +193,42 @@ export async function enqueueInboundSnapshot(portal:string,id?:string,comments=f
   ON CONFLICT(portal,resource,external_id) DO UPDATE SET generation=bitrix_refresh_queue.generation+1,
   state='pending',retry_at=NULL,error=NULL,updated_at=now()`,[portal,comments?commentsResource:taskResource,id??null,comments]);
  return result.rowCount;
+}
+
+/** Restore missing historical tasks without reopening the assignment workflow. */
+export async function backfillInboundTasks(request:BitrixRequest,taskIds:string[]){
+ const portal=request.portal;
+ assert(request.mode==='webhook'&&portal&&taskIds.length>0&&taskIds.every(bitrixId),400,'Укажите список ID задач Битрикс24.');
+ const ids=[...new Set(taskIds)];
+ let restored=0,alreadyPresent=0,ignored=0;
+ const inaccessible:string[]=[],failed:{id:string;reason:string}[]=[];
+ for(let offset=0;offset<ids.length;offset+=40){
+  const group=ids.slice(offset,offset+40);
+  const result=await request<{tasks:Record<string,unknown>[]}>('tasks.task.list',{
+   filter:{ID:group},select:selection(),order:{ID:'asc'}
+  });
+  assert(Array.isArray(result.tasks)&&result.tasks.length<=group.length,502,'Битрикс24 не вернул ожидаемый список для восстановления.');
+  const byId=new Map<string,Record<string,unknown>>();
+  for(const raw of result.tasks){
+   const id=bitrixId(fieldValue(raw,'ID'));
+   assert(id&&group.includes(id)&&!byId.has(id),502,'Битрикс24 вернул неожиданный ID при восстановлении.');
+   byId.set(id,raw);
+  }
+  for(const id of group){
+   const raw=byId.get(id);
+   if(!raw){inaccessible.push(id);continue;}
+   try{
+    const applied=await applyTask(request,raw,true,true);
+    if('created' in applied&&applied.created)restored++;
+    else if('ignored' in applied)ignored++;
+    else alreadyPresent++;
+   }catch(error){
+    if(error instanceof BitrixError&&error.disposition==='uncertain')throw error;
+    failed.push({id,reason:error instanceof AppError||error instanceof BitrixError?error.message:'Ошибка локальной сверки задачи.'});
+   }
+  }
+ }
+ return {restored,alreadyPresent,ignored,inaccessible,failed};
 }
 
 export async function reconcileInboundTasks(request:BitrixRequest){
