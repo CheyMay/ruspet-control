@@ -269,3 +269,16 @@ test('a sales employee is split by client branch even when tasks inherit the emp
   if(previous===undefined)delete process.env.OKB_DATABASE_URL;else process.env.OKB_DATABASE_URL=previous;
  }
 });
+
+test('the morning snapshot keeps the original assignee when a later reassignment was undone',async()=>{
+ const original=await task('undo-reassignment','rep-crimea','Крым',today('16:00'));
+ const reassigned={...original,assignee_id:'rep-aquas',branch_id:'AQUAS',version:original.version+1};
+ const edit=await change('task_edited',original,reassigned,today('10:00'));
+ const undoId=randomUUID();
+ await db.pool.query(`INSERT INTO undo_actions(id,task_id,actor_id,label,before_state,after_state)
+  VALUES($1,$2,'director','Отмена переназначения','{}','{}')`,[undoId,original.id]);
+ await change('action_undone',reassigned,{...original,version:reassigned.version+1},today('11:00'));
+ await db.pool.query('INSERT INTO event_retractions(event_id,undo_id,created_at) VALUES($1,$2,$3)',[edit,undoId,today('11:00')]);
+ const drill=await analytics.analyticsOverview(person('deputy'),['sales:branches','branch:Крым','person:rep-crimea'],'day',now,{metric:'untouched'});
+ assert(drill.selection?.ids.includes(original.id));
+});

@@ -50,10 +50,11 @@ export async function morningActivity(db:Db,from:Date,now:Date){
  ];
  const {rows}=await db.query<{task_id:string;before:Partial<Task>|null;worked:boolean}>(`WITH since AS (
   SELECT e.task_id,e.created_at,e.id,e.data->'before' AS before,
-   e.kind=ANY($3) OR e.kind='bitrix_change' AND (e.data#>'{before,status}' IS DISTINCT FROM e.data#>'{after,status}'
-    OR e.data#>'{before,deadline}' IS DISTINCT FROM e.data#>'{after,deadline}') AS worked
+   (e.kind=ANY($3) OR e.kind='bitrix_change' AND (e.data#>'{before,status}' IS DISTINCT FROM e.data#>'{after,status}'
+    OR e.data#>'{before,deadline}' IS DISTINCT FROM e.data#>'{after,deadline}'))
+    AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id AND r.created_at<=$2) AS worked
   FROM task_events e WHERE e.created_at>$1 AND e.created_at<=$2 AND e.task_id IS NOT NULL AND
-   NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id AND r.created_at<=$2)
+   (e.data ? 'before' OR e.kind=ANY($3))
  ), versions AS (
   SELECT DISTINCT ON (task_id) task_id,before FROM since WHERE before ? 'status'
   ORDER BY task_id,created_at,coalesce((before->>'version')::integer,0),id
