@@ -25,9 +25,11 @@ export async function pilotReadiness(){
  add(secretReady&&process.env.BITRIX_PORTAL==='thebest.bitrix24.ru','Нужны доступные закрытые файлы вебхука и выбранного транспорта портала thebest.bitrix24.ru (права 600).');
  const rest=(await pool.query('SELECT portal,last_success_at FROM bitrix_rest_gate WHERE id=1')).rows[0];
  add(rest?.portal==='thebest.bitrix24.ru'&&rest.last_success_at&&Date.now()-Date.parse(rest.last_success_at)<600000,'Нужен успешный ответ REST нужного портала за последние 10 минут.');
- if(!linkedExchange)add(cfg.rows[0]?.group_id&&cfg.rows[0]?.price_field,'Для ограниченного режима должны быть выбраны проект и поле цены Битрикс24.');
- add(telegram.rows[0]?.enabled&&telegram.rows[0]?.delivery,'Для пилота должны быть включены бот и доставка.');
- add(runtime.rows[0]?.last_poll_at&&Date.now()-Date.parse(runtime.rows[0].last_poll_at)<120000&&!runtime.rows[0].error,'Нужен свежий heartbeat бота без ошибки.');
+ if(!linkedExchange){
+  add(cfg.rows[0]?.group_id&&cfg.rows[0]?.price_field,'Для ограниченного режима должны быть выбраны проект и поле цены Битрикс24.');
+  add(telegram.rows[0]?.enabled&&telegram.rows[0]?.delivery,'Для пилота должны быть включены бот и доставка.');
+  add(runtime.rows[0]?.last_poll_at&&Date.now()-Date.parse(runtime.rows[0].last_poll_at)<120000&&!runtime.rows[0].error,'Нужен свежий heartbeat бота без ошибки.');
+ }
  const selectorRole={branchManager:'branch_manager',salesHead:'sales_head',director:'director'};
  for(const member of linkedExchange?[]:roster.rows){
   const person=people.rows.find(p=>p.id===member.user_id)!;
@@ -57,6 +59,6 @@ export async function pilotReadiness(){
  add(!links.rows.some(l=>l.live_enabled&&l.conflict),'Нет ошибок последней сверки активированных связей.');
  let recentBackup=false;try{const backup=JSON.parse(await readFile('/var/lib/ruspet/maintenance/backup.json','utf8'));recentBackup=Number.isFinite(Date.parse(backup.at))&&Date.now()-Date.parse(backup.at)<36*3600000;}catch{}
  add(recentBackup,'Перед началом работы нужна свежая резервная копия БД; проверьте раздел диагностики.',true);
- const ready=!checks.some(c=>c.level==='block');return {ready,enabled:!!cfg.rows[0]?.enabled,writeEnabled:process.env.BITRIX_WRITE_ENABLED==='true',checks,operations};
+ const ready=!checks.some(c=>c.level==='block');return {ready,linkedExchange,enabled:!!cfg.rows[0]?.enabled,writeEnabled:process.env.BITRIX_WRITE_ENABLED==='true',checks,operations};
 }
 export async function pilotQueue(){return (await pool.query("SELECT event_id,task_id,state,phase,attempts,error,created_at FROM bitrix_operations WHERE state NOT IN ('sent','canceled') ORDER BY sequence LIMIT 100")).rows;}

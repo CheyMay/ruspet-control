@@ -366,7 +366,9 @@ test('readiness passes a fully prepared two-manager fixture and blocks again whe
   await db.pool.query("UPDATE login_accounts SET enabled=false WHERE username='pilot-anna'");const revoked=await(await import('../server/pilot-readiness.js')).pilotReadiness();assert.equal(revoked.ready,false);assert(revoked.checks.some(c=>c.level==='block'&&c.message.includes('веб-вход')));
   await db.pool.query('UPDATE bitrix_task_links SET live_enabled=false');
   await db.pool.query('UPDATE bitrix_live_config SET sync_linked_tasks=true,group_id=NULL,price_field=NULL WHERE id=1');
+  await db.pool.query('UPDATE telegram_settings SET delivery=false WHERE id=1');
   const linked=await(await import('../server/pilot-readiness.js')).pilotReadiness();
+  assert.equal(linked.linkedExchange,true);
   assert.equal(linked.ready,true,JSON.stringify(linked.checks.filter(c=>c.level==='block')));
  }finally{restoreStat();for(const [key,value] of Object.entries(saved)){if(value===undefined)delete process.env[key];else process.env[key]=value;}await rm(folder,{recursive:true,force:true});}
 });
