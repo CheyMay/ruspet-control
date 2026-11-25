@@ -384,10 +384,10 @@ test('pricing controls deadline approvals and only the creator accepts completio
  assert.equal((await request(self,worker)).applied,true);
  assert.equal(await deadline(self),next);
  assert.equal(await approval(self),undefined);
- await assert.rejects(()=>workflow.reviewTask(worker,self,'complete','',2),/Укажите результат/);
- assert.equal((await workflow.reviewTask(worker,self,'complete','Сверено и готово',2)).state,'completed');
+ assert.equal((await workflow.reviewTask(worker,self,'complete','',2)).state,'completed');
 
  const ordinary=await create(adminUser,other,85);
+ await assert.rejects(()=>workflow.reviewTask(other,ordinary,'submit','',1),/Укажите результат/);
  await request(ordinary,other);
  assert.deepEqual(await route(ordinary),[director.id]);
  assert.equal(await deadline(ordinary),old);

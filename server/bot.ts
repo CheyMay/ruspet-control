@@ -194,14 +194,15 @@ async function draftSummary(d:Dialog,db:Db){
  }
  return result.join('\n\n');
 }
-async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string){
+async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string,offerResult=false){
  const summary=await draftSummary(d,db);
  const action=d.payload.kind==='accept_assignment'?'Принять и запланировать':d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='approve_with_deadline'?'Согласовать с новым сроком':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
  const title=heading??(d.payload.id?action+' · #'+d.payload.id:'Проверьте новую задачу');
  const redo={...d.payload,values:d.payload.kind==='reminder'?{days:d.values.days}:undefined};
  return screen(u,ch,`${title}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
   [button(d.payload.kind==='accept_assignment'?'Принять задачу':'Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],
-  [...(d.fields.length?[button('Ввести заново','form',redo)]:[]),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]
+  [...(offerResult?[button('Добавить результат','form',{...redo,withResult:true})]:
+   d.fields.length?[button('Ввести заново','form',redo)]:[]),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]
  ],db);
 }
 async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Date):Promise<BotScreen>{
@@ -378,11 +379,12 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
    const min=(await config(db)).config.responseMinLength;
    if(p.kind?.startsWith('edit_')&&p.kind!=='edit_personal_plan'){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit||p.kind==='edit_price'&&canEditTaskPrice(u,d.task),403,'Нет права редактировать задачу.');}
    const optionalResult=(p.kind==='complete'||p.kind==='submit')&&p.id&&!taskRequiresResult((await detail(u,p.id,db)).task);
-   const fields=optionalResult?[]:taskActionFields(p.kind,min,!p.target);
+   const skipResult=!!optionalResult&&!p.withResult;
+   const fields=skipResult?[]:taskActionFields(p.kind,min,!p.target);
    const values={...p.values};
    if(p.kind==='deadline')delete values.plan;
    const d:Dialog={payload:p,fields,index:0,values};nextMissing(d);
-   if(d.index===fields.length)return confirmation(u,ch,d,db,p.kind==='permission_approve'?'Разрешить одно редактирование задачи #'+p.id+'?':undefined);
+   if(d.index===fields.length)return confirmation(u,ch,d,db,p.kind==='permission_approve'?'Разрешить одно редактирование задачи #'+p.id+'?':undefined,skipResult);
    await saveDialog(db,u,ch,d);return prompt(u,ch,d,db);
   }
   const v=p.values||{};let result='Действие сохранено.',resultTask:string|undefined;

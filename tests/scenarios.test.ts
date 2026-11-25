@@ -286,12 +286,13 @@ test('administrators see other employees actions as team work instead of persona
 });
 test('a creator completes a personal task from the bot with one confirmation and no self review',async()=>{
  const bot=await import('../server/bot.js'),anna=users.find(user=>user.id==='anna')!;
- const id=(await request('anna','/tasks',{...taskInput,title:'Личная задача без отдельного согласования'})).data.id;
+ const id=(await request('anna','/tasks',{...taskInput,title:'РПМ* Личная задача без отдельного согласования'})).data.id;
  const view=await bot.botView(anna,'self-complete',{op:'task',id});
  assert(view.text.includes('Исполнитель · '+anna.name)&&view.text.includes('Постановщик · '+anna.name));
  assert(!view.buttons.flat().some(button=>button.text==='Сдать результат'));
  const confirmation=await bot.botClick(anna,'self-complete',botButton(view,'Завершить задачу'));
  assert.match(confirmation.text,/Завершить задачу/);
+ botButton(confirmation,'Добавить результат');
  assert.equal((await request('anna','/tasks/'+id)).data.task.status,'active');
  const token=botButton(confirmation,'Подтвердить и отправить');
  const response=await bot.botClick(anna,'self-complete',token);
@@ -304,6 +305,15 @@ test('a creator completes a personal task from the bot with one confirmation and
  const another=(await request('anna','/tasks',taskInput)).data.id;
  assert.equal((await request('director','/tasks/'+another+'/review',{action:'complete',comment:'',expectedVersion:1})).status,403);
  assert.equal((await request('anna','/tasks/'+another+'/review',{action:'complete',comment:'',expectedVersion:2})).status,409);
+ const withNote=await bot.botView(anna,'self-complete',{op:'task',id:another});
+ const options=await bot.botClick(anna,'self-complete',botButton(withNote,'Завершить задачу'));
+ await bot.botClick(anna,'self-complete',botButton(options,'Добавить результат'));
+ const text='Макет проверен';
+ const entered=await bot.botText(anna,'self-complete',text,crypto.randomUUID());
+ await bot.botClick(anna,'self-complete',botButton(entered,'Подтвердить и отправить'));
+ const closedWithNote=(await request('anna','/tasks/'+another)).data;
+ assert.equal(closedWithNote.task.status,'completed');
+ assert(closedWithNote.comments.some((comment:{body:string})=>comment.body===text));
 });
 test('an overdue explanation preserves the deadline and offers a separate prefilled transfer',async()=>{
  const bot=await import('../server/bot.js'),anna=users.find(u=>u.id==='anna')!,ch='preview-explanation';

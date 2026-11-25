@@ -12,6 +12,7 @@ import {TaskPeople} from './TaskPeople.js';
 import {EmployeeFilter} from './SearchFilter.js';
 import {plannedInterval} from '../shared/analytics.js';
 import {unassignedBranch} from '../shared/branches.js';
+import {taskRequiresResult} from '../shared/queues.js';
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
 export function TaskPriceEditor({task,busy,act}:{task:Task;busy:boolean;act:Act}){
  const [open,setOpen]=useState(false),[price,setPrice]=useState('');
@@ -33,19 +34,21 @@ export function ReviewActions({task,user,busy,act,scope}: {task:Task;user:User;b
  const submit=user.id===task.assignee_id||user.id===task.creator_id||['admin','director','sales_head','branch_manager'].includes(user.role);
  const reviewer=canReview(user,task,scope);
  if(canComplete(user,task,scope)||task.status==='completed'||task.status==='active'&&!submit||task.status==='review'&&!reviewer)return null;
- return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':task.result_required===false?'Передайте выполненную задачу постановщику. При необходимости добавьте комментарий.':'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.'}</p><label>{task.status==='review'?'Комментарий (при возврате обязателен)':task.result_required===false?'Результат или комментарий · необязательно':'Результат работы'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||((action==='return'||action==='submit'&&task.result_required!==false)&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div></section>;
+ const requiresResult=taskRequiresResult(task);
+ return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':requiresResult?'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.':'Передайте выполненную задачу постановщику. При необходимости добавьте комментарий.'}</p><label>{task.status==='review'?'Комментарий (при возврате обязателен)':requiresResult?'Результат работы':'Результат или комментарий · необязательно'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||((action==='return'||action==='submit'&&requiresResult)&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div></section>;
 }
 export function CompleteTaskDialog({task,users,busy,error,save,close}:{
  task:Task;users:User[];busy:boolean;error:string;save:(comment:string)=>Promise<boolean>;close:()=>void;
 }){
  const [comment,setComment]=useState('');
+ const requiresResult=taskRequiresResult(task);
  return <div className="modal-backdrop"><form className="modal task-editor" role="dialog" aria-modal="true" aria-labelledby="complete-task-heading"
   onSubmit={async event=>{event.preventDefault();if(await save(comment))close();}}>
   <div className="panel-heading"><h2 id="complete-task-heading">Завершить задачу</h2>
    <button className="icon-button" type="button" disabled={busy} onClick={close} aria-label="Закрыть">✕</button></div>
   <p className="eyebrow">#{taskNumber(task)}</p><h3>{task.title}</h3>
   <TaskPeople task={task} users={users}/>
-  <label>{task.result_required===false?'Результат или комментарий · необязательно':'Результат работы · обязательно'}<textarea required={task.result_required!==false} minLength={task.result_required===false?undefined:5} maxLength={4000} value={comment} onChange={event=>setComment(event.target.value)}/></label>
+  <label>{requiresResult?'Результат работы · обязательно':'Результат или комментарий · необязательно'}<textarea required={requiresResult} minLength={requiresResult?5:undefined} maxLength={4000} value={comment} onChange={event=>setComment(event.target.value)}/></label>
   {error&&<p className="alert error" role="alert">{error}</p>}
   <div className="drawer-actions"><button type="button" className="button secondary" disabled={busy} onClick={close}>Отмена</button>
    <button type="submit" className="button primary" disabled={busy||task.status==='completed'}>{task.status==='completed'?'Задача завершена':'Завершить задачу'}</button></div>
@@ -117,6 +120,7 @@ export function TaskEditor({task,copyOf,parent,users,user,busy,save,saveError,cl
  const allowedOwners=assignees??users.filter(person=>person.id===owner);
  const branches=[...new Set(users.map(person=>person.branch_id).filter(id=>id&&id!==unassignedBranch))].sort((a,b)=>a.localeCompare(b,'ru'));
  const ownerAllowed=!!assignees?.some(person=>person.id===owner);
+ const assignedToCreator=mode!=='conditional'&&owner===(task?.creator_id??user.id);
  const heading=task?'Редактировать задачу':copyOf?'Копия задачи':parent?'Новая подзадача':'Новая задача';
  return <div className="modal-backdrop"><form className="modal task-editor task-compose-editor" role="dialog" aria-modal="true" aria-label={heading}
   onChangeCapture={()=>setEdited(true)}
@@ -188,7 +192,7 @@ export function TaskEditor({task,copyOf,parent,users,user,busy,save,saveError,cl
   <div className="editor-grid">
    <label>Приоритет<select value={extra.priority??initial?.priority??'normal'} onChange={e=>setExtra({...extra,priority:e.target.value})}><option value="normal">Обычный</option><option value="high">Высокий</option></select></label>
    <label>Критичность<select value={extra.critical??String(initial?.critical??false)} onChange={e=>setExtra({...extra,critical:e.target.value})}><option value="false">Обычная</option><option value="true">Критичная</option></select></label>
-   {(!task||task.creator_id===user.id||user.role==='admin')&&<label>Результат при завершении<select value={extra.resultRequired??String(initial?.result_required??true)} onChange={e=>setExtra({...extra,resultRequired:e.target.value})}><option value="true">Обязателен</option><option value="false">Необязателен</option></select></label>}
+   {(!task||task.creator_id===user.id||user.role==='admin')&&<label>Результат при завершении<select disabled={assignedToCreator} value={assignedToCreator?'false':extra.resultRequired??String(initial?.result_required??true)} onChange={e=>setExtra({...extra,resultRequired:e.target.value})}><option value="true">Обязателен</option><option value="false">{assignedToCreator?'Необязателен для задачи себе':'Необязателен'}</option></select></label>}
   </div>
   {!task&&mode==='once'&&<TaskGroupPicker value={extra.groupId??''} onChange={id=>{setEdited(true);setExtra(current=>({...current,groupId:id}));}}/>}
   {canLink&&<CompanyPicker value={companyId} onChange={value=>{setEdited(true);setCompanyId(value);}}/>}

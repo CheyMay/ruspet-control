@@ -3,7 +3,7 @@ import {pool,type Db} from './db.js';
 import type {PersonalTaskScope,User} from '../shared/types.js';
 export type BotScreen={replyKeyboard?:'contact'|'remove';timingKind?:'menu'|'task';format?:'HTML';document?:{reportId:string};links?:{text:string;url:string}[];taskScope?:PersonalTaskScope;text:string;buttons:{text:string;token:string}[][]};
 export type ListOrigin={op:string;page?:number;filter?:string;owner?:string;query?:string;target?:string};
-export type Payload={op:string;id?:string;page?:number;filter?:string;owner?:string;query?:string;kind?:string;version?:number;target?:string;step?:number;revision?:number;values?:Record<string,string>;minutes?:number;list?:ListOrigin;noticeIds?:string[]};
+export type Payload={op:string;id?:string;page?:number;filter?:string;owner?:string;query?:string;kind?:string;version?:number;target?:string;step?:number;revision?:number;values?:Record<string,string>;minutes?:number;list?:ListOrigin;noticeIds?:string[];withResult?:boolean};
 export const date=(s:string|null)=>s?new Date(s).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',dateStyle:'short',timeStyle:'short'}):'Не назначен';
 export const button=(text:string,op:string,extra:Partial<Payload>={})=>({text,payload:{op,...extra}});
 export async function screen(u:User,ch:string,text:string,rows:ReturnType<typeof button>[][],db:Db=pool):Promise<BotScreen>{

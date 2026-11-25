@@ -24,6 +24,7 @@ export function resultRequiredByCode(title:string):boolean|undefined{
  const letter=taskCode(title).code.match(/^[РЕ]?([ЗП])[БМ]?[*#]$/u)?.[1];
  return letter?letter==='П':undefined;
 }
-export function taskRequiresResult(task:Pick<Task,'title'|'result_required'>){
+export function taskRequiresResult(task:Pick<Task,'title'|'result_required'|'assignee_id'|'creator_id'>){
+ if(task.assignee_id===task.creator_id)return false;
  return resultRequiredByCode(task.title)??task.result_required??true;
 }
