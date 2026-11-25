@@ -51,7 +51,7 @@ export function ReportSummaryView({report}:{report:Report}){
    {label:'Просрочены с прошлых дней',count:report.metrics.overdue,subset:'overdue'},
    {label:'Срок истёк сегодня',count:summary.elapsedToday,subset:'elapsed_today'},
    {label:'Ещё есть время сегодня',count:Math.max(0,report.metrics.today-summary.elapsedToday),subset:'due_later_today'},
-   {label:'На приёмке',count:report.metrics.review,subset:'review'},
+   {label:'Ждёт приёмки',count:report.metrics.review,subset:'review'},
    ...(queue?.decisionIds.length?[{label:'Ждут решения по заявке',count:queue.decisionIds.length,subset:'approval_decision'}]:[]),
    ...(queue?.clarificationIds.length?[{label:'Ждут ответа на уточнение',count:queue.clarificationIds.length,subset:'approval_clarification'}]:[]),
   ])}

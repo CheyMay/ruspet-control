@@ -13,7 +13,7 @@ function salesBranch(value:string|null){
 
 export async function analyticsClientBranches(tasks:Task[],db:Db){
  const result=new Map<string,string>();
- const unresolved=tasks.filter(task=>task.branch_id===unassignedBranch||!task.branch_id);
+ const unresolved=tasks.filter(task=>!task.branch_id||[unassignedBranch,'Крым','Краснодар'].includes(task.branch_id));
  if(!okbConfigured()||!unresolved.length)return result;
  try{
   const clients=await withTaskClients(unresolved,db);
@@ -31,13 +31,29 @@ export async function analyticsClientBranches(tasks:Task[],db:Db){
     matches.add(branch??'');byName.set(key,matches);
    }
   }
+  const aliases=new Map<string,string[]>();
+  for(const key of byName.keys()){
+   if(key.length<6||!/\p{L}/u.test(key))continue;
+   const token=key.split(' ')[0];
+   const names=aliases.get(token)??[];
+   names.push(key);aliases.set(token,names);
+  }
   for(const task of clients){
-   const known=new Set((task.client_refs??[]).map(client=>byId.get(client.id)??''));
-   const branches=known.size?known:byName.get(nameKey(importedTaskClient(task.source_fields?.['Компания'])));
-   if(branches?.size===1){
-    const branch=[...branches][0];
-    if(branch)result.set(task.id,branch);
+   const sourceBranch=salesBranch(importedTaskClient(task.source_fields?.['Филиал']));
+   if(sourceBranch){result.set(task.id,sourceBranch);continue;}
+   const linked=task.client_refs??[];
+   const imported=nameKey(importedTaskClient(task.source_fields?.['Компания']));
+   let branches=linked.length?new Set(linked.map(client=>byId.get(client.id)??'')):byName.get(imported);
+   if(!branches&&!linked.length&&!imported){
+    const title=nameKey(task.title),padded=' '+title+' ';
+    const matches=[...new Set(title.split(' '))].flatMap(token=>aliases.get(token)??[])
+     .filter(name=>padded.includes(' '+name+' '));
+    const longest=Math.max(0,...matches.map(name=>name.length));
+    branches=new Set(matches.filter(name=>name.length===longest).flatMap(name=>[...byName.get(name)??[]]));
    }
+   const confirmed=[...branches??[]].filter(Boolean);
+   if(confirmed.length===1&&branches?.size===1)result.set(task.id,confirmed[0]);
+   if(confirmed.length>1)result.set(task.id,'На сверку');
   }
  }catch{
   // Missing or ambiguous client data stays in the unassigned group.

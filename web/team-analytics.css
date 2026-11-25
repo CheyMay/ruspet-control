@@ -30,7 +30,7 @@
 .bi-context-line button {padding:3px 2px;color:var(--bi-accent);text-decoration:underline;text-underline-offset:3px}
 .bi-summaries {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:14px}
 .bi-summary,.bi-section {padding:16px 18px;min-width:0}
-.bi-summary-title {min-height:80px}
+.bi-summary-title {min-height:66px}
 .bi-summary-title > strong {display:block;font-size:34px;line-height:1.15;margin-top:6px;font-variant-numeric:tabular-nums}
 .bi-summary dl {display:grid;margin:12px 0 0;padding:0}
 .bi-summary dl > div,.bi-waiting > div {display:flex;justify-content:space-between;align-items:baseline;gap:12px}
@@ -44,27 +44,39 @@
 .bi-workspace [data-tone=overdue] {background:var(--theme-danger,#af4740)}
 .bi-workspace [data-tone=today] {background:var(--bi-today)}
 .bi-workspace [data-tone=nextWorkday] {background:var(--bi-next)}
-.bi-workspace [data-tone=done-overdue] {background:color-mix(in srgb,var(--bi-done) 78%,var(--theme-text))}
-.bi-workspace [data-tone=done-today] {background:var(--bi-done)}
-.bi-workspace [data-tone=done-nextWorkday] {background:color-mix(in srgb,var(--bi-done) 75%,var(--theme-surface))}
-.bi-workspace [data-tone=done-later] {background:color-mix(in srgb,var(--bi-done) 55%,var(--theme-surface))}
-.bi-workspace [data-tone=done-withoutDeadline] {background:color-mix(in srgb,var(--bi-done) 35%,var(--theme-surface))}
-.bi-table .bi-deadline-bar {height:5px;margin:4px 0 0 auto;width:min(100%,9rem);min-width:55px}
+.bi-workspace [data-tone=later] {background:color-mix(in srgb,var(--bi-accent) 65%,var(--theme-surface))}
+.bi-workspace [data-tone=withoutDeadline] {background:color-mix(in srgb,var(--bi-muted) 57%,var(--theme-surface))}
+.bi-table .bi-deadline-bar {height:5px;margin:4px 0 0 auto;width:min(100%,9rem)}
 .bi-workspace .bi-urgent,.bi-table [data-metric=overdue] {color:var(--theme-danger,#af4740)}
 .bi-table [data-metric=today] {color:var(--bi-today)}
 .bi-table [data-metric=nextWorkday] {color:var(--bi-next)}
-.bi-waiting {display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:24px;padding:12px 18px;margin:0}
+.bi-waiting {display:grid;grid-template-columns:repeat(2,minmax(0,1fr)) auto;align-items:center;gap:24px;padding:12px 18px;margin:0}
+.bi-measure-link,.bi-number-link {background:none;border:0;padding:0;color:inherit;font:inherit;text-align:left}
+.bi-measure-link:hover,.bi-number-link:hover {color:var(--bi-accent);text-decoration:underline;text-underline-offset:3px}
+.bi-number-link {font-variant-numeric:tabular-nums}
+.bi-section-heading {display:flex;align-items:center;justify-content:space-between;gap:12px;flex-wrap:wrap}
+.bi-morning {display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:10px;margin:12px 0 0}
+.bi-morning > div {padding:9px 12px;border-radius:7px;background:var(--bi-soft)}
+.bi-morning dd {font-size:23px;font-weight:650;margin:4px 0 0}
+.bi-wait-list {display:grid;gap:0;padding:0;margin:8px 0 0;list-style:none}
+.bi-wait-list button {display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr) minmax(0,.7fr) 15px;align-items:center;
+ gap:10px;text-align:left;width:100%;border:0;border-top:1px solid var(--bi-border);background:none;color:inherit;padding:10px 0}
+.bi-wait-list button:hover {color:var(--bi-accent)}
+.bi-wait-list small {color:var(--bi-muted);text-align:right}
 .bi-table-wrap {overflow:auto;margin-top:8px}
-.bi-table {width:100%;min-width:650px;border-collapse:collapse;font-variant-numeric:tabular-nums}
+.bi-table {table-layout:fixed;border-collapse:collapse;font-variant-numeric:tabular-nums}
 .bi-table th,.bi-table td {padding:9px 8px;text-align:right;vertical-align:middle}
-.bi-table th:first-child {text-align:left;min-width:150px}
-.bi-table thead th {font-size:12px;line-height:1.4;color:var(--bi-muted);background:var(--bi-soft);text-transform:none}
+.bi-table th:first-child {text-align:left}
+.bi-table thead th {position:relative;padding-right:13px;overflow-wrap:anywhere;font-size:12px;line-height:1.4;color:var(--bi-muted);background:var(--bi-soft);text-transform:none}
+.bi-column-resizer {position:absolute;inset:0 0 0 auto;width:10px;border-right:2px solid transparent;cursor:col-resize;touch-action:none}
+.bi-column-resizer:hover,.bi-column-resizer:focus-visible {border-right-color:var(--bi-accent)}
 .bi-table tbody tr {border-bottom:1px solid var(--bi-border)}
 .bi-table tbody tr:last-child {border-bottom:0}
 .bi-team-name {display:flex;align-items:center;justify-content:space-between;gap:8px;width:100%;font-weight:600;padding:2px}
 .bi-team-name:hover {color:var(--bi-accent)}
 .bi-team-name svg {flex:none;color:var(--bi-accent)}
 .bi-team-name small {display:block;font-weight:400;margin-top:2px}
+.bi-team-name span {min-width:0;overflow-wrap:anywhere}
 .bi-expand {margin-top:12px}
 .bi-chart {display:flex;gap:10px;margin:12px 0 0;padding:0;overflow-x:auto;list-style:none}
 .bi-chart li {display:grid;justify-items:center;gap:5px;flex:1;min-width:47px;font-size:12px;color:var(--bi-muted)}
@@ -75,5 +87,10 @@
  .bi-summaries,.bi-waiting {grid-template-columns:1fr}
  .bi-summary-title {min-height:0}
  .bi-waiting {gap:8px}
+ .bi-morning {grid-template-columns:1fr}
+ .bi-wait-list button {grid-template-columns:minmax(0,1fr) auto 15px}
+ .bi-wait-list button > span {grid-row:2}
+ .bi-wait-list button > small {grid-column:2;grid-row:1}
+ .bi-wait-list button > svg {grid-column:3;grid-row:1}
  .bi-header,.bi-summary,.bi-section,.bi-waiting {padding:12px}
 }

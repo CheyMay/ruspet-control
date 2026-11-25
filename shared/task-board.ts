@@ -9,7 +9,7 @@ export const taskLanes=[
  {id:'later',title:'Позже'},
  {id:'noDeadline',title:'Без срока'},
  {id:'pending',title:'На согласовании'},
- {id:'review',title:'На приёмке'},
+ {id:'review',title:'Ждёт приёмки'},
  {id:'completed',title:'Завершены'},
 ] as const;
 export type TaskLaneId=(typeof taskLanes)[number]['id'];

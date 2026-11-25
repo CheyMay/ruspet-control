@@ -100,12 +100,17 @@ test('analytics totals reconcile by deadline, show Monday on Friday and count ap
  const group=['sales:branches','branch:Крым','person:rep-crimea'];
  const today=await analytics.analyticsOverview(person('deputy'),group,'day',now);
  assert.equal(today.nextWorkday,'2026-11-23');
- assert.deepEqual(today.numbers.remaining,{total:5,overdue:2,today:1,nextWorkday:2});
+ assert.deepEqual(today.numbers.remaining,{total:7,overdue:2,today:1,nextWorkday:2,later:1,withoutDeadline:1});
  assert.deepEqual(today.numbers.completed,{total:5,overdue:1,today:1,nextWorkday:1,later:1,withoutDeadline:1});
  assert.equal(today.numbers.approvals,2);
  assert.equal(today.numbers.review,1);
  assert.equal(today.numbers.outside,2);
  assert.equal(today.rows.length,0);
+ assert.deepEqual(today.morning,{total:15,worked:5,untouched:10});
+ assert.equal(today.waiting.find(wait=>wait.stage==='approval')?.count,2);
+ assert.equal(today.waiting.find(wait=>wait.stage==='approval')?.oldest,'2026-11-20T05:00:00.000Z');
+ const drill=await analytics.analyticsOverview(person('deputy'),group,'day',now,{metric:'remaining:later'});
+ assert.deepEqual(drill.selection,{ids:['ready-later'],total:1});
 
  const week=await analytics.analyticsOverview(person('deputy'),group,'week',now);
  const thursday=week.days.find(day=>day.date==='2026-11-19')!;
@@ -162,6 +167,23 @@ test('analytics API enforces scopes and returns aggregate figures without task d
  assert.equal(typeof sales.numbers.remaining.overdue,'number');
  assert.equal(sales.attention,undefined);
  assert(!JSON.stringify(sales).includes('Задача для проверки'));
+ const path=new URLSearchParams([['metric','remaining'],['group','sales:branches'],['group','branch:Крым']]);
+ const list=await fetch(base+'/analytics/drilldown?'+path,{headers:{Cookie:deputy}});
+ assert.equal(list.status,200);
+ const selection=await list.json();
+ assert(selection.ids.includes('cross-k'));
+ assert(!selection.ids.includes('cross-r'));
+ assert(!selection.ids.includes('buyer'));
+ const layout=async(cookie:string,body?:unknown)=>fetch(base+'/analytics/layout',{
+  method:body?'PUT':'GET',headers:{Cookie:cookie,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined
+ });
+ assert.equal((await layout(employee)).status,403);
+ assert.equal((await layout(deputy,{column:'person',width:180})).status,200);
+ assert.deepEqual(await (await layout(deputy)).json(),{person:180});
+ assert.deepEqual(await (await layout(director)).json(),{});
+ assert.equal((await fetch(base+'/owner/work-log.xlsx',{headers:{Cookie:administrator}})).status,403);
+ assert.equal((await fetch(base+'/workspace/labels',{method:'PUT',headers:{Cookie:administrator,'Content-Type':'application/json'},
+  body:JSON.stringify({key:'overview',label:'Недоступно для администратора'})})).status,403);
  assert.equal((await fetch(base+'/analytics/overview',{headers:{Cookie:deputy,'X-Ruspet-View-As':'head-crimea'}})).status,403);
 });
 
@@ -221,4 +243,29 @@ test('a sales branch shows the shared director from the reporting tree when no l
  assert.equal(overview.rows.find(row=>row.key==='branch:Крым')?.caption,'Руководитель · Директор');
  assert(!overview.rows.some(row=>row.label==='Закупки'));
  assert.equal((await db.pool.query("SELECT manager_id FROM org_reporting WHERE employee_id='rep-aquas'")).rows[0].manager_id,'head-crimea');
+});
+
+test('a sales employee is split by client branch even when tasks inherit the employee branch',async()=>{
+ const previous=process.env.OKB_DATABASE_URL;
+ process.env.OKB_DATABASE_URL=process.env.DATABASE_URL;
+ const okb=await import('../server/okb.js');
+ try{
+  await okb.migrateOkb();
+  for(const [name,branch] of [['Альфа Тара','КРЫМ'],['Бета Розлив','КРАСНОДАР']]){
+   await okb.okbPool().query(`INSERT INTO companies(id,name,status,contact,notes,xlsx_source) VALUES($1,$2,'active','','',$3)`,
+    [randomUUID(),name,JSON.stringify({branch})]);
+  }
+  await task('okb-crimea','multibranch','Краснодар',today('16:00'));
+  await task('okb-krasnodar','multibranch','Краснодар',today('17:00'),'active',null,'Отправить предложение для Бета Розлив');
+  await db.pool.query(`UPDATE tasks SET source_fields=jsonb_build_object('Компания','Альфа Тара') WHERE id='okb-crimea'`);
+  const crimea=await analytics.analyticsOverview(person('deputy'),['sales:branches','branch:Крым','person:multibranch'],'day',now,{metric:'remaining'});
+  const krasnodar=await analytics.analyticsOverview(person('deputy'),['sales:branches','branch:Краснодар','person:multibranch'],'day',now,{metric:'remaining'});
+  assert(crimea.selection?.ids.includes('okb-crimea'));
+  assert(!crimea.selection?.ids.includes('okb-krasnodar'));
+  assert(krasnodar.selection?.ids.includes('okb-krasnodar'));
+  assert(!krasnodar.selection?.ids.includes('okb-crimea'));
+ }finally{
+  await okb.closeOkb();
+  if(previous===undefined)delete process.env.OKB_DATABASE_URL;else process.env.OKB_DATABASE_URL=previous;
+ }
 });

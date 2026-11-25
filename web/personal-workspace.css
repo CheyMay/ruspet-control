@@ -42,6 +42,10 @@
 .task-role-switch button[aria-pressed="true"] { background:var(--theme-surface-raised); color:var(--theme-text); }
 .task-role-switch button:focus-visible { outline:2px solid var(--theme-accent); outline-offset:1px; }
 .task-role-switch button:disabled { opacity:.65; }
+.workspace-title-editable {display:inline-flex;align-items:center;gap:6px;max-width:100%;flex-wrap:wrap}
+.workspace-title-editable .icon-button {min-width:26px;min-height:26px;width:26px;height:26px;padding:0}
+.workspace-title-editable input {width:min(360px,56vw);min-width:100px;font:inherit;font-size:16px}
+.workspace-title-editable small {color:var(--theme-danger);font-size:12px}
 .bot-preview > .task-role-switch { margin-bottom:10px; }
 .mobile-conversation .task-role-switch { display:flex; }
 .mobile-conversation .task-role-switch button { flex:1; min-height:44px; }

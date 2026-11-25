@@ -128,7 +128,7 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
   const breakdown=data.users.map(person=>({person,...totals(tasks.filter(task=>task.assignee_id===person.id))}))
    .filter(row=>row.unfinished).sort((a,b)=>b.overdue-a.overdue||b.today-a.today);
   const lines=breakdown.slice(0,6).map(row=>row.person.name+': '+row.overdue+' просрочено · '+row.today+' сегодня · '+row.unfinished+' открыто');
-  const summary=`Открыто: ${s.unfinished} · Завершено: ${s.completed}\nПросрочено: ${s.overdue} · Срок сегодня: ${s.today}\nНа приёмке: ${s.review} · Без срока: ${s.no_deadline}\nСогласований: ${paused.size}`;
+  const summary=`Открыто: ${s.unfinished} · Завершено: ${s.completed}\nПросрочено: ${s.overdue} · Срок сегодня: ${s.today}\nЖдёт приёмки: ${s.review} · Без срока: ${s.no_deadline}\nСогласований: ${paused.size}`;
   const priority=urgent.map(t=>`#${t.id} · ${compactTaskTitle(t.title,105)}\n${name(t.assignee_id)} · ${date(t.deadline)}`).join('\n\n');
   const result=await screen(u,ch,[reportViewLabel(u,view)+' · '+date(data.serverTime)+' МСК',summary,lines.join('\n'),
    breakdown.length>6?'Ещё исполнителей: '+(breakdown.length-6):'',priority].filter(Boolean).join('\n\n'),[
@@ -199,14 +199,14 @@ async function draftSummary(d:Dialog,db:Db){
 }
 async function confirmation(u:User,ch:string,d:Dialog,db:Db,heading?:string,offerResult=false){
  const summary=await draftSummary(d,db);
- const action=d.payload.kind==='accept_assignment'?'Принять и запланировать':d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='approve_with_deadline'?'Согласовать с новым сроком':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
+ const action=d.payload.kind==='accept_assignment'?'Запланировать время':d.payload.kind==='answer'?'Сохранить объяснение':d.payload.kind==='deadline'?'Запросить перенос':d.payload.kind==='approve_with_deadline'?'Согласовать с новым сроком':d.payload.kind==='complete'?'Завершить задачу':'Проверьте перед отправкой';
  const title=heading??(d.payload.id?action+' · #'+d.payload.id:'Проверьте новую задачу');
  const redo={...d.payload,values:d.payload.kind==='reminder'?{days:d.values.days}:undefined};
  const withdrawsDeadline=(d.payload.kind==='submit'||d.payload.kind==='complete')&&d.payload.id&&
   (await db.query("SELECT 1 FROM approvals WHERE task_id=$1 AND type='deadline' AND state='pending' AND canceled_at IS NULL",[d.payload.id])).rowCount;
  const hint=withdrawsDeadline?'\n\nЗапрос на перенос снимется. Крайний срок останется прежним.':'';
  return screen(u,ch,`${title}${hint}\n\n${summary.length>3100?summary.slice(0,3100)+'\n… Введённые ответы сохранены полностью.':summary}`,[
-  [button(d.payload.kind==='accept_assignment'?'Принять задачу':'Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],
+  [button(d.payload.kind==='accept_assignment'?'Сохранить план':'Подтвердить и отправить','confirm',{...d.payload,op:'confirm',values:d.values})],
   [...(offerResult?[button('Добавить результат','form',{...redo,withResult:true})]:
    d.fields.length?[button('Ввести заново','form',redo)]:[]),button('Отмена','cancel',{id:d.payload.id,list:d.payload.list})]
  ],db);
@@ -409,7 +409,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   else if(p.kind==='accept_assignment'||p.kind==='edit_personal_plan'||p.kind==='personal_step'){
    const accept=p.kind==='accept_assignment';
    const saved=await saveTaskPlan(u,p.id!,{epoch:p.version!,revision:p.revision!,plannedAt:v.deadline,accept,nextStep:v.nextStep});
-   result=(accept?'Задача принята. ':'')+'В личном календаре · '+date(saved.plannedAt)+' МСК.'+(saved.nextStep?'\nСледующий шаг: '+saved.nextStep:'');
+   result=(accept?'Ознакомление подтверждено. ':'')+'В личном календаре · '+date(saved.plannedAt)+' МСК.'+(saved.nextStep?'\nСледующий шаг: '+saved.nextStep:'');
    nextActions.push([button('Мой календарь','personal_plan',{filter:moscowClock(saved.plannedAt!).slice(0,10)})]);
   }
   else if(p.kind==='delegate'){

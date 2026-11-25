@@ -16,7 +16,7 @@ const weekdays=['Пн','Вт','Ср','Чт','Пт','Сб','Вс'];
 type Act=(path:string,body?:unknown,method?:string,message?:string)=>Promise<boolean>;
 
 export function PersonalTaskPlan({task,plan,busy,error,act,deadlineAction}:{task:Task;plan:TaskPersonalPlan;busy:boolean;error:string;act:Act;deadlineAction?:{label:string;run:()=>void}}){
- const [editing,setEditing]=useState(plan.needsAcceptance);
+ const [editing,setEditing]=useState(false);
  const [submitted,setSubmitted]=useState(false);
  const [value,setValue]=useState(plan.plannedAt?moscowClock(plan.plannedAt):'');
  const [nextStep,setNextStep]=useState(plan.nextStep??'');
@@ -29,10 +29,10 @@ export function PersonalTaskPlan({task,plan,busy,error,act,deadlineAction}:{task
   {deadlineAction&&<button type="button" className="button primary" disabled={busy} onClick={deadlineAction.run}>{deadlineAction.label}</button>}
  </section>;
  return <section className={'task-card-section personal-task-plan'+(plan.needsAcceptance?' awaiting-acceptance':'')} aria-label="Мой план задачи">
-  <h3><CalendarDays size={16}/> {plan.needsAcceptance?'Принять задачу и запланировать':'Мой план'}</h3>
-  {plan.plannedAt&&<p><strong>{planTime.format(new Date(plan.plannedAt))} МСК</strong>{plan.acceptedAt?' · задача принята':''}</p>}
+  <h3><CalendarDays size={16}/> {plan.needsAcceptance?'Ознакомление с задачей':'Мой план'}</h3>
+  {plan.plannedAt&&<p><strong>{planTime.format(new Date(plan.plannedAt))} МСК</strong>{plan.acceptedAt?' · ознакомление подтверждено':''}</p>}
   {plan.nextStep&&<p>Следующий шаг · <strong>{plan.nextStep}</strong></p>}
-  {plan.needsAcceptance&&<p>Примите задачу и назначьте время для следующего шага.</p>}
+  {plan.needsAcceptance&&<p>После ознакомления выберите время для следующего шага.</p>}
   {!plan.plannedAt&&!plan.needsAcceptance&&task.status==='active'&&<p>Добавьте задачу в личный календарь.</p>}
   {task.status==='active'&&(editing?<form onSubmit={async e=>{
    e.preventDefault();
@@ -40,7 +40,7 @@ export function PersonalTaskPlan({task,plan,busy,error,act,deadlineAction}:{task
    setSubmitted(true);
    if(await act('/tasks/'+encodeURIComponent(task.id)+'/personal-plan',
     {epoch:plan.epoch,revision:plan.revision,plannedAt:new Date(when).toISOString(),accept:plan.needsAcceptance,nextStep},'PUT',
-    plan.needsAcceptance?'Задача принята и добавлена в календарь.':'Время в календаре обновлено.'))setEditing(false);
+    plan.needsAcceptance?'Ознакомление подтверждено, план сохранён.':'Время в календаре обновлено.'))setEditing(false);
   }}>
    <label>Следующий шаг<input value={nextStep} maxLength={500} onChange={e=>setNextStep(e.target.value)} placeholder="Например, отправить клиенту расчёт"/></label>
    <label>{plan.needsAcceptance?'Плановая дата и время · МСК':'Дата и время шага · МСК'}
@@ -50,11 +50,11 @@ export function PersonalTaskPlan({task,plan,busy,error,act,deadlineAction}:{task
    {laterThanDeadline&&<p className="calendar-warning">Выбранное время позже крайнего срока задачи.</p>}
    {submitted&&error&&<p className="calendar-warning" role="alert">{error}</p>}
    <div className="calendar-actions">
-    <button type="submit" className="button primary" disabled={busy||!value||!!(plan.needsAcceptance&&laterThanDeadline)}>{plan.needsAcceptance?'Принять и запланировать':'Сохранить план'}</button>
+    <button type="submit" className="button primary" disabled={busy||!value||!!(plan.needsAcceptance&&laterThanDeadline)}>Сохранить план</button>
     <button type="button" className="button secondary" disabled={busy} onClick={()=>setEditing(false)}>Отмена</button>
    </div>
   </form>:<button type="button" className={'button '+(plan.needsAcceptance?'primary':'secondary')} disabled={busy}
-   onClick={()=>{setSubmitted(false);setNextStep(plan.nextStep??'');setValue(plan.plannedAt?moscowClock(plan.plannedAt):'');setEditing(true)}}>{plan.needsAcceptance?'Принять задачу':plan.plannedAt?'Изменить план':'Запланировать'}</button>)}
+   onClick={()=>{setSubmitted(false);setNextStep(plan.nextStep??'');setValue(plan.plannedAt?moscowClock(plan.plannedAt):'');setEditing(true)}}>{plan.needsAcceptance?'Ознакомлен':plan.plannedAt?'Изменить план':'Запланировать'}</button>)}
  </section>;
 }
 
@@ -124,7 +124,7 @@ export function PersonalCalendar({open,refreshKey}:{open?:(id:string)=>void;refr
   </div>
   {failure&&<div className="alert error" role="alert">{failure} <button className="text-button" onClick={()=>setAttempt(attempt+1)}>Повторить</button></div>}
   {data&&data.awaiting.length>0&&<section className="calendar-new">
-   <h3>Нужно принять · {data.awaiting.length}</h3>
+   <h3>К ознакомлению · {data.awaiting.length}</h3>
    <ul>{data.awaiting.map(task=><li key={task.id}>{taskLink(task,'#'+taskNumber(task)+' · '+task.title)}
     {task.deadline&&<small>Крайний срок {planTime.format(new Date(task.deadline))} МСК</small>}</li>)}</ul>
   </section>}
@@ -161,14 +161,14 @@ export function PersonalCalendar({open,refreshKey}:{open?:(id:string)=>void;refr
      <time>{moscowClock(task.plan.plannedAt!).slice(11)}</time>
      <div>{taskLink(task,'#'+taskNumber(task)+' · '+task.title)}
       {task.plan.nextStep&&<strong>{task.plan.nextStep}</strong>}
-      <small>{task.status==='completed'?'Завершена':task.status==='review'?'На приёмке':
+      <small>{task.status==='completed'?'Завершена':task.status==='review'?'Ждёт приёмки':
        task.deadline?'Крайний срок '+planTime.format(new Date(task.deadline))+' МСК':'Без крайнего срока'}</small></div>
     </li>)}</ul>
     {data&&<h4>Крайние сроки</h4>}
     {data&&!(deadlinesByDay.get(day)?.length)&&<p className="muted">На этот день крайних сроков нет.</p>}
     <ul className="calendar-task-list">{deadlinesByDay.get(day)?.map(task=><li key={task.id}>
      <time>{moscowClock(task.deadline!).slice(11)}</time><div>{taskLink(task,'#'+taskNumber(task)+' · '+task.title)}
-     {task.status==='review'&&<small>На приёмке</small>}</div>
+     {task.status==='review'&&<small>Ждёт приёмки</small>}</div>
     </li>)}</ul>
     {data?.canLogWork&&day<=today&&<WorkLog key={day} day={day} work={data.work.find(w=>w.date===day)} saved={entry=>{
      setLoaded(previous=>previous?.month===month?{month,data:{...previous.data,work:[...previous.data.work.filter(w=>w.date!==entry.date),entry]}}:previous);

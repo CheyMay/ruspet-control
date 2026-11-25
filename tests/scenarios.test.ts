@@ -1644,8 +1644,8 @@ test('sales assignment needs acceptance in web and bot, creates a private calend
  const {generateWebTaskNotices}=await import('../server/task-notices.js');
  const assigned=(await db.pool.query('SELECT id,created_at FROM outbox WHERE task_id=$1 AND task_assignment',[id])).rows[0];
  await generateWebTaskNotices(new Date(Date.parse(assigned.created_at)+11*60000));
- const assignmentNotice=(await request(manager.id,'/notifications')).data.find((n:{task_notice?:{assignmentIds:string[]}})=>n.task_notice?.assignmentIds.includes(assigned.id));
- assert(assignmentNotice?.task_notice.hasAssignments);
+ const assignmentNotice=(await request(manager.id,'/notifications')).data.find((n:{id:string;task_assignment?:boolean})=>n.id===assigned.id&&n.task_assignment);
+ assert.match(assignmentNotice?.body??'',/Подтвердите ознакомление/);
 
  const body={epoch:personalPlan.epoch,revision:0,plannedAt,accept:true};
  assert.equal((await request('admin',path+'/personal-plan',body,'PUT')).status,403);
@@ -1690,14 +1690,14 @@ test('sales assignment needs acceptance in web and bot, creates a private calend
  assert.equal((await request('ivan','/personal-calendar?month='+monthToday)).data.work.find((row:{date:string})=>row.date===today).minutes,430);
  assert(!(await request('admin','/personal-calendar?month='+monthToday)).data.work.some((row:{note:string})=>row.note==='Отчёт за день'));
 
- const second=await request('admin','/tasks',{...template,title:'Проверка приёма через Telegram'});
+ const second=await request('admin','/tasks',{...template,title:'Проверка приёма через Telegram',deadline:new Date(now+3*86400000).toISOString()});
  const {botView,botClick,botText}=await import('../server/bot.js'),channel='personal-plan-fixture';
  const card=await botView(manager,channel,{op:'task',id:second.data.id});
- const start=card.buttons.flat().find(b=>b.text==='Принять задачу');assert(start);
+ const start=card.buttons.flat().find(b=>b.text==='Ознакомлен');assert(start);
  await botClick(manager,channel,start.token);
  const confirm=await botText(manager,channel,'завтра в 15:00','plan-fixture-input');
- const button=confirm.buttons.flat().find(b=>b.text==='Подтвердить и отправить');assert(button,confirm.text);
+ const button=confirm.buttons.flat().find(b=>b.text==='Сохранить план');assert(button,confirm.text);
  const accepted=await botClick(manager,channel,button.token);
- assert.match(accepted.text,/Задача принята/);
+ assert.match(accepted.text,/Ознакомление подтверждено/);
  assert((await request(manager.id,'/tasks/'+second.data.id)).data.personalPlan.plannedAt);
 });

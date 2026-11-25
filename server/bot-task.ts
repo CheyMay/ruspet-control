@@ -163,8 +163,8 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const rows:ReturnType<typeof button>[][]=[];
  const plan=d.personalPlan;
  if(plan&&t.status==='active'){
-  if(plan.needsAcceptance)context.push('Не принята · примите задачу и укажите плановое время');
-  rows.push([button(plan.needsAcceptance?'Принять и запланировать':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
+  if(plan.needsAcceptance)context.push('Ждёт ознакомления · затем укажите плановое время');
+  rows.push([button(plan.needsAcceptance?'Ознакомлен':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
    {...extra,kind:plan.needsAcceptance?'accept_assignment':'edit_personal_plan',version:plan.epoch,revision:plan.revision})]);
   if(!plan.needsAcceptance)rows.push([button('Запланировать шаг','form',{...extra,kind:'personal_step',version:plan.epoch,revision:plan.revision})]);
  }
@@ -185,7 +185,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    rows.push([deadlineProposalButton(t,p.list,explained)]);
   }
  }
- if(!plan?.needsAcceptance&&t.status==='active'&&d.assignmentReceipt?.state==='pending')context.push('Не принята исполнителем');
+ if(!plan?.needsAcceptance&&t.status==='active'&&d.assignmentReceipt?.state==='pending')context.push('Ждёт ознакомления исполнителя');
  if(t.status==='review'&&!pending&&next?.userId)context.push(next.userId===u.id?'Результат ждёт вашей приёмки':'Результат на приёмке у '+name(next.userId));
  if(last||t.status==='review'||d.bitrixLinked)rows.push([button(t.status==='review'&&canReview(u,t,d.approvalScope)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);
  if(control){context.push('Нужно объяснение по проверке');rows.push([form('Дать объяснение','answer',control.id)]);}
@@ -195,7 +195,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  if(t.status==='completed'&&t.completed_at)facts.push('Закрыта '+date(t.completed_at)+' МСК');
  if(t.status!=='completed')facts.push(t.deadline?'Крайний срок '+date(t.deadline)+' МСК':'Без крайнего срока');
  facts.push(...taskFacts);
- if(!plan&&d.assignmentReceipt)facts.push(d.assignmentReceipt.state==='accepted'?'Исполнитель принял задачу':'Исполнитель ещё не принял задачу');
+ if(!plan&&d.assignmentReceipt)facts.push(d.assignmentReceipt.state==='accepted'?'Исполнитель ознакомился':'Исполнитель ещё не ознакомился');
  if(plan?.plannedAt)facts.push('Мой план '+date(plan.plannedAt)+' МСК');
  if(plan?.nextStep)facts.push('Следующий шаг: '+botExcerpt(plan.nextStep,160));
  if(t.status==='review'&&!pending&&canComplete(u,t,d.approvalScope))rows.push([form('Завершить задачу','complete')]);

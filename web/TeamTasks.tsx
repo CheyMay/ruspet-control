@@ -10,7 +10,7 @@ export function TeamTasks({tasks,users,now,paused,onSelect,heading='Задачи
  return <section className="panel team-summary">
   <div className="panel-heading"><div><h2>{heading}</h2><p>Выберите сотрудника или нажмите на показатель.</p></div></div>
   {people.length?<div className="table-scroll"><table>
-   <thead><tr><th>Сотрудник</th><th>Открыто</th><th>Просрочено</th><th>Сегодня</th><th>На приёмке</th></tr></thead>
+   <thead><tr><th>Сотрудник</th><th>Открыто</th><th>Просрочено</th><th>Сегодня</th><th>Ждёт приёмки</th></tr></thead>
    <tbody>{people.map(row=><tr key={row.user.id}>
     <th scope="row"><button className="text-button" onClick={()=>onSelect(row.user.id,'all')}>{row.user.name}</button></th>
     {(['unfinished','overdue','today','review'] as const).map(key=><td key={key}>

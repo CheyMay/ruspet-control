@@ -66,7 +66,7 @@ export function OrgWorkspace({currentUser}:{currentUser:User}){
   </section>
  </>;
 }
-const filters={all:'Все',overdue:'Просрочены',today:'Срок сегодня',review:'На приёмке',completed:'Завершены'} as const;
+const filters={all:'Все',overdue:'Просрочены',today:'Срок сегодня',review:'Ждёт приёмки',completed:'Завершены'} as const;
 export function DelegationInbox({open}:{open:(id:string)=>void}){
  const [entries,setEntries]=useState<Entry[]|null>(null),[error,setError]=useState(''),[filter,setFilter]=useState<keyof typeof filters>('all'),[query,setQuery]=useState(''),[reload,setReload]=useState(0);
  useEffect(()=>{

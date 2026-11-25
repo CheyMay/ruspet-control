@@ -19,7 +19,7 @@ export function botTaskStatus(task:Task,now:Date,pending=false){
  if(task.status==='completed')return 'Завершена';
  if(task.status==='active'&&task.assignment_pending)return 'Не принята';
  if(pending)return 'На согласовании';
- if(task.status==='review')return 'На приёмке';
+ if(task.status==='review')return 'Ждёт приёмки';
  if(taskQueue(task,now)==='overdue')return 'Просрочена';
  if(elapsedToday(task,now))return 'Срок сегодня прошёл';
  return 'В работе';

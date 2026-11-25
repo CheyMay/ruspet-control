@@ -23,7 +23,7 @@ export function ManagerHome({data,queue,open,tasks,placed,actions,team,sales,cal
     <button className="button secondary" onClick={placed}>Я постановщик</button>
     {team&&<button className="button secondary" onClick={team}>{sales?teamScopeLabels.team:'Задачи команды'}</button>}
     {sales&&<button className="button secondary" onClick={sales}>{teamScopeLabels.sales}</button>}
-    {calendar&&!!data.pendingAssignments&&<button className="button primary" onClick={calendar}>Принять и запланировать · {data.pendingAssignments}</button>}
+    {calendar&&!!data.pendingAssignments&&<button className="button primary" onClick={calendar}>К ознакомлению · {data.pendingAssignments}</button>}
    </div>
   </section>
   <div className="personal-metrics">
@@ -35,7 +35,7 @@ export function ManagerHome({data,queue,open,tasks,placed,actions,team,sales,cal
     <button type="button" className="text-button" onClick={()=>actions()}>Все сроки и действия <ArrowRight size={15}/></button></div>
    {focus.length?focus.slice(0,3).map(item=>{
     const task=item.task;
-    const label=item.needsAcceptance?'Принять назначение':item.action?.label??(item.deadlineState==='earlier'?'Просрочена':item.deadlineState==='expired'?'Срок истёк сегодня':'Крайний срок сегодня');
+    const label=item.needsAcceptance?'Ознакомиться с задачей':item.action?.label??(item.deadlineState==='earlier'?'Просрочена':item.deadlineState==='expired'?'Срок истёк сегодня':'Крайний срок сегодня');
     return <div className="personal-task-row" key={task.id}><button type="button" className="focus-task" onClick={()=>open(task.id,item.tab)}>
      <span className="focus-task-id">#{taskNumber(task)}</span>
      <div><strong>{task.title}</strong><TaskPeople task={task} users={data.users}/><small>{label}{task.deadline?' · '+timestamp.format(new Date(task.deadline))+' МСК':''}</small><TaskMeta task={task}/></div>

@@ -40,7 +40,7 @@ export function reportText(r:Report,includeTeam=true){
  add('Просрочены с прошлых дней',r.metrics.overdue,'overdue');
  add('Срок истёк сегодня',s.elapsedToday,'elapsed_today');
  add('Ещё есть время сегодня',Math.max(0,r.metrics.today-s.elapsedToday),'due_later_today');
- add('На приёмке',r.metrics.review,'review');
+ add('Ждёт приёмки',r.metrics.review,'review');
  if(s.approvalQueue?.decisionIds.length)add('Ждут решения по заявке',s.approvalQueue.decisionIds.length,'approval_decision');
  if(s.approvalQueue?.clarificationIds.length)add('Ждут ответа на уточнение',s.approvalQueue.clarificationIds.length,'approval_clarification');
  lines.push('','Результаты за период');

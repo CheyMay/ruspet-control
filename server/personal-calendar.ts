@@ -54,7 +54,7 @@ export async function taskAssignmentReceipt(task:Task,plan:TaskPersonalPlan|null
 
 export async function requireTaskAcceptance(user:User,task:Task,db:Db){
  if(user.id===task.assignee_id)
-  assert(!(await taskPersonalPlan(user,task,db))?.needsAcceptance,409,'Сначала примите задачу и укажите плановое время.');
+  assert(!(await taskPersonalPlan(user,task,db))?.needsAcceptance,409,'Сначала подтвердите ознакомление и укажите плановое время.');
 }
 export async function pendingAssignmentTasks(user:User,taskIds:string[],db:Db){
  if(!taskIds.length)return [];
@@ -79,7 +79,7 @@ export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof task
   const nextStep=input.nextStep??current.nextStep??'';
   if(current.plannedAt===plannedAt&&nextStep===(current.nextStep??'')&&(!input.accept||current.acceptedAt))return current;
   assert(current.revision===input.revision,409,'План уже изменился. Обновите карточку.');
-  assert(current.needsAcceptance===input.accept,409,current.needsAcceptance?'Сначала примите задачу.':'Назначение уже принято.');
+  assert(current.needsAcceptance===input.accept,409,current.needsAcceptance?'Сначала подтвердите ознакомление с задачей.':'Ознакомление уже подтверждено.');
   assert(+when>now,400,'Выберите будущее плановое время.');
   if(input.accept)checkAssignmentPlanDeadline(plannedAt,task.deadline);
   const row=(await db.query<PlanRow>(`INSERT INTO personal_task_plans AS p(task_id,assignment_epoch,user_id,planned_at,revision,next_step)
@@ -101,8 +101,8 @@ export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof task
   if(input.accept){
    await db.query(`UPDATE outbox SET read_at=coalesce(read_at,now()) WHERE task_assignment AND task_id=$1 AND recipient_id=$2
     AND withdrawn_at IS NULL`,[id,user.id]);
-   await event(db,id,user.id,'assignment_accepted','Исполнитель принял задачу');
-  }
+   await event(db,id,user.id,'assignment_accepted','Исполнитель ознакомился с задачей');
+  }else await event(db,id,user.id,'personal_plan_changed','Исполнитель обновил личный план');
   return ownPlan(row);
  });
 }

@@ -6,7 +6,7 @@ export const metrics={count:'Количество задач',price:'Сумма 
 export const numericOps={'>':'Больше','>=':'Не меньше','=':'Равно','!=':'Не равно','<=':'Не больше','<':'Меньше'} as const;
 export const filterOps={...numericOps,contains:'Содержит',exists:'Заполнено'} as const;
 const windows={today:'Сегодня',week:'Текущая неделя · пн–вс',nextWeek:'Следующая неделя · пн–вс',next7:'Ближайшие 7 дней, включая сегодня',overdue:'Срок до сегодняшнего дня',none:'Без срока'};
-const status={active:'В работе',review:'На приёмке',completed:'Завершена'};
+const status={active:'В работе',review:'Ждёт приёмки',completed:'Завершена'};
 const bool={yes:'Да',no:'Нет'};
 export const taskFilters={
  status:{label:'Состояние',kind:'choice',options:status},

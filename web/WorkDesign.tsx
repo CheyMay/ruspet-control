@@ -123,7 +123,7 @@ export function WorkDesign({user,users,draft,open,tasks,approvals,serverTime}:{u
  const taskIndex=new Map(tasks.map(task=>[task.id,task]));
  const pending=new Set(approvals.filter(a=>{const task=taskIndex.get(a.task_id);return task&&activeTaskApproval(task,a);}).map(a=>a.task_id));
  const timestamp=new Date(serverTime);
- const runTaskState=(task:Task)=>task.status==='completed'?'Завершена':pending.has(task.id)?'На согласовании':task.status==='review'?'На приёмке':
+ const runTaskState=(task:Task)=>task.status==='completed'?'Завершена':pending.has(task.id)?'На согласовании':task.status==='review'?'Ждёт приёмки':
   taskQueue(task,timestamp)==='overdue'||elapsedToday(task,timestamp)?'Просрочена':task.assignment_pending?'Ждёт принятия':'В работе';
  const template=editing?.definition??draft;
  const canProcess=canUseOkb(user);

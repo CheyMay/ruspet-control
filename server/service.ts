@@ -55,7 +55,7 @@ export async function notifyTaskAssignment(db:Db,task:Task,actorId:string|null,l
  if(task.assignee_id===actorId&&!acceptance)return;
  const link=(await db.query<{number:string}>('SELECT external_id::text AS number FROM bitrix_task_links WHERE task_id=$1',[task.id])).rows[0];
  const number=link?.number??task.id;
- const body=acceptance?'У вас новая задача #'+number+' · '+task.title+'\nПримите задачу и укажите плановое время.':label+' #'+number+' · '+task.title;
+ const body=acceptance?'У вас новая задача #'+number+' · '+task.title+'\nПодтвердите ознакомление и укажите плановое время.':label+' #'+number+' · '+task.title;
  await notify(db,task.id,task.assignee_id,body,key,true);
 }
 export async function config(db:Db=pool):Promise<{version:number;config:Rules}> { const row=(await db.query('SELECT * FROM rule_versions ORDER BY version DESC LIMIT 1')).rows[0];return {...row,config:{requiredPrice:true,showPlanning:false,writtenRules:[],...row.config}}; }

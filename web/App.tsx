@@ -45,6 +45,9 @@ import {WrittenRules} from './WrittenRules.js';
 import {WorkspaceGuide,WorkspaceTour} from './WorkspaceGuide.js';
 import type {TourStep} from './WorkspaceTraining.js';
 import {TrainingDownloads} from './TrainingDownloads.js';
+import {WorkspaceTitle} from './WorkspaceTitle.js';
+import type {WorkspaceLabelKey,WorkspaceLabels} from '../shared/workspace-labels.js';
+import type {AnalyticsSelection} from '../shared/team-analytics.js';
 import {TaskKanban,TaskViewSwitch} from './TaskKanban.js';
 import {Login} from './Login.js';
 import {ThemeToggle} from './ThemeToggle.js';
@@ -98,7 +101,7 @@ const previewSections=new Set<Page>(['overview','actions','tasks','approvals','c
 const date=(v:string|null,full=false)=>v?new Date(v).toLocaleString('ru-RU',{timeZone:'Europe/Moscow',day:'2-digit',month:'short',...(full?{hour:'2-digit',minute:'2-digit'}:{})}):'Без срока';
 const day=(v:string)=>new Intl.DateTimeFormat('en-CA',{timeZone:'Europe/Moscow',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date(v));
 const initials=(name:string)=>name.split(' ').slice(0,2).map(s=>s[0]).join('');
-const stateLabels:Record<string,string>={unaccepted:'Не принята',canceled:'Отменено',pending:'На согласовании',approved:'Согласовано',rejected:'Отказано',stale:'Требует нового запроса',active:'В работе',review:'На приёмке',completed:'Завершена',waiting:'Ждём ответа',answered:'Ответ получен',escalated:'Эскалация',resolved:'Устранено'};
+const stateLabels:Record<string,string>={unaccepted:'Ждёт ознакомления',canceled:'Отменено',pending:'На согласовании',approved:'Согласовано',rejected:'Отказано',stale:'Требует нового запроса',active:'В работе',review:'Ждёт приёмки',completed:'Завершена',waiting:'Ждём ответа',answered:'Ответ получен',escalated:'Эскалация',resolved:'Устранено'};
 const managed=(u:User)=>u.role!=='employee';
 const allowedRequest=(u:User,t:Task)=>u.id===t.assignee_id||u.id===t.creator_id||managed(u)&&(u.role!=='branch_manager'||(u.company_branch_access||branchCovers(u.branch_id,t.branch_id)));
 function Empty({children}: {children:ReactNode}){return <div className="empty"><CheckCheck size={28}/><h3>Здесь пока нет записей</h3><p>{children}</p></div>;}
@@ -111,6 +114,8 @@ export function App(){
  const [users,setUsers]=useState<User[]>([]),[data,setData]=useState<Bootstrap|null>(null),[requestedPage,setPage]=useState<Page>('overview'),[error,setError]=useState(''),[toast,setToast]=useState(''),[busy,setBusy]=useState(false),[loading,setLoading]=useState(true);
  const [filter,setFilter]=useRememberedFilter(data?.user.id,'App.filter','all'),[search,setSearch]=useState(''),[branch,setBranch]=useRememberedFilter(data?.user.id,'App.branch','all'),[owner,setOwner]=useRememberedFilter(data?.user.id,'App.owner','all'),[workDay,setWorkDay]=useState<string|null>(null),[priceFilter,setPriceFilter]=useRememberedFilter(data?.user.id,'App.priceFilter','all'),[linkedIds,setLinkedIds]=useState<string[]|null>(null),[reportOpen,setReportOpen]=useState<string|null>(null),[reportPdf,setReportPdf]=useState(false),[sort,setSort]=useRememberedFilter(data?.user.id,'App.sort','deadline'),[fromDate,setFromDate]=useRememberedFilter(data?.user.id,'App.fromDate',''),[toDate,setToDate]=useRememberedFilter(data?.user.id,'App.toDate',''),[tablePage,setTablePage]=useState(0);
  const [settingsTarget,setSettingsTarget]=useState<string>();
+ const [workspaceLabels,setWorkspaceLabels]=useState<WorkspaceLabels>({}),[editingLabels,setEditingLabels]=useState(false);
+ const [analysisMissing,setAnalysisMissing]=useState(0),[analysisLoading,setAnalysisLoading]=useState(false);
  const [taskPresentation,setTaskPresentation]=useRememberedFilter(data?.user.id,'App.taskPresentation','list');
  const [showBoardFilters,setShowBoardFilters]=useState(false);
  const [tour,setTour]=useState<{steps:TourStep[];index:number;taskId?:string}|null>(null);
@@ -316,31 +321,39 @@ export function App(){
  const userById=(id:string)=>data?.users.find(u=>u.id===id);
  useEffect(()=>{
   if(!data)return;
+  let polling=false;
   const refreshVisible=()=>{
-   if(document.visibilityState!=='visible')return;
-   void refresh().then(()=>{if(selected)return refreshDetail(selected);}).catch(()=>{});
+   if(document.visibilityState!=='visible'||polling||writeRunning.current||!navigator.onLine)return;
+   polling=true;
+   void refresh().catch(()=>{}).finally(()=>{polling=false;});
   };
   const offline=()=>setConnectionIssue('unavailable');
-  const poll=()=>{if(!busy&&!editor&&!requestType&&!boardMove&&navigator.onLine)refreshVisible();};
-  const visible=()=>{const stamp=snapshot.current?.data.serverTime;if(!stamp||Date.now()-Date.parse(stamp)>60000)poll();};
+  const visible=()=>{const stamp=snapshot.current?.data.serverTime;if(!stamp||Date.now()-Date.parse(stamp)>30_000)refreshVisible();};
   window.addEventListener('online',refreshVisible);
   window.addEventListener('offline',offline);
   document.addEventListener('visibilitychange',visible);
   if(!navigator.onLine)offline();
-  const timer=setInterval(poll,60000);
+  const timer=setInterval(refreshVisible,30_000);
   return()=>{
    clearInterval(timer);
    window.removeEventListener('online',refreshVisible);
    window.removeEventListener('offline',offline);
    document.removeEventListener('visibilitychange',visible);
   };
- },[data?.user.id,busy,editor,requestType,boardMove,selected]);
+ },[data?.user.id]);
+ useEffect(()=>{
+  if(!data?.user.id)return;
+  let active=true;
+  void api<WorkspaceLabels>('/workspace/labels').then(labels=>{if(active)setWorkspaceLabels(labels);}).catch(()=>{});
+  return()=>{active=false;};
+ },[data?.user.id]);
  useEffect(()=>{if(data&&!data.rules.showPlanning&&filter==='planned_today')setFilter('all');},[data?.rules.showPlanning,filter]);
  const routeFromUrl=useRef(location.search);
  const linkHandler=useRef<(sameSection?:boolean)=>void>(()=>{});
  linkHandler.current=(sameSection=false)=>{if(!data)return;
  const q=new URLSearchParams(location.search);
  const next=q.get('view');routeFromUrl.current=location.search;
+ setAnalysisMissing(0);setAnalysisLoading(false);
  const drawer=new URLSearchParams(location.hash.slice(1));
  const taskId=drawer.get('task')??q.get('task');
  clearTask();setEditor(null);setCompletingTask(null);setBoardMove(null);setMobileMenu(false);
@@ -354,6 +367,19 @@ export function App(){
  else if((ownerParam||q.has('report'))&&hasCompanyOverview(data.user))setTaskView('company');
  else if(ownerParam&&managed(data.user))setTaskView('team');
  else setTaskView(defaultTaskView);
+ const analyticsMetric=q.get('analytics-metric');
+ if(analyticsMetric&&data.analyticsAccess){
+  setTablePage(0);setSearch('');setGroupFilter('');setBranch('all');setOwner('all');setFromDate('');setToDate('');
+  setPriceFilter('all');setWorkDay(null);setFilter('all');setLinkedIds([]);setAnalysisLoading(true);
+  const expected=location.search,params=new URLSearchParams({metric:analyticsMetric,period:q.get('analytics-period')??'day'});
+  for(const group of (q.get('analytics-group')??'').split('|').filter(Boolean))params.append('group',group);
+  for(const name of ['person','stage']){const value=q.get('analytics-'+name);if(value)params.set(name,value);}
+  void api<AnalyticsSelection>('/analytics/drilldown?'+params).then(result=>{
+   if(location.search===expected){setLinkedIds(result.ids);setAnalysisMissing(result.total-result.ids.length);}
+  }).catch(error=>{if(location.search===expected)setError(error.message);})
+    .finally(()=>{if(location.search===expected)setAnalysisLoading(false);});
+  return;
+ }
  setTablePage(0);setSearch('');setBranch('all');setFromDate('');setToDate('');setLinkedIds(null);setFilter(q.get('filter')||'all');setOwner(q.get('owner')||(history.state?.depth?owner:'all'));setWorkDay(q.get('day'));if(['deadline','title','transfers','price_desc','work_priority','urgency'].includes(q.get('sort')||''))setSort(q.get('sort')!);setPriceFilter(q.get('price')||'all');const person=q.get('person');if(person)setLinkedIds(data.tasks.filter(task=>task.status!=='completed'&&(task.assignee_id===person||task.creator_id===person)).map(task=>task.id));const reportId=q.get('report');if(reportId)void api<import('../shared/types.js').Report>('/reports/'+encodeURIComponent(reportId)).then(r=>{const subset=q.get('subset'),s=r.summary,at=new Date(s?.to||r.created_at);const outcomeIds:Record<string,string[]|undefined>={submitted:s?.activity.submittedIds,transferred:s?.outcomes?.transferIds,requested_transfer:s?.outcomes?.requestedTransferIds,explained:s?.outcomes?.explanationIds,approval_decision:s?.approvalQueue?.decisionIds,approval_clarification:s?.approvalQueue?.clarificationIds,creator_open:s?.creatorProgress?.openIds,creator_moved:s?.creatorProgress?.movedIds,creator_idle:s?.creatorProgress?.idleOverdueIds,creator_decision:s?.creatorProgress?.myDecisionIds,creator_on_time:s?.creatorProgress?.closedOnTimeIds,creator_late:s?.creatorProgress?.closedLateIds};const ids=subset&&subset in outcomeIds?outcomeIds[subset]:subset==='elapsed_today'?r.rows.filter(t=>elapsedToday(t,at)).map(t=>t.id):subset==='due_later_today'?r.rows.filter(t=>taskQueue(t,at)==='today'&&!elapsedToday(t,at)).map(t=>t.id):subset==='expected'?s?.front.expectedIds:subset==='front_closed'?s?.front.closedIds:subset==='processed'?s?.activity.processedIds:subset==='closed'?s?.activity.closedIds:subset==='remaining'?s?.front.remainingIds:subset==='tomorrow'?s?.tomorrow.ids:subset==='late'?s?.lateIds:r.rows.filter(t=>!subset||subset==='all'||taskQueue(t,at)===subset).map(t=>t.id);setLinkedIds(ids||[]);setFilter('all');}).catch(e=>setError(e.message));};
  useEffect(()=>{
   if(!data)return;
@@ -415,7 +441,7 @@ export function App(){
     <td><Badge state={taskState(t)}>{taskState(t)==='overdue'?'Просрочена':undefined}</Badge>{(approval||t.status==='review')&&next?.userId&&<small>{next.label} · {userById(next.userId)?.name??next.userId}</small>}</td>
     <td className="mono">{t.transfer_count||'—'}</td>
     <td><div className="task-row-actions">
-     {!viewingEmployee&&!t.workspace_read_only&&t.assignee_id===data!.user.id&&t.assignment_pending&&<button type="button" className="button secondary" onClick={()=>void openTask(t.id)}>Принять</button>}
+     {!viewingEmployee&&!t.workspace_read_only&&t.assignee_id===data!.user.id&&t.assignment_pending&&<button type="button" className="button secondary" onClick={()=>void openTask(t.id)}>Ознакомиться</button>}
      {!viewingEmployee&&!t.workspace_read_only&&t.status==='review'&&canReview(data!.user,t)&&approval?.type!=='deadline'&&(!approval?.clarification_requested_at||!!approval.clarification_answered_at)&&
       <button type="button" className="button primary" disabled={busy} onClick={()=>void act(`/tasks/${t.id}/review`,{action:'accept',comment:'',expectedVersion:t.version},'POST','Результат принят, задача завершена.')}>Принять результат</button>}
      {!viewingEmployee&&!t.workspace_read_only&&canComplete(data!.user,t,data!.approvalScope)&&approval?.type!=='completion'&&!data!.pendingAssignmentIds?.includes(t.id)&&
@@ -512,13 +538,22 @@ export function App(){
  const myWork=workQueue(data),myActionCount=workCount(myWork);
  const myApprovals=pending.filter(a=>approvalTurn(a).userId===data.user.id&&!taskIndex.get(a.task_id)?.workspace_read_only);
  const scopedMetrics=summarize(matchingTasks,now,pendingTasks);
- const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.filter(t=>linkedIds||t.status!=='completed').length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(filter==='unaccepted'||matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'К принятию',count:matchingTasks.filter(t=>t.assignment_pending).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'На приёмке',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
+ const taskTabs=[{id:'all',label:'Все задачи',count:matchingTasks.filter(t=>linkedIds||t.status!=='completed').length},{id:'today',label:'Срок сегодня',count:scopedMetrics.today-scopedMetrics.elapsedToday},...(filter==='unaccepted'||matchingTasks.some(t=>t.assignment_pending)?[{id:'unaccepted',label:'К ознакомлению',count:matchingTasks.filter(t=>t.assignment_pending).length}]:[]),...(data.rules.showPlanning?[{id:'planned_today',label:'План на сегодня'}]:[]),{id:'overdue',label:'Просрочено',count:scopedMetrics.overdue+scopedMetrics.elapsedToday},{id:'review',label:'Ждёт приёмки',count:scopedMetrics.review},{id:'upcoming',label:'Предстоящие'},{id:'no_deadline',label:'Без срока'},{id:'pending',label:'На согласовании',count:matchingTasks.filter(task=>pendingTasks.has(task.id)).length},{id:'completed',label:'Завершены'}];
  const cardReadOnly=viewingEmployee||!!detail?.task.workspace_read_only;
  const cardApproval=detail?.approvals.find(a=>activeTaskApproval(detail.task,a));
  const cardCanComplete=!!detail&&!cardReadOnly&&cardApproval?.type!=='completion'&&!detail.personalPlan?.needsAcceptance&&canComplete(data.user,detail.task,detail.approvalScope);
  const cardCanSubmit=!!detail&&!cardReadOnly&&!cardCanComplete&&!detail.personalPlan?.needsAcceptance&&
   cardApproval?.type!=='completion'&&detail.task.status==='active'&&allowedRequest(data.user,detail.task);
  const title=page==='guide'?'Гайд':page==='notifications'?'Уведомления':nav.find(n=>n.id===page)?.label;
+ const canEditLabels=!!data.user.root_access&&!viewingEmployee;
+ const labelText=(key:WorkspaceLabelKey,fallback:string)=>workspaceLabels[key]??fallback;
+ const renderTitle=(key:WorkspaceLabelKey,fallback:string)=><WorkspaceTitle key={key} value={labelText(key,fallback)}
+  save={canEditLabels&&editingLabels?async label=>{
+   await api('/workspace/labels','PUT',{key,label});
+   setWorkspaceLabels(old=>({...old,[key]:label}));
+  }:undefined}/>;
+ const titleEditButton=canEditLabels?<button type="button" className="button secondary" aria-pressed={editingLabels}
+  onClick={()=>setEditingLabels(!editingLabels)}><Pencil size={15}/>{editingLabels?'Готово':'Названия'}</button>:null;
  const user=data.user;
  const guideEnabled=(area:Page)=>(!viewingEmployee||previewSections.has(area))&&canOpenWorkspacePage(user,area,data.analyticsAccess);
  function showTourStep(step:TourStep,taskId?:string){
@@ -536,9 +571,9 @@ export function App(){
  }
  function openGuide(){go('guide');}
  return <div className="app">
-  <aside className={mobileMenu?'sidebar mobile-open':'sidebar'}><a className="brand" href="#" onClick={e=>{e.preventDefault();go('overview');}}><CapMark/><span>РУСПЭТ<small>Контроль и согласование</small></span></a>{data.managerPreview&&<p className="nav-label">Учебный стенд</p>}<nav>{nav.filter(n=>(!viewingEmployee||previewSections.has(n.id))&&canOpenWorkspacePage(data.user,n.id,data.analyticsAccess)).map(({id,label,icon:Icon},i)=><button key={id} className={`${page===id?'active':''} ${i===6?'nav-divider':''}`} onClick={()=>go(id)}><Icon size={18}/><span>{label}</span>{id==='actions'&&myActionCount>0&&<b title="Задачи, где ход за вами">{myActionCount}</b>}{id==='approvals'&&myApprovals.length>0&&<b>{myApprovals.length}</b>}</button>)}{!viewingEmployee&&data.user.root_access&&<a className="owner-planner-link" href="/time"><CalendarDays size={18}/> Личный планер</a>}{!viewingEmployee&&<a className="owner-planner-link" href="/mobile"><MessageSquare size={18}/> Мобильная версия</a>}</nav></aside>
+  <aside className={mobileMenu?'sidebar mobile-open':'sidebar'}><a className="brand" href="#" onClick={e=>{e.preventDefault();go('overview');}}><CapMark/><span>РУСПЭТ<small>Контроль и согласование</small></span></a>{data.managerPreview&&<p className="nav-label">Учебный стенд</p>}<nav>{nav.filter(n=>(!viewingEmployee||previewSections.has(n.id))&&canOpenWorkspacePage(data.user,n.id,data.analyticsAccess)).map(({id,label,icon:Icon},i)=><button key={id} className={`${page===id?'active':''} ${i===6?'nav-divider':''}`} onClick={()=>go(id)}><Icon size={18}/><span>{labelText(id,label)}</span>{id==='actions'&&myActionCount>0&&<b title="Задачи, где ход за вами">{myActionCount}</b>}{id==='approvals'&&myApprovals.length>0&&<b>{myApprovals.length}</b>}</button>)}{!viewingEmployee&&data.user.root_access&&<a className="owner-planner-link" href="/time"><CalendarDays size={18}/> Личный планер</a>}{!viewingEmployee&&<a className="owner-planner-link" href="/mobile"><MessageSquare size={18}/> Мобильная версия</a>}</nav></aside>
   <div className={'workspace-main'+(page==='tasks'&&showKanban?' kanban-workspace':'')}><header className="topbar"><div className="breadcrumb"><button className="icon-button mobile-toggle" aria-label="Меню" onClick={()=>setMobileMenu(!mobileMenu)}><PanelLeftClose size={19}/></button>{canGoBack&&<button type="button" className="text-button workspace-back" onClick={()=>history.back()}>‹ Назад</button>}<span>Рабочее пространство</span><ChevronRight size={14}/><strong>{title}</strong></div><div className="topbar-right"><button type="button" className="button secondary command-trigger" aria-label="Команды и поиск" onClick={()=>setCommandOpen(true)}><Search size={16}/><span className="command-trigger-label">Поиск</span><kbd>Ctrl K</kbd></button><button type="button" className="button secondary guide-entry" onClick={openGuide} aria-current={page==='guide'?'page':undefined}><BookOpen size={17}/> Гайд</button><ThemeToggle/>{demo&&<span className="demo-label">ДЕМО</span>}<button className="icon-button notification-button" aria-label="Уведомления" onClick={()=>go('notifications')}><Bell size={19}/>{data.notifications.some(item=>!item.read_at)&&<i/>}</button><div className="user-switch"><Avatar user={data.user}/>{demo?<div><label htmlFor="persona">Демонстрационная роль</label><select id="persona" value={data.user.id} disabled={busy} onChange={e=>void login(e.target.value)}>{users.map(u=><option key={u.id} value={u.id}>{u.name} · {roles[u.role]}</option>)}</select></div>:<div><strong>{data.user.name}</strong><small>{data.user.root_access?'Владелец · root':data.user.position.trim()||roles[data.user.role]}</small></div>}{!demo&&!viewingEmployee&&<button className="text-button" disabled={busy} onClick={()=>void logout()}>Выйти</button>}</div></div></header>
-  <main>{viewingEmployee&&<div className="source-banner view-as-banner"><div><strong>Просмотр от имени {data.user.name}</strong><p>Данные и задачи доступны по роли сотрудника. Режим только для чтения.</p></div><a className="button secondary" href="/">В админскую панель</a></div>}{page!=='analytics'&&page!=='guide'&&<div className="page-heading"><div>{page==='overview'&&<div className="eyebrow">{new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'long',year:'numeric',weekday:'long'}).format(now)}</div>}<h1>{title}</h1>{page!=='overview'&&<p>{({org:'Руководители команд и временные замещения.',delegations:'Выданные поручения, сроки и приёмка.',processes:'Условия создания задач и расписания повторений.',okb:'Компании, контакты и состояние работы с ними.',catalog:'Артикулы и характеристики продукции.',actions:'Просрочки, оставшиеся сроки на сегодня и задачи, где нужен следующий шаг.',bot:'Личные чаты и действия по задачам.',overview:'',tasks:'Сроки, исполнители и полная история каждой задачи.',approvals:'Запросы на перенос крайнего срока и закрытие задач.',checks:'Нарушения по задачам и ответы сотрудников.',reports:'Сохранённые снимки состояния. Часовой пояс — Москва.',people:'Нагрузка и состояние задач в вашей области доступа.',journal:'История действий, ответов и решений без перезаписи.',settings:'Правила контроля, маршруты и состояние подключений.',notifications:'Уведомления по задачам, проверкам и решениям.'} as Record<Page,string>)[page]}</p>}</div><div className="heading-actions">{page!=='bot'&&<button className="button secondary square" aria-label="Обновить данные" disabled={busy} onClick={()=>{setBusy(true);refresh().then(()=>showToast('Данные обновлены')).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}><RefreshCw size={16}/></button>}{page==='bot'&&<button className="button secondary" onClick={()=>openSettings('notices')}>Уведомления и Telegram</button>}{!viewingEmployee&&page==='tasks'&&<button className="button primary" disabled={busy} onClick={()=>setEditor({task:null})}>Создать задачу</button>}{!viewingEmployee&&managed(data.user)&&page==='checks'&&<button className="button primary" disabled={busy} onClick={()=>void act('/checks/run',undefined,'POST','Проверка завершена. Нарушения и запросы обновлены.')} ><ShieldCheck size={17}/> Проверить задачи</button>}</div></div>}
+  <main>{viewingEmployee&&<div className="source-banner view-as-banner"><div><strong>Просмотр от имени {data.user.name}</strong><p>Данные и задачи доступны по роли сотрудника. Режим только для чтения.</p></div><a className="button secondary" href="/">В админскую панель</a></div>}{page!=='analytics'&&page!=='guide'&&<div className="page-heading"><div>{page==='overview'&&<div className="eyebrow">{new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'long',year:'numeric',weekday:'long'}).format(now)}</div>}<h1>{renderTitle(page,title??'РУСПЭТ')}</h1>{page!=='overview'&&<p>{({org:'Руководители команд и временные замещения.',delegations:'Выданные поручения, сроки и приёмка.',processes:'Условия создания задач и расписания повторений.',okb:'Компании, контакты и состояние работы с ними.',catalog:'Артикулы и характеристики продукции.',actions:'Просрочки, оставшиеся сроки на сегодня и задачи, где нужен следующий шаг.',bot:'Личные чаты и действия по задачам.',overview:'',tasks:'Сроки, исполнители и полная история каждой задачи.',approvals:'Запросы на перенос крайнего срока и закрытие задач.',checks:'Нарушения по задачам и ответы сотрудников.',reports:'Сохранённые снимки состояния. Часовой пояс — Москва.',people:'Нагрузка и состояние задач в вашей области доступа.',journal:'История действий, ответов и решений без перезаписи.',settings:'Правила контроля, маршруты и состояние подключений.',notifications:'Уведомления по задачам, проверкам и решениям.'} as Record<Page,string>)[page]}</p>}</div><div className="heading-actions">{titleEditButton}{page!=='bot'&&<button className="button secondary square" aria-label="Обновить данные" disabled={busy} onClick={()=>{setBusy(true);refresh().then(()=>showToast('Данные обновлены')).catch(e=>setError(e.message)).finally(()=>setBusy(false));}}><RefreshCw size={16}/></button>}{page==='bot'&&<button className="button secondary" onClick={()=>openSettings('notices')}>Уведомления и Telegram</button>}{!viewingEmployee&&page==='tasks'&&<button className="button primary" disabled={busy} onClick={()=>setEditor({task:null})}>Создать задачу</button>}{!viewingEmployee&&managed(data.user)&&page==='checks'&&<button className="button primary" disabled={busy} onClick={()=>void act('/checks/run',undefined,'POST','Проверка завершена. Нарушения и запросы обновлены.')} ><ShieldCheck size={17}/> Проверить задачи</button>}</div></div>}
   {connectionNotice}
   {page==='guide'&&<WorkspaceGuide user={user} enabled={guideEnabled} launch={startTour} preview={viewingEmployee} salesOverview={data.analyticsAccess==='sales'}
    open={area=>go(area)}/>}
@@ -553,19 +588,20 @@ export function App(){
 
 
   {!viewingEmployee&&page==='calendar'&&(data.user.root_access?<section className="panel"><div className="panel-heading"><h2>Личный планер</h2><a className="button primary" href="/time">Открыть планер</a></div></section>:<PersonalCalendar open={id=>void openTask(id)} refreshKey={data.serverTime}/>)}
-  {page==='analytics'&&!viewingEmployee&&data.analyticsAccess&&<WorkspaceSection label="Загружаем аналитику…"><TeamAnalytics key={data.user.id} splitTeams={!!data.salesTeams}/></WorkspaceSection>}
+  {page==='analytics'&&!viewingEmployee&&data.analyticsAccess&&<WorkspaceSection label="Загружаем аналитику…"><TeamAnalytics key={data.user.id} splitTeams={!!data.salesTeams} renderTitle={renderTitle} editButton={titleEditButton}
+   onTasks={params=>{go('tasks','all',defaultTaskView,'all',true,params);linkHandler.current();}}/></WorkspaceSection>}
 
 
   {page==='tasks'&&<>
-   {showPersonalAssignments&&!linkedIds&&!viewingEmployee&&!tour&&unaccepted.length>0&&<section className="panel assignment-queue" aria-label="Новые задачи к принятию">
-    <div className="panel-heading"><div><h2>Новые задачи к принятию · {unaccepted.length}</h2>
-     <p>Примите задачу и укажите, когда планируете ею заняться.</p></div>
+   {showPersonalAssignments&&!linkedIds&&!viewingEmployee&&!tour&&unaccepted.length>0&&<section className="panel assignment-queue" aria-label="Новые задачи к ознакомлению">
+    <div className="panel-heading"><div><h2>Новые задачи к ознакомлению · {unaccepted.length}</h2>
+     <p>Откройте задачу, подтвердите ознакомление и выберите время.</p></div>
      {filter!=='unaccepted'&&<button type="button" className="button secondary" onClick={()=>go('tasks','unaccepted','mine')}>Показать все</button>}
     </div>
     {filter!=='unaccepted'&&<ul>{unaccepted.slice(0,3).map(task=><li key={task.id}>
      <div><button type="button" className="text-button assignment-title" onClick={()=>void openTask(task.id)}>#{taskNumber(task)} · {task.title}</button>
       {task.description&&<p className="muted assignment-description">{task.description.trim().slice(0,160)}{task.description.trim().length>160?'…':''}</p>}</div>
-     <button type="button" className="button primary" onClick={()=>void openTask(task.id)}>Принять и запланировать</button>
+     <button type="button" className="button primary" onClick={()=>void openTask(task.id)}>Ознакомиться</button>
     </li>)}</ul>}
    </section>}
    <div className="task-view-bar"><div className="task-scope-switches" aria-label="Область задач">
@@ -585,7 +621,9 @@ export function App(){
      <dl className="freshness"><div><dt>Импорт в систему</dt><dd>{moscowTimestamp(data.source.imported_at)}</dd></div><div><dt>Последнее изменение задач</dt><dd>{moscowTimestamp(data.lastTaskChange)}</dd></div><div><dt>Расчёт показателей</dt><dd>{moscowTimestamp(data.serverTime)}</dd></div></dl>
     </details>}</>}
   </details>}{teamDirectory?<TeamTasks tasks={scopedTasks} users={data.users} now={now} paused={pendingTasks} heading={data.salesTeams&&isTeamScope(currentScope)?teamScopeLabels[currentScope]:undefined}
-    onSelect={(id,f)=>{go('tasks',f,currentScope);setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">{new URLSearchParams(location.search).has('person')?'Задачи сотрудника · '+(userById(new URLSearchParams(location.search).get('person')!)?.name??''):'Выборка из сохранённого отчёта · показано текущее состояние доступных задач.'}<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={value=>{pushSectionStep({view:'tasks',scope:currentScope,filter:value==='all'?null:value});setFilter(value);}} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel" data-presentation={showKanban?'board':'list'}><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label>{(groups.groups.length>0||groups.companyGroups.length>0)&&!viewingEmployee&&<select aria-label="Эпик" value={groupFilter} onChange={e=>{setGroupFilter(e.target.value);setTablePage(0);}}>
+    onSelect={(id,f)=>{go('tasks',f,currentScope);setOwner(id);}}/>:<>{linkedIds&&<div className="source-banner">{new URLSearchParams(location.search).has('analytics-metric')?
+    (analysisLoading?'Загружаем выборку из аналитики…':analysisMissing?'Выборка из аналитики · без доступа к карточке: '+analysisMissing:'Выборка из аналитики'):
+    new URLSearchParams(location.search).has('person')?'Задачи сотрудника · '+(userById(new URLSearchParams(location.search).get('person')!)?.name??''):'Выборка из сохранённого отчёта · показано текущее состояние доступных задач.'}<button className="text-button" onClick={()=>go('tasks','all')}>Сбросить выборку</button></div>}<Tabs value={filter} onChange={value=>{pushSectionStep({view:'tasks',scope:currentScope,filter:value==='all'?null:value});setFilter(value);}} items={taskTabs}/>{!taskTabs.some(t=>t.id===filter)&&<div className="active-filter">Выборка: {({active:'Активные',review:'Ожидают приёмки',my_due:'Мои просрочки и сроки на сегодня',waiting:'Ждут ответа исполнителя'} as Record<string,string>)[filter]||(filter.startsWith('day:')?'Крайний срок '+filter.slice(4):filter==='risk'?'Риск потери клиента':filter)}<button className="text-button" onClick={()=>setFilter('all')}>Сбросить</button></div>}<section className="panel task-panel" data-presentation={showKanban?'board':'list'}><div className="filters"><label className="search-input"><Search size={17}/><input aria-label="Поиск задач" placeholder="Название, номер или сотрудник" value={search} onChange={e=>setSearch(e.target.value)}/></label>{(groups.groups.length>0||groups.companyGroups.length>0)&&!viewingEmployee&&<select aria-label="Эпик" value={groupFilter} onChange={e=>{setGroupFilter(e.target.value);setTablePage(0);}}>
     <option value="">Все эпики</option>{groups.groups.length>0&&<optgroup label="Мои эпики">{groups.groups.map(group=><option value={group.id} key={group.id}>{group.name}</option>)}</optgroup>}{groups.companyGroups.length>0&&<optgroup label="Эпики компании">{groups.companyGroups.map(group=><option value={group.id} key={group.id}>{group.name}</option>)}</optgroup>}
    </select>}{showKanban&&<button type="button" className="button secondary" aria-expanded={showBoardFilters} aria-controls="task-filter-options" onClick={()=>setShowBoardFilters(value=>!value)}><Filter size={16}/> Фильтры</button>}<div id="task-filter-options" className="task-filter-options" hidden={showKanban&&!showBoardFilters}><SearchFilter label="Филиал" value={branch} onChange={setBranch} empty={{value:'all',label:'Все филиалы'}} placeholder="Название подразделения" options={[...new Set(data.tasks.map(t=>t.branch_id))].sort((a,b)=>a.localeCompare(b,'ru')).map(value=>({value,label:value}))}/>{(currentScope!=='mine'||linkedIds)&&<EmployeeFilter label="Исполнители" values={ownerSelection} onChange={ids=>setOwner(writeFilterSelection(ids))} empty={{value:'all',label:'Все исполнители'}} people={data.users.filter(u=>selectedOwners.has(u.id)||scopedOwners.has(u.id))}/>}<label className="date-filter">Крайний срок от<input aria-label="Крайний срок от" type="date" value={fromDate} onChange={e=>setFromDate(e.target.value)}/></label><label className="date-filter">до<input aria-label="Крайний срок до" type="date" min={fromDate} value={toDate} onChange={e=>setToDate(e.target.value)}/></label><select aria-label="Категория цены" value={priceFilter} onChange={e=>{setPriceFilter(e.target.value);setTablePage(0)}}><option value="all">Любая цена</option>{Object.entries(priceLabels).map(([id,label])=><option key={id} value={id}>{label}</option>)}</select><select aria-label="Сортировка" value={sort} onChange={e=>setSort(e.target.value)}><option value="deadline">По сроку</option><option value="price_desc">По цене: сначала дороже</option><option value="work_priority">Порядок работы: просрочки и цена</option><option value="urgency">По критичности и приоритету</option><option value="title">По названию</option><option value="transfers">По переносам</option></select></div></div>{(search||(currentScope!=='mine'||linkedIds)&&!!selectedOwners.size||branch!=='all'||fromDate||toDate||priceFilter!=='all'||workDay)&&<div className="active-filter"><span>{[search&&'Поиск: '+search,(currentScope!=='mine'||linkedIds)&&ownerNames,branch!=='all'&&branch,fromDate&&'С '+fromDate,toDate&&'По '+toDate,priceFilter!=='all'&&priceLabels[priceFilter as keyof typeof priceLabels],workDay&&'На '+workDay].filter(Boolean).join(' · ')}</span><button className="text-button" onClick={()=>go('tasks','all')}>Сбросить фильтры</button></div>}{!showKanban&&<>{renderTaskTable(visible)}{visible.length>50&&<div className="pagination"><button className="button secondary" disabled={tablePage===0} onClick={()=>setTablePage(p=>p-1)}>Назад</button><span>{tablePage+1} / {Math.ceil(visible.length/50)}</span><button className="button secondary" disabled={(tablePage+1)*50>=visible.length} onClick={()=>setTablePage(p=>p+1)}>Далее</button></div>}<div className="panel-footer"><span>Найдено {visible.length} из {scopedTasks.length}</span></div></>}</section>
    {showKanban&&<TaskKanban tasks={visible} users={data.users} viewerId={data.user.id} now={now} pending={pendingTasks} filtered={filter!=='all'||visible.length!==scopedTasks.length||!!linkedIds}
@@ -611,7 +649,11 @@ export function App(){
    ...(managed(data.user)?[{id:'rules',label:'Правила и согласования',content:<>{data.user.role==='admin'&&<ApprovalHierarchySettings users={data.users}/>}<Settings key={data.rulesVersion} data={data} busy={busy} act={act}/></>}]:[]),
    {id:'notices',label:'Уведомления и Telegram',content:<><NotificationSettings userId={data.user.id}/><TelegramSettings key={data.user.id} user={data.user} users={data.users}/>{company&&<ManagementPreference/>}</>},
    {id:'appearance',label:'Оформление',content:<Appearance/>},
-   ...(data.user.root_access?[{id:'training',label:'Материалы для обучения',content:<TrainingDownloads/>}]:[]),
+   ...(data.user.root_access?[{id:'training',label:'Материалы для обучения',content:<TrainingDownloads/>},
+    {id:'owner-work-log',label:'Хронология работ',content:<section className="panel guide-card">
+     <h2>Хронология работ</h2><p>Рабочая таблица РУСПЭТ с датами, примечаниями и отметками о проверке.</p>
+     <a href="/api/owner/work-log.xlsx" className="button primary"><Download size={16}/> Скачать Excel</a>
+    </section>}]:[]),
    ...(company?[{id:'automation',label:'Расписание отчётов',content:<Operations onChange={refresh} editable={data.user.role==='admin'}/>}]:[]),
    ...(data.user.role==='admin'?[
     {id:'system',label:'Система и подключения',content:<><SystemHealth/><PilotReadiness root={!!data.user.root_access}/><BitrixArchiveStatus/></>}
@@ -708,7 +750,7 @@ export function App(){
        <div className="task-facts">
         <div><span>Исполнитель</span><div className="person"><Avatar small user={userById(detail.task.assignee_id)}/><strong>{userById(detail.task.assignee_id)?.name}</strong></div></div>
         <div><span>Постановщик</span><strong>{userById(detail.task.creator_id)?.name}</strong></div>
-        {detail.assignmentReceipt&&(!detail.personalPlan||cardReadOnly)&&<div><span>Приём задачи</span><strong>{detail.assignmentReceipt.state==='accepted'?'Задача принята':'Ждёт подтверждения исполнителя'}</strong></div>}
+        {detail.assignmentReceipt&&(!detail.personalPlan||cardReadOnly)&&<div><span>Ознакомление</span><strong>{detail.assignmentReceipt.state==='accepted'?'Ознакомление подтверждено':'Ждёт ознакомления исполнителя'}</strong></div>}
         <div><span>Крайний срок</span><strong className={overdue(detail.task)?'red-text':''}>{date(detail.task.deadline,true)}{detail.task.deadline?' МСК':''}</strong></div>
         <div><span>Цена задачи</span><strong>{formatPrice(detail.task)}</strong><small>{priceLabels[priceBand(detail.task)]}</small>{!cardReadOnly&&canEditTaskPrice(data.user,detail.task)&&<TaskPriceEditor key={detail.task.id+':'+detail.task.version} task={detail.task} busy={busy} act={act}/>}</div>
        </div>
@@ -753,7 +795,7 @@ export function App(){
     </section>}
     {drawerTab==='result'&&<>
      {!cardReadOnly&&(!cardApproval||detail.task.status==='active'&&cardApproval.type==='deadline')&&(detail.personalPlan?.needsAcceptance?
-      <div className="task-card-section"><p>Перед сдачей результата примите задачу и выберите плановое время.</p><button type="button" className="button secondary" onClick={()=>setDrawerTab('info')}>К приёму задачи</button></div>:
+      <div className="task-card-section"><p>Перед сдачей результата подтвердите ознакомление и выберите плановое время.</p><button type="button" className="button secondary" onClick={()=>setDrawerTab('info')}>К ознакомлению</button></div>:
       <ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} scope={detail.approvalScope}
        withdrawsDeadline={cardApproval?.type==='deadline'} busy={busy} act={act}/>)}
      {detail.submissions.length?<section className="submission-history">{detail.submissions.map(s=><article key={s.id}>

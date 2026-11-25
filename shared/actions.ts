@@ -30,7 +30,7 @@ export function taskNextAction(task:Task,approval?:Approval,_scope?:ApprovalScop
   return {userId,label:clarification?'Ответить на уточнение':approval.type==='deadline'?'Решить вопрос о переносе':'Принять результат'};
  }
  if(task.status==='review')return {userId:task.creator_id,label:'Принять результат'};
- if(task.status==='active')return {userId:task.assignee_id,label:task.assignment_pending?'Принять задачу и запланировать шаг':'Выполнить задачу'};
+ if(task.status==='active')return {userId:task.assignee_id,label:task.assignment_pending?'Ознакомиться и запланировать шаг':'Выполнить задачу'};
  return null;
 }
 export function actionItems(data:Bootstrap):ActionItem[]{

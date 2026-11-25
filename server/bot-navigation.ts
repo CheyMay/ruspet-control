@@ -33,14 +33,14 @@ async function taskList(u:User,ch:string,p:Payload,items:TaskListItem[],label:st
  });
  const list:ListOrigin={op:p.op,page,filter:p.filter,owner:p.owner,query:p.query,target:p.target,team:p.team};
  const scope=approvalScope(await approvalHierarchy(db));
- const choices=slice.map(({task:t,pending})=>[button((t.assignment_pending&&t.assignee_id===u.id?'Принять #':'#')+taskNumber(t),'task',{id:t.id,list}),
+ const choices=slice.map(({task:t,pending})=>[button((t.assignment_pending&&t.assignee_id===u.id?'Открыть #':'#')+taskNumber(t),'task',{id:t.id,list}),
   ...(!t.workspace_read_only&&!pending&&!t.assignment_pending&&canComplete(u,t,scope)?[button('Завершить #'+taskNumber(t),'form',{id:t.id,list,version:t.version,kind:'complete'})]:[])]);
  const range=slice.length===1?String(start+1):`${start+1}–${start+slice.length}`;
  const count=pages>1?`${range} из ${items.length}`:String(items.length);
  const taskScope:PersonalTaskScope|undefined=p.op==='tasks'&&(!p.owner||p.owner===u.id)?(p.filter==='created'?'created':'mine'):undefined;
  const unaccepted=taskScope==='mine'?items.filter(item=>item.task.assignment_pending).length:0;
- const result=await htmlScreen(u,ch,`<b>${h(label)}</b> · ${count}\n\n${unaccepted?'Новые к принятию · '+unaccepted+'\n\n':''}${lines.join('\n\n')||'Здесь пока нет задач.'}`,[
-  ...(unaccepted?[[button('Новые к принятию · '+unaccepted,'personal_plan',{filter:'awaiting'})]]:[]),
+ const result=await htmlScreen(u,ch,`<b>${h(label)}</b> · ${count}\n\n${unaccepted?'К ознакомлению · '+unaccepted+'\n\n':''}${lines.join('\n\n')||'Здесь пока нет задач.'}`,[
+  ...(unaccepted?[[button('К ознакомлению · '+unaccepted,'personal_plan',{filter:'awaiting'})]]:[]),
   ...(taskScope&&ch.startsWith('telegram:')?[[button('Я исполнитель','tasks',{filter:'mine'}),button('Я постановщик','tasks',{filter:'created'})]]:[]),
   ...choices,
   [...(page?[button('← Назад',p.op,{...list,page:page-1})]:[]),...(page+1<pages?[button('Дальше →',p.op,{...list,page:page+1})]:[])],
@@ -60,16 +60,16 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   const list=awaiting?calendar.awaiting:calendar.scheduled.filter(task=>businessDay(task.plan.plannedAt!)===day);
   const page=Math.max(0,Math.min(p.page||0,Math.ceil(list.length/tasksPerPage)-1));
   const rows=list.slice(page*tasksPerPage,(page+1)*tasksPerPage);
-  const heading=awaiting?'Нужно принять':day===today?'Мой план на сегодня':day===tomorrow?'Мой план на завтра':'Мой план · '+day.split('-').reverse().join('.');
+  const heading=awaiting?'К ознакомлению':day===today?'Мой план на сегодня':day===tomorrow?'Мой план на завтра':'Мой план · '+day.split('-').reverse().join('.');
   const text=rows.map(task=>[
    task.plan.plannedAt?moscowClock(task.plan.plannedAt).slice(11)+' МСК':null,'#'+taskNumber(task),compactTaskTitle(task.title,105),task.plan.nextStep?'Шаг: '+task.plan.nextStep.slice(0,120):null,
-   task.status==='completed'?'Завершена':task.status==='review'?'На приёмке':null
+   task.status==='completed'?'Завершена':task.status==='review'?'Ждёт приёмки':null
   ].filter(Boolean).join(' · '));
   const origin={op:p.op,filter:awaiting?'awaiting':day,page};
   return htmlScreen(u,ch,'<b>'+h(heading)+'</b> · '+list.length+'\n\n'+(text.length?text.map(h).join('\n\n'):'Здесь пока нет задач.'),[
-   ...rows.map(task=>[awaiting?button('Принять #'+taskNumber(task),'form',{id:task.id,list:origin,kind:'accept_assignment',version:task.plan.epoch,revision:task.plan.revision}):button('Открыть #'+taskNumber(task),'task',{id:task.id,list:origin})]),
+   ...rows.map(task=>[awaiting?button('Ознакомлен #'+taskNumber(task),'form',{id:task.id,list:origin,kind:'accept_assignment',version:task.plan.epoch,revision:task.plan.revision}):button('Открыть #'+taskNumber(task),'task',{id:task.id,list:origin})]),
    [...(page?[button('← Назад',p.op,{...origin,page:page-1})]:[]),...((page+1)*tasksPerPage<list.length?[button('Дальше →',p.op,{...origin,page:page+1})]:[])],
-   [button('Сегодня',p.op,{filter:today}),button('Завтра',p.op,{filter:tomorrow}),...(calendar.awaiting.length?[button('Нужно принять · '+calendar.awaiting.length,p.op,{filter:'awaiting'})]:[])],
+   [button('Сегодня',p.op,{filter:today}),button('Завтра',p.op,{filter:tomorrow}),...(calendar.awaiting.length?[button('К ознакомлению · '+calendar.awaiting.length,p.op,{filter:'awaiting'})]:[])],
    [button('Меню','home')]
   ],db);
  }
@@ -94,7 +94,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   });
   const taskNotices=groups.map(group=>group[0].task_notice);
   return htmlScreen(u,ch,'<b>Новые уведомления</b>\n\n'+(lines.join('\n\n')||'Все уведомления прочитаны.'),[
-   ...groups.filter(group=>group[0].task_id).map(group=>[button((group[0].task_assignment?'Принять #':'Открыть #')+group[0].task_id,'task',{id:group[0].task_id!,list:{op:'notices'}})]),
+   ...groups.filter(group=>group[0].task_id).map(group=>[button((group[0].task_assignment?'Открыть #':'Открыть #')+group[0].task_id,'task',{id:group[0].task_id!,list:{op:'notices'}})]),
    ...groups.flatMap(([item])=>item.management_notice?.kind==='director-approvals'?[[button('Открыть пакет','director_batch',{target:item.management_notice.batchId})]]:
     item.management_notice?.kind==='morning-report'?[[button('Открыть утренний отчёт','reports',{id:item.management_notice.reportId})]]:
     workdayReports(item.management_notice).map(report=>[button(report.label,'reports',{id:report.id,filter:report.view})])),
@@ -188,7 +188,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
   return htmlScreen(u,ch,'<b>'+h(owner===u.id?'Мои задачи':name(owner))+' · фильтры</b>\n\nВремя — московское.',[
    ...(owner===u.id?[[choice('Мои сроки','my_due')]]:[]),
    [choice('Просрочены','overdue'),choice('Срок сегодня','today')],
-   [choice('В работе','active'),choice('На приёмке','review')],
+   [choice('В работе','active'),choice('Ждёт приёмки','review')],
    [choice('Без срока','no_deadline'),choice('Завершены','completed')],
    [choice('Все незавершённые','open'),...(owner===u.id?[choice('Я постановщик','created')]:[])],
    [button('Поиск','search_prompt'),button('Меню','home')]
@@ -214,7 +214,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
     [button('Меню','home')]
    ],db);
   }
-  const filter=p.op==='day'?'today':p.filter||'mine',labels:Record<string,string>={open:'Незавершённые',active:'В работе',today:'Срок сегодня',overdue:'Просрочены',review:'На приёмке',completed:'Завершены',no_deadline:'Без срока',mine:'Мои задачи',my_due:'Мои сроки',created:'Я постановщик'};
+  const filter=p.op==='day'?'today':p.filter||'mine',labels:Record<string,string>={open:'Незавершённые',active:'В работе',today:'Срок сегодня',overdue:'Просрочены',review:'Ждёт приёмки',completed:'Завершены',no_deadline:'Без срока',mine:'Мои задачи',my_due:'Мои сроки',created:'Я постановщик'};
   const tasks=sortBotTasks(filter==='created'?placed:scoped.filter(t=>matches(t,filter)),now);
   const label=owner===u.id?labels[filter]||'Мои задачи':name(owner)+' · '+(labels[filter]||'Задачи');
   return taskList(u,ch,{...p,owner},tasks.map(task=>{
@@ -241,7 +241,7 @@ export async function renderBotNavigation(u:User,ch:string,p:Payload,db:Db=pool)
  const company=hasCompanyOverview(u);
 
  return htmlScreen(u,ch,`<b>РУСПЭТ · Мои задачи</b>\n${h(u.name)}\n\nВ работе и на приёмке · ${s.unfinished}\nПросрочено · ${queue.overdue.length} · На сегодня · ${queue.today.length}\nОтветы и решения · ${queue.next.length}`,[
-  ...(data.pendingAssignments?[[button('Новые задачи к приёму · '+data.pendingAssignments,'personal_plan',{filter:'awaiting'})]]:[]),
+  ...(data.pendingAssignments?[[button('Новые задачи к ознакомлению · '+data.pendingAssignments,'personal_plan',{filter:'awaiting'})]]:[]),
   [button(workQueueTitle+' · '+workCount(queue),'inbox')],
   [button('Мои задачи','tasks',{owner:u.id}),button('Я постановщик','tasks',{filter:'created'}),...(canManage(u)&&!data.salesTeams?[button('Задачи команды','team')]:[])],
   ...(canManage(u)&&data.salesTeams?[[button(teamScopeLabels.team,'team',{team:'team'}),button(teamScopeLabels.sales,'team',{team:'sales'})]]:[]),

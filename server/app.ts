@@ -54,6 +54,9 @@ import {accessDirectory,systemStatus} from './system-status.js';
 import {ownerTimeRouter} from './owner-time.js';
 import {calendarMonthInput,personalCalendar,saveStaffWork,saveTaskPlan,staffWorkInput,taskPlanInput} from './personal-calendar.js';
 import {analyticsOverview} from './team-analytics.js';
+import {analyticsAccess} from './analytics-scope.js';
+import {analyticsColumns,analyticsMetrics,waitingStages} from '../shared/team-analytics.js';
+import {workspaceLabelKeys} from '../shared/workspace-labels.js';
 import {operationsStatus,saveAutomation,retryJob,tick} from './automation.js';
 import {classifyTaskBranch,createTask,createTaskCopy,delegateTask,delegationClients,delegationLinks,delegationTargets,editTask,editTaskPrice,newTaskAssignees,reviewTask,taskAssignees} from './workflow.js';
 import {decideTaskEdit,requestTaskEdit} from './task-edit-permissions.js';
@@ -161,12 +164,39 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   res.json(await undoStaffAction(req.actor,id,reason));
  });
  app.get('/api/management/progress',async(req,res)=>res.json(await managementProgress(req.actor,z.object({from:z.iso.date().optional(),to:z.iso.date().optional(),owner:z.string().max(100).optional(),team:z.enum(['team','sales']).optional()}).parse(req.query))));
+ const analyticsQuery=z.object({period:z.enum(['day','week']).default('day'),
+  group:z.preprocess(v=>typeof v==='string'?[v]:v,z.array(z.string().min(1).max(200)).max(3).default([]))});
  app.get('/api/analytics/overview',compress,async(req,res)=>{
-  const part=z.string().min(1).max(200);
-  const query=z.object({period:z.enum(['day','week']).default('day'),
-   group:z.preprocess(v=>typeof v==='string'?[v]:v,z.array(part).max(3).default([]))}).parse(req.query);
-  res.setHeader('Cache-Control','no-store');
+  const query=analyticsQuery.parse(req.query);
   res.json(await analyticsOverview(req.actor,query.group,query.period));
+ });
+ app.get('/api/analytics/drilldown',compress,async(req,res)=>{
+  const query=analyticsQuery.extend({metric:z.enum(analyticsMetrics),person:z.string().max(150).optional(),
+   stage:z.enum(waitingStages).optional()}).parse(req.query);
+  assert(query.metric!=='waiting'||query.person&&query.stage,400,'Выберите сотрудника и действие.');
+  res.json((await analyticsOverview(req.actor,query.group,query.period,new Date(),query)).selection);
+ });
+ app.get('/api/analytics/layout',async(req,res)=>{
+  assert(await analyticsAccess(req.actor,pool),403,'Аналитика недоступна.');
+  res.json((await pool.query('SELECT widths FROM analytics_layouts WHERE user_id=$1',[req.actor.id])).rows[0]?.widths??{});
+ });
+ app.put('/api/analytics/layout',async(req,res)=>{
+  assert(await analyticsAccess(req.actor,pool),403,'Аналитика недоступна.');
+  const {column,width}=z.object({column:z.enum(analyticsColumns).nullable(),width:z.number().int().min(64).max(600).nullable()}).parse(req.body);
+  if(column&&width)await pool.query(`INSERT INTO analytics_layouts(user_id,widths) VALUES($1,jsonb_build_object($2::text,$3::integer))
+   ON CONFLICT(user_id) DO UPDATE SET widths=analytics_layouts.widths||excluded.widths`,[req.actor.id,column,width]);
+  else await pool.query('DELETE FROM analytics_layouts WHERE user_id=$1',[req.actor.id]);
+  res.json({ok:true});
+ });
+ app.get('/api/workspace/labels',async(_req,res)=>{
+  const {rows}=await pool.query<{key:string;label:string}>('SELECT key,label FROM workspace_labels');
+  res.json(Object.fromEntries(rows.map(row=>[row.key,row.label])));
+ });
+ app.put('/api/workspace/labels',async(req,res)=>{
+  assert(req.actor.root_access,403,'Названия меняет владелец.');
+  const {key,label}=z.object({key:z.enum(workspaceLabelKeys),label:z.string().trim().min(1).max(100)}).parse(req.body);
+  await pool.query('INSERT INTO workspace_labels(key,label) VALUES($1,$2) ON CONFLICT(key) DO UPDATE SET label=excluded.label',[key,label]);
+  res.json({key,label});
  });
  app.post('/api/management/observation',async(req,res)=>{const input=z.object({confirmed:z.literal(true),expected:z.iso.datetime({offset:true}).nullable()}).parse(req.body);res.json(await resetObservation(req.actor,input.expected));});
  app.put('/api/management/preferences',async(req,res)=>res.json(await setNudgePreference(req.actor,z.object({enabled:z.boolean()}).parse(req.body).enabled)));
@@ -440,8 +470,13 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/tasks/:id/mock-change',async(req,res)=>{assert(process.env.DEMO_AUTH!=='false',404,'Действие недоступно.');await service.simulateExternalChange(req.actor,String(req.params.id),z.object({expectedVersion:z.number().int().positive()}).parse(req.body).expectedVersion);res.json({ok:true});});
  app.get('/api/reports/:id/pdf',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const bytes=await reportPdf(report);res.setHeader('Content-Disposition',`inline; filename=ruspet-${report.day}.pdf`);res.type('application/pdf').send(bytes);});
  app.get('/api/reports/:id/print',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));res.type('html').send(printReport(report));});
- app.get('/api/reports/:id/csv',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const data={users:(await pool.query('SELECT id,name FROM users')).rows};const cell=(v:unknown)=>{let s=String(v??'');if(/^[\s]*[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};const rows=[['ID','Задача','Ответственный','Цена','Категория цены','Срок','Статус','Переносов'],...report.rows.map((t:any)=>[t.id,t.title,report.analysis?.team.find((u:{id:string;name:string})=>u.id===t.assignee_id)?.name||data.users.find(u=>u.id===t.assignee_id)?.name||t.assignee_id,formatPrice(t),priceLabels[priceBand(t)],t.deadline?new Date(t.deadline).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}):'Без срока',({active:'В работе',review:'На приёмке',completed:'Завершена'} as Record<string,string>)[t.status],t.transfer_count])];res.setHeader('Content-Disposition',`attachment; filename="ruspet-${report.day}.csv"`);res.type('text/csv').send('\uFEFF'+rows.map(row=>row.map(cell).join(';')).join('\r\n'));});
+ app.get('/api/reports/:id/csv',async(req,res)=>{const report=await service.getReport(req.actor,z.uuid().parse(req.params.id));const data={users:(await pool.query('SELECT id,name FROM users')).rows};const cell=(v:unknown)=>{let s=String(v??'');if(/^[\s]*[=+@-]/.test(s))s="'"+s;return '"'+s.replaceAll('"','""')+'"';};const rows=[['ID','Задача','Ответственный','Цена','Категория цены','Срок','Статус','Переносов'],...report.rows.map((t:any)=>[t.id,t.title,report.analysis?.team.find((u:{id:string;name:string})=>u.id===t.assignee_id)?.name||data.users.find(u=>u.id===t.assignee_id)?.name||t.assignee_id,formatPrice(t),priceLabels[priceBand(t)],t.deadline?new Date(t.deadline).toLocaleString('ru-RU',{timeZone:'Europe/Moscow'}):'Без срока',({active:'В работе',review:'Ждёт приёмки',completed:'Завершена'} as Record<string,string>)[t.status],t.transfer_count])];res.setHeader('Content-Disposition',`attachment; filename="ruspet-${report.day}.csv"`);res.type('text/csv').send('\uFEFF'+rows.map(row=>row.map(cell).join(';')).join('\r\n'));});
  app.use('/api/time',ownerTimeRouter());
+ app.get('/api/owner/work-log.xlsx',(req,res)=>{
+  assert(req.actor.root_access,403,'Хронология работ доступна владельцу.');
+  res.setHeader('Cache-Control','private, no-store');
+  res.download(resolve('.secrets/ruspet-work-log.xlsx'),'РУСПЭТ — хронология работ.xlsx');
+ });
  app.get('/api/owner/training/:id',(req,res)=>{
   res.setHeader('Cache-Control','private, no-store');
   assert(req.actor.root_access,403,'Материалы доступны владельцу.');

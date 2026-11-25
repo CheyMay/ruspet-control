@@ -15,7 +15,7 @@ const time=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',hour:'2-dig
 const shortDate=new Intl.DateTimeFormat('ru-RU',{timeZone:'Europe/Moscow',day:'numeric',month:'short',hour:'2-digit',minute:'2-digit'});
 const labels={answer:'Ответить',decision:'К согласованию',review:'Проверить результат',clarification:'К уточнению',
  edit_permission:'К запросу',rework:'К замечаниям'};
-const kinds={all:'Любой шаг',execution:'Работа по задаче',assignment:'Приём назначения',decision:'Согласование',
+const kinds={all:'Любой шаг',execution:'Работа по задаче',assignment:'Ознакомление с задачей',decision:'Согласование',
  review:'Приёмка результата',answer:'Объяснение',clarification:'Уточнение',edit_permission:'Редактирование',rework:'Доработка'};
 type Filter='all'|WorkBucket;
 type Props={data:Bootstrap;open:(id:string,tab?:string)=>Promise<void>;complete?:(task:Task)=>void;
@@ -50,8 +50,8 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
  function show(next:Filter){pushSectionStep({view:'actions',queue:next==='all'?null:next});setBucket(next);setLimits({});}
  function clear(){setQuery('');setKind('all');setOwner('all');setFrom('');setTo('');setDateField('deadline');show('all');}
  const queueLabels={overdue:'С прошлых дней · '+earlier+' / Истекло сегодня · '+expired,
-  today:'Крайний срок ещё впереди',next:'Приём новых задач, ответы и решения',
-  waiting:scope==='mine'?'По вашим задачам ход за другим участником':'На приёмке или согласовании',
+  today:'Крайний срок ещё впереди',next:'Ознакомление с новыми задачами, ответы и решения',
+  waiting:scope==='mine'?'По вашим задачам ход за другим участником':'Ждёт приёмки или согласовании',
   planned:'Со сроком позже или без крайнего срока'};
  function row(item:WorkTask){
   const task=item.task,myStep=item.ownerId===data.user.id;

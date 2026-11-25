@@ -8,7 +8,7 @@ import type {User} from '../shared/types.js';
 
 type Work={total:number;tasks:{id:string;bitrix_id?:string|null;title:string;assignee_id:string;status:string;deadline:string|null}[];history:{id:string;task_id:string;actor_id:string|null;message:string;created_at:string}[]};
 type Contact={id:string;author_id:string;note:string;occurred_at:string};
-const status:Record<string,string>={active:'В работе',review:'На приёмке',completed:'Завершена'};
+const status:Record<string,string>={active:'В работе',review:'Ждёт приёмки',completed:'Завершена'};
 export function CompanyWork({id,users,openTask,createTask,onContact}:{id:string;users:User[];openTask:(id:string)=>void;createTask:()=>void;onContact:()=>void}){
  const [work,setWork]=useState<Work|null>(null),[contacts,setContacts]=useState<Contact[]|null>(null);
  const [error,setError]=useState(''),[note,setNote]=useState(''),[busy,setBusy]=useState(false),[reload,setReload]=useState(0);

@@ -43,7 +43,7 @@ async function handle(update:any){
  const tasks=await visibleTasks(binding),now=new Date(),counts={today:0,overdue:0,review:0};
  for(const t of tasks){const q=taskQueue(t,now);if(q in counts)counts[q as keyof typeof counts]++;}
  const result=command==='/today'||command==='/overdue'?tasks.filter(t=>taskQueue(t,now)===command.slice(1)):[];
- const text=command==='/today'||command==='/overdue'?`${command==='/today'?'Сегодня':'Просрочены ранее'}: ${result.length}\n`+result.slice(0,12).map(t=>`#${t.id} ${t.title.slice(0,140)}`).join('\n')+(result.length>12?'\nПоказаны первые 12. Полный список — в панели.':''):`РУСПЭТ · состояние по импортированной выгрузке\nСегодня: ${counts.today}\nПросрочены ранее: ${counts.overdue}\nНа приёмке: ${counts.review}\nБитрикс24 не подключён.\n/today /overdue`;
+ const text=command==='/today'||command==='/overdue'?`${command==='/today'?'Сегодня':'Просрочены ранее'}: ${result.length}\n`+result.slice(0,12).map(t=>`#${t.id} ${t.title.slice(0,140)}`).join('\n')+(result.length>12?'\nПоказаны первые 12. Полный список — в панели.':''):`РУСПЭТ · состояние по импортированной выгрузке\nСегодня: ${counts.today}\nПросрочены ранее: ${counts.overdue}\nЖдёт приёмки: ${counts.review}\nБитрикс24 не подключён.\n/today /overdue`;
  await telegramCall('sendMessage',{chat_id:chatId,text});
 }
 export async function startTelegram(){

@@ -135,7 +135,7 @@ function noticeContent(notice:TaskNotice,now:Date){
   sections.push({heading:label+' · '+total,lines});
  };
  if(needsAcceptance.length){
-  sections.push({heading:needsAcceptance.length===1?'У вас новая задача к принятию':'У вас новые задачи к принятию',
+  sections.push({heading:needsAcceptance.length===1?'У вас новая задача к ознакомлению':'У вас новые задачи к ознакомлению',
    lines:needsAcceptance.map(task=>'#'+taskNumber(task)+' · '+compactTaskTitle(task.title,180))});
  }
  add('Просрочены с прошлых дней',notice.overdue);
@@ -151,7 +151,7 @@ export async function taskNoticeScreen(user:User,ch:string,notice:TaskNotice,now
  const {sections,taskIds,hasDeadlines,hasAssignments,needsAcceptance}=noticeContent(notice,now);
  const accept=await Promise.all(notice.assignments.filter(task=>task.assignment_pending).slice(0,3).map(async task=>{
   const plan=await taskPersonalPlan(user,task);
-  return plan?.needsAcceptance?{id:task.id,button:button('Принять #'+taskNumber(task),'form',{
+  return plan?.needsAcceptance?{id:task.id,button:button('Ознакомлен #'+taskNumber(task),'form',{
    id:task.id,kind:'accept_assignment',version:plan.epoch,revision:plan.revision,list:{op:'personal_plan',filter:'awaiting'}
   })}:null;
  }));

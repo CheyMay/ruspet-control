@@ -38,7 +38,7 @@ test('list deadlines follow Moscow days and completed tasks are sorted after ope
  assert.equal(botDue(make('1','2026-11-12T22:00:00Z'),now),'Сегодня 01:00');
  assert.equal(botTaskStatus(make('1','2026-11-12T20:59:00Z'),now),'Просрочена');
  assert.equal(botTaskStatus(make('1','2026-11-12T21:05:00Z'),now),'Срок сегодня прошёл');
- assert.equal(botTaskStatus(make('1','2026-11-12T20:59:00Z','review'),now),'На приёмке');
+ assert.equal(botTaskStatus(make('1','2026-11-12T20:59:00Z','review'),now),'Ждёт приёмки');
  assert.equal(botTaskStatus(make('1',null),now,true),'На согласовании');
  assert.equal(botTaskStatus(make('1',null,'completed'),now),'Завершена');
  assert.equal(botDue(make('1',null),now),'Без срока');

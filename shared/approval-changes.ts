@@ -9,7 +9,7 @@ const labels:Record<string,string>={
  company_id:'Связь с ОКБ',custom_fields:'Дополнительные поля',priority:'Приоритет',critical:'Критичность',result_required:'Обязательность результата'
 };
 const dates=new Intl.DateTimeFormat('ru-RU',{dateStyle:'short',timeStyle:'short',timeZone:'Europe/Moscow'});
-const statuses:Record<string,string>={active:'В работе',review:'На приёмке',completed:'Завершена'};
+const statuses:Record<string,string>={active:'В работе',review:'Ждёт приёмки',completed:'Завершена'};
 
 export function approvalChangeLines(change:ApprovalTaskChange,name?:(id:string)=>string|undefined){
  return change.fields.map(({field,before,after})=>{

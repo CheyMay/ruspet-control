@@ -7,7 +7,7 @@ import {responsibilityLabels,type DelegationClient} from '../shared/company-resp
 type LinkedTask={id:string;title:string;status:Task['status'];assignee_id:string};
 type Links={canDelegate:boolean;source:LinkedTask|null;copies:LinkedTask[]};
 type Targets=import('../shared/company-responsibility.js').DelegationTargets;
-const status:Record<Task['status'],string>={active:'В работе',review:'На приёмке',completed:'Завершено'};
+const status:Record<Task['status'],string>={active:'В работе',review:'Ждёт приёмки',completed:'Завершено'};
 const moscowInput=(value:string|null)=>value?new Date(Date.parse(value)+10800000).toISOString().slice(0,16):'';
 
 export function TaskDelegation({task,user,users,open,onCreated,readOnly=false}:{readOnly?:boolean;task:Task;user:User;users:User[];open:(id:string)=>void;onCreated:()=>void}){

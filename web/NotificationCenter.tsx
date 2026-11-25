@@ -43,7 +43,7 @@ export function NotificationCenter({items,readOnly,open,refresh}:{items:Notifica
       {rows.slice(1).map(row=><p key={row.id}>{row.body}</p>)}
      </details>}
      <div className="notice-actions">
-      {latest.task_id&&<button className="text-button" onClick={()=>open(latest.task_id!)}>{latest.task_assignment?'Принять и запланировать':'Открыть #'+latest.task_id}</button>}
+      {latest.task_id&&<button className="text-button" onClick={()=>open(latest.task_id!)}>{latest.task_assignment?'Ознакомиться':'Открыть #'+latest.task_id}</button>}
       {latest.task_notice?.taskIds.slice(0,3).map(id=><button key={id} className="text-button" onClick={()=>open(id)}>#{id}</button>)}
       {latest.task_notice?.hasDeadlines&&<a className="text-button" href="/?view=actions">Сроки и действия</a>}
       {latest.staff_review&&!readOnly&&<a className="text-button" href="/?view=registrations">Открыть заявки</a>}

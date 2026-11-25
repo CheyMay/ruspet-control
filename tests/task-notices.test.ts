@@ -680,19 +680,19 @@ test('Telegram accepts a new assignment directly from its notification and saves
  const current=await api(manager,'/notifications');
  const message=current.body.find((item:{task_id:string;task_assignment?:boolean})=>item.task_id===assigned&&item.task_assignment);
  assert(message);
- assert.match(message.body,/Примите задачу и укажите плановое время/);
+ assert.match(message.body,/Подтвердите ознакомление и укажите плановое время/);
  await api(manager,'/notifications/read','POST',{ids:[message.id]});
  const chatId='93819382',channel='telegram:'+chatId;
  await db.pool.query("UPDATE telegram_settings SET enabled=true,task_delivery=true,deadline_delivery=false WHERE id=1");
  await db.pool.query('INSERT INTO telegram_binding(id,chat_id,user_id,paired_at) VALUES(9021,$1,$2,$3)',[chatId,manager.id,paired.toISOString()]);
  const before=await bot.botView(manager,channel,{op:'tasks',filter:'mine'});
- assert.match(before.text,/Новые к принятию · 1/);
+ assert.match(before.text,/К ознакомлению · 1/);
  const notice=await notices.claimTelegramTaskNotice(manager,chatId,paired);
  assert(notice);
  const screen=await notices.taskNoticeScreen(manager,channel,notice,paired);
- assert.match(screen.text,/У вас новая задача к принятию/);
+ assert.match(screen.text,/У вас новая задача к ознакомлению/);
  assert.doesNotMatch(screen.text,/Фикстура уведомлений|Крайний срок/);
- const first=screen.buttons.flat().find(button=>button.text==='Принять #'+assigned);
+ const first=screen.buttons.flat().find(button=>button.text==='Ознакомлен #'+assigned);
  assert(first);
  const question=await bot.botClick(manager,channel,first.token);
  assert.match(question.text,/Когда планируете заняться задачей/);
@@ -704,10 +704,10 @@ test('Telegram accepts a new assignment directly from its notification and saves
   epoch:beforePlan.epoch,revision:beforePlan.revision,accept:true,plannedAt:at('2035-03-20','16:01').toISOString()
  })).status,400);
  const draft=await bot.botText(manager,channel,'19.03.2035 14:30','plan-stamp');
- const button=draft.buttons.flat().find(button=>button.text==='Принять задачу');
+ const button=draft.buttons.flat().find(button=>button.text==='Сохранить план');
  assert(button);
  const result=await bot.botClick(manager,channel,button.token);
- assert.match(result.text,/Задача принята/);
+ assert.match(result.text,/Ознакомление подтверждено/);
  assert.deepEqual(await bot.botClick(manager,channel,button.token),result);
  const detail=await service.detail(manager,assigned);
  assert.equal(detail.personalPlan?.needsAcceptance,false);
@@ -721,7 +721,7 @@ test('Telegram accepts a new assignment directly from its notification and saves
  const expiredNotice=await notices.claimTelegramTaskNotice(manager,chatId,at('2035-03-13','10:15'));
  assert(expiredNotice);
  const expiredScreen=await notices.taskNoticeScreen(manager,channel,expiredNotice,paired);
- const expiredAccept=expiredScreen.buttons.flat().find(item=>item.text==='Принять #'+expired);
+ const expiredAccept=expiredScreen.buttons.flat().find(item=>item.text==='Ознакомлен #'+expired);
  assert(expiredAccept);
  const expiredPrompt=await bot.botClick(manager,channel,expiredAccept.token);
  assert.match(expiredPrompt.text,/Крайний срок прошёл/);
