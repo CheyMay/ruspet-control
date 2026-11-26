@@ -338,10 +338,21 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   await setApprovalWatch(u,p.id!,p.values?.enabled==='true');
   return botView(u,ch,{op:'director_weekly',target:p.target,page:p.page});
  }
- if(!['form','confirm','cancel','accept_prepare','approval_accept_prepare','approval_deadline_prepare','assignee_prepare','undo_prepare','voice_select','voice_page','client_note_pick'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
+ if(!['form','confirm','ack_assignment','cancel','accept_prepare','approval_accept_prepare','approval_deadline_prepare','assignee_prepare','undo_prepare','voice_select','voice_page','client_note_pick'].includes(p.op)){await clearBotDraft(u,ch);return botView(u,ch,p)}
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(hashtext($1))',[u.id+':'+ch]);
   const record=(await db.query('SELECT * FROM bot_buttons WHERE token=$1 FOR UPDATE',[token])).rows[0];if(record.receipt)return record.receipt as BotScreen;assert(!record.revoked,409,'Этот ввод отменён или заменён новым. Откройте актуальную задачу.');
+  if(p.kind==='accept_assignment'&&['ack_assignment','form','confirm'].includes(p.op)){
+   // Old notification/form buttons also acknowledge immediately, without opening a date prompt.
+   await saveTaskPlan(u,p.id!,{epoch:p.version!,revision:p.revision!,accept:true,
+    ...(p.op==='confirm'&&p.values?.deadline?{plannedAt:p.values.deadline,nextStep:p.values.nextStep}:{})});
+   await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND token<>$3 AND receipt IS NULL AND payload->>'op' IN ('confirm','cancel')",[u.id,ch,token]);
+   const card=await renderBotTask(u,ch,{op:'task',id:p.id,list:p.list},db);
+   const response={...card,text:'<b>Ознакомление подтверждено.</b> Можно работать с задачей; планирование необязательно.\n\n'+card.text};
+   await db.query('UPDATE bot_buttons SET receipt=$2 WHERE token=$1',[token,JSON.stringify(response)]);
+   await saveDialog(db,u,ch,{payload:{op:'context',id:p.id},fields:[],index:0,values:{}},15);
+   return response;
+  }
   if(p.op==='client_note_pick'){
    await db.query("UPDATE bot_buttons SET revoked=true WHERE actor_id=$1 AND channel=$2 AND token<>$3 AND receipt IS NULL AND payload->>'op' IN ('client_note_pick','confirm')",[u.id,ch,token]);
    const response=await confirmClientNote(u,ch,p,db);
@@ -406,10 +417,9 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   }
   else if(p.kind==='client_note'){await saveBotClientNote(u,p,db);result='Заметка сохранена в карточке клиента.';}
   else if(p.kind==='undo'){await undoLastAction(u,p.target!);result='Действие отменено. Исходная запись и отмена сохранены в истории.'}
-  else if(p.kind==='accept_assignment'||p.kind==='edit_personal_plan'||p.kind==='personal_step'){
-   const accept=p.kind==='accept_assignment';
-   const saved=await saveTaskPlan(u,p.id!,{epoch:p.version!,revision:p.revision!,plannedAt:v.deadline,accept,nextStep:v.nextStep});
-   result=(accept?'Ознакомление подтверждено. ':'')+'В личном календаре · '+date(saved.plannedAt)+' МСК.'+(saved.nextStep?'\nСледующий шаг: '+saved.nextStep:'');
+  else if(p.kind==='edit_personal_plan'||p.kind==='personal_step'){
+   const saved=await saveTaskPlan(u,p.id!,{epoch:p.version!,revision:p.revision!,plannedAt:v.deadline,accept:false,nextStep:v.nextStep});
+   result='В личном календаре · '+date(saved.plannedAt)+' МСК.'+(saved.nextStep?'\nСледующий шаг: '+saved.nextStep:'');
    nextActions.push([button('Мой календарь','personal_plan',{filter:moscowClock(saved.plannedAt!).slice(0,10)})]);
   }
   else if(p.kind==='delegate'){

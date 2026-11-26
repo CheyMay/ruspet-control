@@ -16,7 +16,8 @@ const emptyPlan=(task:Task):TaskPersonalPlan=>({epoch:taskEpoch(task),revision:0
 const ownPlan=(p:PlanRow):TaskPersonalPlan=>({epoch:p.assignment_epoch,revision:p.revision,
  needsAcceptance:p.requires_acceptance&&!p.accepted_at,acceptedAt:p.accepted_at,plannedAt:p.planned_at,nextStep:p.next_step});
 export const taskPlanInput=z.object({epoch:z.number().int().positive(),revision:z.number().int().nonnegative(),
- plannedAt:z.iso.datetime({offset:true}),accept:z.boolean(),nextStep:z.string().trim().max(500).optional()});
+ plannedAt:z.iso.datetime({offset:true}).optional(),accept:z.boolean(),nextStep:z.string().trim().max(500).optional()})
+ .refine(input=>input.accept||!!input.plannedAt,{message:'Укажите дату и время личного плана.',path:['plannedAt']});
 export const staffWorkInput=z.object({minutes:z.number().int().min(0).max(1440).nullable(),
  note:z.string().trim().max(2000),revision:z.number().int().nonnegative()});
 
@@ -54,7 +55,7 @@ export async function taskAssignmentReceipt(task:Task,plan:TaskPersonalPlan|null
 
 export async function requireTaskAcceptance(user:User,task:Task,db:Db){
  if(user.id===task.assignee_id)
-  assert(!(await taskPersonalPlan(user,task,db))?.needsAcceptance,409,'Сначала подтвердите ознакомление и укажите плановое время.');
+  assert(!(await taskPersonalPlan(user,task,db))?.needsAcceptance,409,'Сначала подтвердите ознакомление с задачей. Планирование необязательно.');
 }
 export async function pendingAssignmentTasks(user:User,taskIds:string[],db:Db){
  if(!taskIds.length)return [];
@@ -72,32 +73,37 @@ export async function saveTaskPlan(user:User,id:string,input:z.infer<typeof task
   assert(current,403,'План задачи может заполнить только исполнитель.');
   assert(task.status==='active',409,'План можно изменить, пока задача в работе.');
   assert(current.epoch===input.epoch,409,'Исполнитель задачи изменился. Откройте актуальную карточку.');
-  const when=new Date(input.plannedAt),now=Date.now();
-  assert(Number.isFinite(+when),400,'Укажите корректную дату и время.');
-  const plannedAt=when.toISOString();
+  assert(input.accept||input.plannedAt,400,'Укажите дату и время личного плана.');
+  const when=input.plannedAt?new Date(input.plannedAt):null,now=Date.now();
+  if(when)assert(Number.isFinite(+when),400,'Укажите корректную дату и время.');
+  const plannedAt=when?when.toISOString():current.plannedAt;
   // Repeating an already saved form is harmless after a lost response.
   const nextStep=input.nextStep??current.nextStep??'';
   if(current.plannedAt===plannedAt&&nextStep===(current.nextStep??'')&&(!input.accept||current.acceptedAt))return current;
   assert(current.revision===input.revision,409,'План уже изменился. Обновите карточку.');
   assert(current.needsAcceptance===input.accept,409,current.needsAcceptance?'Сначала подтвердите ознакомление с задачей.':'Ознакомление уже подтверждено.');
-  assert(+when>now,400,'Выберите будущее плановое время.');
-  if(input.accept)checkAssignmentPlanDeadline(plannedAt,task.deadline);
-  const row=(await db.query<PlanRow>(`INSERT INTO personal_task_plans AS p(task_id,assignment_epoch,user_id,planned_at,revision,next_step)
-   VALUES($1,$2,$3,$4,1,$6) ON CONFLICT(task_id,assignment_epoch) DO UPDATE SET
+  if(when){
+   assert(+when>now,400,'Выберите будущее плановое время.');
+   if(input.accept)checkAssignmentPlanDeadline(when.toISOString(),task.deadline);
+  }
+  const row=(await db.query<PlanRow>(`INSERT INTO personal_task_plans AS p(task_id,assignment_epoch,user_id,planned_at,revision,next_step,accepted_at)
+   VALUES($1,$2,$3,$4,1,$6,CASE WHEN $5 THEN clock_timestamp() END) ON CONFLICT(task_id,assignment_epoch) DO UPDATE SET
    planned_at=excluded.planned_at,next_step=excluded.next_step,revision=p.revision+1,
    accepted_at=CASE WHEN $5 THEN clock_timestamp() ELSE p.accepted_at END RETURNING *`,
   [id,current.epoch,user.id,plannedAt,input.accept,nextStep])).rows[0];
-  await db.query(`UPDATE task_alerts SET canceled_at=now() WHERE task_id=$1 AND recipient_id=$2
+  if(when){
+   await db.query(`UPDATE task_alerts SET canceled_at=now() WHERE task_id=$1 AND recipient_id=$2
    AND personal_plan_epoch=$3 AND acknowledged_at IS NULL AND canceled_at IS NULL`,[id,user.id,current.epoch]);
-  await db.query(`UPDATE outbox SET withdrawn_at=now() WHERE task_id=$1 AND recipient_id=$2
-   AND personal_plan_alert_id IS NOT NULL AND read_at IS NULL AND withdrawn_at IS NULL`,[id,user.id]);
-  const lead=+when-now>30*60000?30:+when-now>10*60000?10:0;
-  const due=new Date(+when-lead*60000),expires=new Date(+when+60*60000);
-  const time=planReminderTime.format(when);
-  const body=`Ваш план на ${time} МСК\n#${id} · ${compactTaskTitle(task.title,160)}${nextStep?'\nСледующий шаг: '+nextStep:''}`;
-  await db.query(`INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,kind,body,due_at,expires_at,personal_plan_epoch)
-   VALUES($1,$2,$3,$4,'task',$5,$6,$7,$8)`,[randomUUID(),`personal-plan:${id}:${current.epoch}:${row.revision}`,
-   user.id,id,body,due.toISOString(),expires.toISOString(),current.epoch]);
+   await db.query(`UPDATE outbox SET withdrawn_at=now() WHERE task_id=$1 AND recipient_id=$2
+    AND personal_plan_alert_id IS NOT NULL AND read_at IS NULL AND withdrawn_at IS NULL`,[id,user.id]);
+   const lead=+when-now>30*60000?30:+when-now>10*60000?10:0;
+   const due=new Date(+when-lead*60000),expires=new Date(+when+60*60000);
+   const time=planReminderTime.format(when);
+   const body=`Ваш план на ${time} МСК\n#${id} · ${compactTaskTitle(task.title,160)}${nextStep?'\nСледующий шаг: '+nextStep:''}`;
+   await db.query(`INSERT INTO task_alerts(id,dedupe_key,recipient_id,task_id,kind,body,due_at,expires_at,personal_plan_epoch)
+    VALUES($1,$2,$3,$4,'task',$5,$6,$7,$8)`,[randomUUID(),`personal-plan:${id}:${current.epoch}:${row.revision}`,
+    user.id,id,body,due.toISOString(),expires.toISOString(),current.epoch]);
+  }
   if(input.accept){
    await db.query(`UPDATE outbox SET read_at=coalesce(read_at,now()) WHERE task_assignment AND task_id=$1 AND recipient_id=$2
     AND withdrawn_at IS NULL`,[id,user.id]);

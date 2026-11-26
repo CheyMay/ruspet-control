@@ -630,7 +630,7 @@ test('Telegram topics and push settings are independent',async()=>{
  assert(feed.body.some((item:{task_notice?:{taskIds:string[]}})=>item.task_notice?.taskIds.includes(id)));
 });
 
-test('an assigned task stays unaccepted until the manager sets a plan, with separate calendar dates',async()=>{
+test('an unacknowledged assignment stays pending and combined acceptance with planning preserves calendar dates',async()=>{
  const calendar=await import('../server/personal-calendar.js'),service=await import('../server/service.js');
  const actor={...other,id:'calendar-manager',position:'Менеджер по продажам'};
  await db.pool.query('INSERT INTO users(id,name,role,branch_id,position) VALUES($1,$2,$3,$4,$5)',[actor.id,actor.name,actor.role,actor.branch_id,actor.position]);
@@ -669,7 +669,7 @@ test('clearing existing assignments leaves the task active without recording acc
  assert.equal((await service.detail(manager,next)).personalPlan?.needsAcceptance,true);
 });
 
-test('Telegram accepts a new assignment directly from its notification and saves the personal plan once',async()=>{
+test('Telegram acknowledges an assignment immediately, opens its task and allows optional planning later',async()=>{
  const bot=await import('../server/bot.js'),service=await import('../server/service.js');
  const manager={...other,id:'acceptance-manager',position:'Тестовый менеджер'};
  await db.pool.query('INSERT INTO users(id,name,role,branch_id,position) VALUES($1,$2,$3,$4,$5)',[manager.id,manager.name,manager.role,manager.branch_id,manager.position]);
@@ -680,7 +680,7 @@ test('Telegram accepts a new assignment directly from its notification and saves
  const current=await api(manager,'/notifications');
  const message=current.body.find((item:{task_id:string;task_assignment?:boolean})=>item.task_id===assigned&&item.task_assignment);
  assert(message);
- assert.match(message.body,/Подтвердите ознакомление и укажите плановое время/);
+ assert.match(message.body,/Подтвердите ознакомление/);assert.match(message.body,/планирование необязательно/);
  await api(manager,'/notifications/read','POST',{ids:[message.id]});
  const chatId='93819382',channel='telegram:'+chatId;
  await db.pool.query("UPDATE telegram_settings SET enabled=true,task_delivery=true,deadline_delivery=false WHERE id=1");
@@ -694,28 +694,30 @@ test('Telegram accepts a new assignment directly from its notification and saves
  assert.doesNotMatch(screen.text,/Фикстура уведомлений|Крайний срок/);
  const first=screen.buttons.flat().find(button=>button.text==='Ознакомлен #'+assigned);
  assert(first);
- const question=await bot.botClick(manager,channel,first.token);
- assert.match(question.text,/Когда планируете заняться задачей/);
- assert.match(question.text,/Не позднее 20\.03\.2035, 16:00 МСК/);
- await assert.rejects(()=>bot.botText(manager,channel,'20.03.2035 16:01','plan-late'),/не позже/);
- const beforePlan=(await service.detail(manager,assigned)).personalPlan!;
- assert.equal(beforePlan.needsAcceptance,true);
- assert.equal((await api(manager,'/tasks/'+assigned+'/personal-plan','PUT',{
-  epoch:beforePlan.epoch,revision:beforePlan.revision,accept:true,plannedAt:at('2035-03-20','16:01').toISOString()
- })).status,400);
- const draft=await bot.botText(manager,channel,'19.03.2035 14:30','plan-stamp');
- const button=draft.buttons.flat().find(button=>button.text==='Сохранить план');
- assert(button);
- const result=await bot.botClick(manager,channel,button.token);
+ const result=await bot.botClick(manager,channel,first.token);
  assert.match(result.text,/Ознакомление подтверждено/);
- assert.deepEqual(await bot.botClick(manager,channel,button.token),result);
+ assert.equal(result.buttons[0][0].text,'Сдать результат');
+ assert(result.buttons.flat().some(button=>button.text==='Сдать результат'));
+ assert(!result.buttons.flat().some(button=>button.text==='Ознакомлен'));
+ assert.deepEqual(await bot.botClick(manager,channel,first.token),result);
  const detail=await service.detail(manager,assigned);
  assert.equal(detail.personalPlan?.needsAcceptance,false);
- assert.equal(detail.personalPlan?.plannedAt,at('2035-03-19','14:30').toISOString());
+ assert.equal(detail.personalPlan?.plannedAt,null);assert(detail.personalPlan?.acceptedAt);
+ assert.equal((await db.pool.query('SELECT id FROM task_alerts WHERE task_id=$1 AND personal_plan_epoch IS NOT NULL',[assigned])).rowCount,0);
  assert.equal(detail.task.deadline,at('2035-03-20','16:00').toISOString());
  const nextFeed=await api(manager,'/notifications');
  assert(!nextFeed.body.some((item:{task_id:string;task_assignment?:boolean})=>item.task_id===assigned&&item.task_assignment));
  assert.equal(await notices.claimTelegramTaskNotice(manager,chatId,at('2035-03-13','10:10')),null);
+ const plan=result.buttons.flat().find(button=>button.text==='Добавить в мой план');assert(plan);
+ await bot.botClick(manager,channel,plan.token);
+ const draft=await bot.botText(manager,channel,'19.03.2035 14:30','plan-stamp');
+ const save=draft.buttons.flat().find(button=>button.text==='Подтвердить и отправить');assert(save,draft.text);
+ await bot.botClick(manager,channel,save.token);
+ const planned=await service.detail(manager,assigned);
+ assert.equal(planned.personalPlan?.plannedAt,at('2035-03-19','14:30').toISOString());
+ assert.equal(planned.personalPlan?.acceptedAt,detail.personalPlan.acceptedAt);
+ assert.equal(planned.events.filter(event=>event.kind==='assignment_accepted').length,1);
+ assert.equal((await db.pool.query('SELECT id FROM task_alerts WHERE task_id=$1 AND personal_plan_epoch IS NOT NULL',[assigned])).rowCount,1);
  const expired=await makeTask('Назначение с прошедшим сроком',new Date(Date.now()-86400000),manager);
  await assignmentTime(expired,paired);
  const expiredNotice=await notices.claimTelegramTaskNotice(manager,chatId,at('2035-03-13','10:15'));
@@ -723,9 +725,59 @@ test('Telegram accepts a new assignment directly from its notification and saves
  const expiredScreen=await notices.taskNoticeScreen(manager,channel,expiredNotice,paired);
  const expiredAccept=expiredScreen.buttons.flat().find(item=>item.text==='Ознакомлен #'+expired);
  assert(expiredAccept);
+ // A button already delivered by the old bot must acknowledge instead of asking for a date.
+ await db.pool.query("UPDATE bot_buttons SET payload=jsonb_set(payload,'{op}','\"form\"') WHERE token=$1",[expiredAccept.token]);
  const expiredPrompt=await bot.botClick(manager,channel,expiredAccept.token);
- assert.match(expiredPrompt.text,/Крайний срок прошёл/);
- assert(expiredPrompt.buttons.flat().some(item=>item.text==='Предложить новый срок'));
+ assert.match(expiredPrompt.text,/Ознакомление подтверждено/);
+ assert(expiredPrompt.buttons.flat().some(item=>item.text==='Сдать результат'));
+ const expiredDetail=await service.detail(manager,expired);
+ assert.equal(expiredDetail.personalPlan?.plannedAt,null);
+ assert.equal((await workflow.reviewTask(manager,expired,'submit','Готово без личного планирования',expiredDetail.task.version)).state,'review');
+});
+
+test('web acknowledgement without planning unlocks work for future, overdue and undated assignments',async()=>{
+ const service=await import('../server/service.js');
+ const manager={...other,id:'optional-plan-manager',position:'Тестовый менеджер'};
+ await db.pool.query('INSERT INTO users(id,name,role,branch_id,position) VALUES($1,$2,$3,$4,$5)',[manager.id,manager.name,manager.role,manager.branch_id,manager.position]);
+ await login(manager);
+ for(const deadline of [new Date(Date.now()+86400000),new Date(Date.now()-86400000),null]){
+  const id=await makeTask('Необязательное личное планирование',deadline,manager),path='/tasks/'+id;
+  const before=await service.detail(manager,id),plan=before.personalPlan!;
+  assert(plan.needsAcceptance);
+  const input={epoch:plan.epoch,revision:plan.revision,accept:true};
+  assert.equal((await api(director,path+'/personal-plan','PUT',input)).status,403);
+  assert.equal((await api(manager,path+'/personal-plan','PUT',{...input,epoch:input.epoch+1})).status,409);
+  assert.equal((await api(manager,path+'/personal-plan','PUT',{...input,revision:input.revision+1})).status,409);
+  assert.equal((await api(manager,path+'/personal-plan','PUT',{...input,accept:false})).status,400);
+  const acknowledged=await api(manager,path+'/personal-plan','PUT',input);assert.equal(acknowledged.status,200);
+  assert(acknowledged.body.acceptedAt);assert.equal(acknowledged.body.plannedAt,null);assert.equal(acknowledged.body.needsAcceptance,false);
+  assert.deepEqual((await api(manager,path+'/personal-plan','PUT',input)).body,acknowledged.body);
+  const after=await service.detail(manager,id);
+  assert.equal(after.task.deadline,before.task.deadline);assert.equal(after.task.version,before.task.version);
+  assert.equal(after.assignmentReceipt?.state,'accepted');assert.equal(after.events.filter(event=>event.kind==='assignment_accepted').length,1);
+  assert.equal((await db.pool.query('SELECT id FROM task_alerts WHERE task_id=$1 AND personal_plan_epoch IS NOT NULL',[id])).rowCount,0);
+  const submitted=await api(manager,path+'/review','POST',{action:'submit',comment:'Готовый результат без личного плана',expectedVersion:after.task.version});
+  assert.equal(submitted.status,200);assert.equal((await service.detail(manager,id)).task.status,'review');
+  assert.equal((await api(director,path+'/review','POST',{action:'accept',comment:'',expectedVersion:after.task.version+1})).status,200);
+ }
+});
+
+test('assignment acknowledgement and the opened bot card commit together and old assignment buttons cannot accept a reassignment',async()=>{
+ const bot=await import('../server/bot.js'),service=await import('../server/service.js');
+ const manager=(await db.pool.query<User>("SELECT * FROM users WHERE id='optional-plan-manager'")).rows[0],channel='acknowledgement-rollback';
+ const id=await makeTask('Проверка атомарного ознакомления',null,manager);
+ const card=await bot.botView(manager,channel,{op:'task',id}),button=card.buttons.flat().find(item=>item.text==='Ознакомлен');assert(button);
+ assert(!card.buttons.flat().some(item=>item.text==='Сдать результат'));
+ await db.pool.query('ALTER TABLE bot_buttons ADD CONSTRAINT test_assignment_receipt CHECK (receipt IS NULL) NOT VALID');
+ try{await assert.rejects(()=>bot.botClick(manager,channel,button.token));}
+ finally{await db.pool.query('ALTER TABLE bot_buttons DROP CONSTRAINT test_assignment_receipt');}
+ const unchanged=await service.detail(manager,id);assert.equal(unchanged.personalPlan?.acceptedAt,null);assert(unchanged.personalPlan?.needsAcceptance);
+ assert.equal(unchanged.events.filter(event=>event.kind==='assignment_accepted').length,0);
+ const result=await bot.botClick(manager,channel,button.token);assert(result.buttons.flat().some(item=>item.text==='Сдать результат'));
+ assert.deepEqual(await bot.botClick(manager,channel,button.token),result);
+ const oldId=await makeTask('Защита нового назначения',null,manager),oldPlan=(await service.detail(manager,oldId)).personalPlan!;
+ await db.pool.query('UPDATE tasks SET assignee_id=$2 WHERE id=$1',[oldId,other.id]);
+ assert([403,404].includes((await api(manager,'/tasks/'+oldId+'/personal-plan','PUT',{epoch:oldPlan.epoch,revision:oldPlan.revision,accept:true})).status));
 });
 
 test('creator decides first and the sales head only receives required or selected deadline requests',async()=>{

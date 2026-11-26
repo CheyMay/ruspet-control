@@ -1,6 +1,6 @@
 import {approvalChangeLines} from '../shared/approval-changes.js';
 import {canEditTaskPrice} from '../shared/task-edit.js';
-import {button,htmlScreen,date,type Payload} from './bot-ui.js';
+import {button,htmlScreen as baseHtmlScreen,date,type Payload} from './bot-ui.js';
 import {botExcerpt,botTaskStatus,botTextPages} from './bot-presentation.js';
 import {taskNumber} from '../shared/task-number.js';
 import {compactTaskTitle} from '../shared/task-title.js';
@@ -15,7 +15,7 @@ import {lastUndo} from './undo.js';
 import {taskIntegration} from './bitrix-fields.js';
 import {integrationLabels} from '../shared/integration-status.js';
 import {elapsedToday,taskQueue} from '../shared/queues.js';
-import {pool} from './db.js';
+import {pool,type Db} from './db.js';
 import type {ControlRequest,Task,User} from '../shared/types.js';
 
 export function deadlineProposalButton(task:Task,list:Payload['list'],explanation?:Pick<ControlRequest,'reason'>){
@@ -23,8 +23,9 @@ export function deadlineProposalButton(task:Task,list:Payload['list'],explanatio
  return button('Предложить новый срок','form',{id:task.id,kind:'deadline',version:task.version,list,values});
 }
 
-export async function renderBotTask(u:User,ch:string,p:Payload){
- const d=await detail(u,p.id!,pool,p.op==='task_approval'),t=d.task,now=new Date();
+export async function renderBotTask(u:User,ch:string,p:Payload,db:Db=pool){
+ const htmlScreen=(user:User,channel:string,text:string,rows:Parameters<typeof baseHtmlScreen>[3])=>baseHtmlScreen(user,channel,text,rows,db);
+ const d=await detail(u,p.id!,db,p.op==='task_approval'),t=d.task,now=new Date();
  const taskFacts=['Создана: '+date(t.created_at)+' МСК',
   ...(t.client_names?.length?['Клиент: '+botExcerpt(t.client_names.join(' · '),240)]:[])];
  const pending=d.approvals.find(a=>activeTaskApproval(t,a)),last=d.submissions[0];
@@ -33,7 +34,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  const approver=pending?.route[pending.current_step];
  const ids=[t.assignee_id,t.creator_id,next?.userId,...(pending?[pending.requester_id,approver?.userId]:[]),
   ...(p.op==='discussion'?d.comments.map(c=>c.author_id):[]),...(p.op==='history'?d.events.map(e=>e.actor_id):[])].filter(Boolean);
- const people=(await pool.query('SELECT id,name FROM users WHERE id=ANY($1)',[ids])).rows;
+ const people=(await db.query('SELECT id,name FROM users WHERE id=ANY($1)',[ids])).rows;
  const name=(id:string)=>people.find(x=>x.id===id)?.name||id;
  const extra={id:t.id,list:p.list},back=[button('← К задаче','task',extra),button('Меню','home')];
  if(t.workspace_read_only){
@@ -88,7 +89,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
  }
  if(p.op==='task_details')return paged('Описание',t.title+'\n\n'+(t.description||'Описание пока не заполнено.'),[[button('Поля задачи','task_fields',extra)]]);
  if(p.op==='task_fields'){
-  const showPlanning=(await config(pool)).config.showPlanning;
+  const showPlanning=(await config(db)).config.showPlanning;
   const integration=await taskIntegration(u,t.id,false);
   const lines=['Исполнитель: '+name(t.assignee_id),'Постановщик: '+name(t.creator_id),'Крайний срок: '+date(t.deadline)+(t.deadline?' МСК':''),...taskFacts,
    'Цена: '+formatPrice(t)+' · '+priceLabels[priceBand(t)],'Переносов срока: '+t.transfer_count,
@@ -133,7 +134,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    [...(loading?[button('Обновить','discussion',extra)]:[]),form('Написать комментарий','comment',c?.approvalId||pending?.id)],back]);
  }
  if(p.op==='history'){
-  const showPlanning=(await config(pool)).config.showPlanning;
+  const showPlanning=(await config(db)).config.showPlanning;
   const fields:Record<string,string>={title:'Название',description:'Описание',deadline:'Срок',status:'Состояние',assignee_id:'Исполнитель',planned_start:'Плановое начало',planned_end:'Плановое окончание'};
   const undone=new Set(d.events.flatMap(e=>e.kind==='action_undone'&&Array.isArray(e.data.originalEvents)?e.data.originalEvents as string[]:[]));
   const texts=d.events.flatMap(e=>{let text=date(e.created_at)+' МСК · '+(e.actor_id?name(e.actor_id):'Система')+'\n'+e.message+(undone.has(e.id)?' · действие отменено':'');const before=e.data.before as Record<string,unknown>|undefined,after=e.data.after as Record<string,unknown>|undefined;
@@ -156,17 +157,18 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
   if(!pending&&t.status==='active'&&canRequest(u,t))rows.push([form('Предложить новый срок','deadline')]);
   if(await canDelegateTask(u,t))rows.push([button('Делегировать задачу','delegate_list',extra)]);
   rows.push([button('Напоминания','task_reminders',extra)],[button('История','history',extra),button('Поля задачи','task_fields',extra)]);
-  const lastAction=await lastUndo(u,t.id);if(lastAction)rows.push([button('Отменить последнее действие','undo_prepare',{...extra,target:lastAction.id})]);
+  const lastAction=await lastUndo(u,t.id,db);if(lastAction)rows.push([button('Отменить последнее действие','undo_prepare',{...extra,target:lastAction.id})]);
   return htmlScreen(u,ch,`<b>Ещё действия · #${h(taskNumber(t))}</b>\n${h(compactTaskTitle(t.title))}${d.approvalWatch?.byCode?'\nКонтроль руководителя продаж по коду В.':''}`,[...rows,back]);
  }
  const context:string[]=[];
  const rows:ReturnType<typeof button>[][]=[];
+ const planningRows:ReturnType<typeof button>[][]=[];
  const plan=d.personalPlan;
  if(plan&&t.status==='active'){
-  if(plan.needsAcceptance)context.push('Ждёт ознакомления · затем укажите плановое время');
-  rows.push([button(plan.needsAcceptance?'Ознакомлен':plan.plannedAt?'Изменить мой план':'Добавить в мой план','form',
+  if(plan.needsAcceptance)context.push('Подтвердите ознакомление, чтобы начать работу. Планирование необязательно.');
+  (plan.needsAcceptance?rows:planningRows).push([button(plan.needsAcceptance?'Ознакомлен':plan.plannedAt?'Изменить мой план':'Добавить в мой план',plan.needsAcceptance?'ack_assignment':'form',
    {...extra,kind:plan.needsAcceptance?'accept_assignment':'edit_personal_plan',version:plan.epoch,revision:plan.revision})]);
-  if(!plan.needsAcceptance)rows.push([button('Запланировать шаг','form',{...extra,kind:'personal_step',version:plan.epoch,revision:plan.revision})]);
+  if(!plan.needsAcceptance)planningRows.push([button('Запланировать шаг','form',{...extra,kind:'personal_step',version:plan.epoch,revision:plan.revision})]);
  }
  const control=!pending&&d.controls.find(c=>['waiting','escalated'].includes(c.state)&&(c.assignee_id===u.id||u.role==='admin'));
  const overdue=taskQueue(t,now)==='overdue'||elapsedToday(t,now);
@@ -185,6 +187,7 @@ export async function renderBotTask(u:User,ch:string,p:Payload){
    rows.push([deadlineProposalButton(t,p.list,explained)]);
   }
  }
+ rows.push(...planningRows);
  if(!plan?.needsAcceptance&&t.status==='active'&&d.assignmentReceipt?.state==='pending')context.push('Ждёт ознакомления исполнителя');
  if(t.status==='review'&&!pending&&next?.userId)context.push(next.userId===u.id?'Результат ждёт вашей приёмки':'Результат на приёмке у '+name(next.userId));
  if(last||t.status==='review'||d.bitrixLinked)rows.push([button(t.status==='review'&&canReview(u,t,d.approvalScope)?'Проверить результат':last?.state==='returned'?'Результат и замечания':'Результат работы','task_result',extra)]);

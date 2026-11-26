@@ -596,7 +596,7 @@ export function App(){
   {page==='tasks'&&<>
    {showPersonalAssignments&&!linkedIds&&!viewingEmployee&&!tour&&unaccepted.length>0&&<section className="panel assignment-queue" aria-label="Новые задачи к ознакомлению">
     <div className="panel-heading"><div><h2>Новые задачи к ознакомлению · {unaccepted.length}</h2>
-     <p>Откройте задачу, подтвердите ознакомление и выберите время.</p></div>
+     <p>Откройте задачу и подтвердите ознакомление. Планирование необязательно.</p></div>
      {filter!=='unaccepted'&&<button type="button" className="button secondary" onClick={()=>go('tasks','unaccepted','mine')}>Показать все</button>}
     </div>
     {filter!=='unaccepted'&&<ul>{unaccepted.slice(0,3).map(task=><li key={task.id}>
@@ -796,7 +796,7 @@ export function App(){
     </section>}
     {drawerTab==='result'&&<>
      {!cardReadOnly&&(!cardApproval||detail.task.status==='active'&&cardApproval.type==='deadline')&&(detail.personalPlan?.needsAcceptance?
-      <div className="task-card-section"><p>Перед сдачей результата подтвердите ознакомление и выберите плановое время.</p><button type="button" className="button secondary" onClick={()=>setDrawerTab('info')}>К ознакомлению</button></div>:
+      <div className="task-card-section"><p>Перед сдачей результата подтвердите ознакомление. Личное планирование необязательно.</p><button type="button" className="button secondary" onClick={()=>setDrawerTab('info')}>К ознакомлению</button></div>:
       <ReviewActions key={detail.task.id+detail.task.version} task={detail.task} user={data.user} scope={detail.approvalScope}
        withdrawsDeadline={cardApproval?.type==='deadline'} busy={busy} act={act}/>)}
      {detail.submissions.length?<section className="submission-history">{detail.submissions.map(s=><article key={s.id}>

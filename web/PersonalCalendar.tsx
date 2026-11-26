@@ -23,38 +23,43 @@ export function PersonalTaskPlan({task,plan,busy,error,act,deadlineAction}:{task
  const when=value?Date.parse(value+':00+03:00'):NaN;
  const laterThanDeadline=task.deadline&&when>Date.parse(task.deadline);
  const missedDeadline=plan.needsAcceptance&&task.deadline&&Date.parse(task.deadline)<=Date.now();
- if(missedDeadline)return <section className="task-card-section personal-task-plan awaiting-acceptance" aria-label="Приём задачи">
-  <h3><CalendarDays size={16}/> Крайний срок уже прошёл</h3>
-  <p>Плановое время можно выбрать после изменения крайнего срока.</p>
-  {deadlineAction&&<button type="button" className="button primary" disabled={busy} onClick={deadlineAction.run}>{deadlineAction.label}</button>}
- </section>;
  return <section className={'task-card-section personal-task-plan'+(plan.needsAcceptance?' awaiting-acceptance':'')} aria-label="Мой план задачи">
   <h3><CalendarDays size={16}/> {plan.needsAcceptance?'Ознакомление с задачей':'Мой план'}</h3>
   {plan.plannedAt&&<p><strong>{planTime.format(new Date(plan.plannedAt))} МСК</strong>{plan.acceptedAt?' · ознакомление подтверждено':''}</p>}
   {plan.nextStep&&<p>Следующий шаг · <strong>{plan.nextStep}</strong></p>}
-  {plan.needsAcceptance&&<p>После ознакомления выберите время для следующего шага.</p>}
-  {!plan.plannedAt&&!plan.needsAcceptance&&task.status==='active'&&<p>Добавьте задачу в личный календарь.</p>}
-  {task.status==='active'&&(editing?<form onSubmit={async e=>{
+  {plan.needsAcceptance&&<>
+   <p>Подтвердите ознакомление, чтобы начать работу. Планирование необязательно.</p>
+   {missedDeadline&&<p className="calendar-warning">Крайний срок уже прошёл. Можно ознакомиться и выполнить задачу; перенос срока согласуется отдельно.</p>}
+   {submitted&&error&&<p className="calendar-warning" role="alert">{error}</p>}
+   <div className="calendar-actions"><button type="button" className="button primary" disabled={busy} onClick={async()=>{
+    setSubmitted(true);
+    await act('/tasks/'+encodeURIComponent(task.id)+'/personal-plan',{epoch:plan.epoch,revision:plan.revision,accept:true},'PUT',
+     'Ознакомление подтверждено. Можно работать с задачей.');
+   }}>Ознакомлен</button>
+   {missedDeadline&&deadlineAction&&<button type="button" className="button secondary" disabled={busy} onClick={deadlineAction.run}>{deadlineAction.label}</button>}</div>
+  </>}
+  {!plan.plannedAt&&!plan.needsAcceptance&&task.status==='active'&&<p>При желании добавьте задачу в личный календарь. Это необязательно для выполнения.</p>}
+  {task.status==='active'&&!plan.needsAcceptance&&(editing?<form onSubmit={async e=>{
    e.preventDefault();
-   if(!Number.isFinite(when)||plan.needsAcceptance&&laterThanDeadline)return;
+   if(!Number.isFinite(when))return;
    setSubmitted(true);
    if(await act('/tasks/'+encodeURIComponent(task.id)+'/personal-plan',
-    {epoch:plan.epoch,revision:plan.revision,plannedAt:new Date(when).toISOString(),accept:plan.needsAcceptance,nextStep},'PUT',
-    plan.needsAcceptance?'Ознакомление подтверждено, план сохранён.':'Время в календаре обновлено.'))setEditing(false);
+    {epoch:plan.epoch,revision:plan.revision,plannedAt:new Date(when).toISOString(),accept:false,nextStep},'PUT',
+    'Время в календаре обновлено.'))setEditing(false);
   }}>
    <label>Следующий шаг<input value={nextStep} maxLength={500} onChange={e=>setNextStep(e.target.value)} placeholder="Например, отправить клиенту расчёт"/></label>
-   <label>{plan.needsAcceptance?'Плановая дата и время · МСК':'Дата и время шага · МСК'}
-    <input type="datetime-local" required value={value} max={plan.needsAcceptance&&task.deadline?moscowClock(task.deadline):undefined} onChange={e=>setValue(e.target.value)}/>
+   <label>Дата и время шага · МСК
+    <input type="datetime-local" required value={value} onChange={e=>setValue(e.target.value)}/>
    </label>
-   <p className="muted">{plan.needsAcceptance&&task.deadline?'Плановое время должно быть не позже '+planTime.format(new Date(task.deadline))+' МСК.':'Это ваш личный план. Крайний срок задачи сохраняется.'}</p>
+   <p className="muted">Это ваш личный план. Крайний срок задачи сохраняется.</p>
    {laterThanDeadline&&<p className="calendar-warning">Выбранное время позже крайнего срока задачи.</p>}
    {submitted&&error&&<p className="calendar-warning" role="alert">{error}</p>}
    <div className="calendar-actions">
-    <button type="submit" className="button primary" disabled={busy||!value||!!(plan.needsAcceptance&&laterThanDeadline)}>Сохранить план</button>
+    <button type="submit" className="button primary" disabled={busy||!value}>Сохранить план</button>
     <button type="button" className="button secondary" disabled={busy} onClick={()=>setEditing(false)}>Отмена</button>
    </div>
-  </form>:<button type="button" className={'button '+(plan.needsAcceptance?'primary':'secondary')} disabled={busy}
-   onClick={()=>{setSubmitted(false);setNextStep(plan.nextStep??'');setValue(plan.plannedAt?moscowClock(plan.plannedAt):'');setEditing(true)}}>{plan.needsAcceptance?'Ознакомлен':plan.plannedAt?'Изменить план':'Запланировать'}</button>)}
+  </form>:<button type="button" className="button secondary" disabled={busy}
+   onClick={()=>{setSubmitted(false);setNextStep(plan.nextStep??'');setValue(plan.plannedAt?moscowClock(plan.plannedAt):'');setEditing(true)}}>{plan.plannedAt?'Изменить план':'Запланировать'}</button>)}
  </section>;
 }
 
