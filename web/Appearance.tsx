@@ -2,11 +2,6 @@ import {Check} from 'lucide-react';
 import type {CSSProperties} from 'react';
 import {useAppearance} from './theme-preferences.js';
 
-const wallpapers=[
- {id:'plain',label:'Однотонный'},
- {id:'nadia-space',label:'Специально для Нади'},
-] as const;
-
 export function Appearance(){
  const {theme,base,accent,wallpaper}=useAppearance(),controller=window.ruspetAppearance;
  const mode=theme==='dark'?'тёмной':'светлой';
@@ -20,8 +15,8 @@ export function Appearance(){
   </fieldset>
   <fieldset className="appearance-group">
    <legend>Фон рабочего пространства</legend>
-   <div className="wallpaper-options" role="group" aria-label="Фон рабочего пространства">
-    {wallpapers.map(option=><button type="button" className="base-palette" key={option.id}
+   <div className="wallpaper-options">
+    {controller.wallpapers.map(option=><button type="button" className="base-palette" key={option.id}
      aria-pressed={wallpaper===option.id} onClick={()=>controller.setWallpaper(option.id)}>
      <span className="wallpaper-swatch" data-preview={option.id} aria-hidden="true"/>
      <span className="palette-label">{option.label}<Check size={15} aria-hidden="true" style={{visibility:wallpaper===option.id?'visible':'hidden'}}/></span>

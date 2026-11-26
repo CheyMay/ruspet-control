@@ -35,65 +35,102 @@ input::placeholder,textarea::placeholder { color:var(--theme-text-muted); opacit
 @media(max-width:1100px) { .base-palette-options { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @media(max-width:650px) { .appearance-heading { flex-direction:column; gap:10px; } .base-palette-options { grid-template-columns:repeat(2,minmax(0,1fr)); } .appearance-group { margin-top:22px; } .appearance-preview { padding:12px; gap:12px; } }
 
-:root { --nadia-wallpaper: url('./assets/nadia-space.webp'); }
 .wallpaper-options {
- display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;
- max-inline-size:620px;margin-top:6px;
+ display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;
+ max-inline-size:870px;margin-top:6px;
 }
 .wallpaper-swatch {
  display:block;aspect-ratio:3 / 2;border-radius:5px;
  background:var(--theme-background) center / cover no-repeat;
 }
-.wallpaper-swatch[data-preview="nadia-space"] {
- background-color:#e9adc1;background-image:var(--nadia-wallpaper);
+/* Set the image on both the thumbnail and the active backdrop. */
+:root[data-wallpaper="nadia-space"],.wallpaper-swatch[data-preview="nadia-space"] {
+ --wallpaper-image:url('./assets/nadia-space.webp');
+ --wallpaper-tint:#e9adc1;
+ --wallpaper-mobile-position:91%;
 }
-:root[data-wallpaper="nadia-space"] body {isolation:isolate}
-:root[data-wallpaper="nadia-space"] body::before {
+:root[data-wallpaper="jdm-sakura"],.wallpaper-swatch[data-preview="jdm-sakura"] {
+ --wallpaper-image:url('./assets/jdm-sakura.webp');
+ --wallpaper-tint:#eda896;
+ --wallpaper-light-shade:#ffe9df94;
+ --wallpaper-mobile-position:83%;
+}
+:root[data-wallpaper="iron-garage"],.wallpaper-swatch[data-preview="iron-garage"] {
+ --wallpaper-image:url('./assets/iron-garage.webp');
+ --wallpaper-tint:#473226;
+ --wallpaper-light-shade:#fff5e6cc;
+ --wallpaper-dark-shade:#19171985;
+ --wallpaper-mobile-position:83%;
+}
+:root[data-wallpaper="capybara-break"],.wallpaper-swatch[data-preview="capybara-break"] {
+ --wallpaper-image:url('./assets/capybara-break.webp');
+ --wallpaper-tint:#c6bb91;
+ --wallpaper-light-shade:#fff4dc9e;
+ --wallpaper-mobile-position:80%;
+}
+:root[data-wallpaper="night-frequency"],.wallpaper-swatch[data-preview="night-frequency"] {
+ --wallpaper-image:url('./assets/night-frequency.webp');
+ --wallpaper-tint:#233c57;
+ --wallpaper-light-shade:#eff6ffc7;
+ --wallpaper-dark-shade:#0c15238f;
+ --wallpaper-mobile-position:83%;
+}
+.wallpaper-swatch[data-preview]:not([data-preview="plain"]) {
+ background-color:var(--wallpaper-tint);
+ background-image:var(--wallpaper-image);
+}
+:root[data-wallpaper]:not([data-wallpaper="plain"]) {
+ --wallpaper-shade:var(--wallpaper-light-shade,#f7e6ee80);
+}
+:root[data-wallpaper]:not([data-wallpaper="plain"])[data-theme="dark"] {
+ --wallpaper-shade:var(--wallpaper-dark-shade,#1b1326c7);
+}
+:root[data-wallpaper]:not([data-wallpaper="plain"]) body {isolation:isolate}
+:root[data-wallpaper]:not([data-wallpaper="plain"]) body::before {
  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
- background:linear-gradient(var(--wallpaper-shade,#f7e6ee80),var(--wallpaper-shade,#f7e6ee80)),var(--nadia-wallpaper) center / cover no-repeat;
+ background:linear-gradient(var(--wallpaper-shade),var(--wallpaper-shade)),var(--wallpaper-image) center / cover no-repeat;
 }
-:root[data-wallpaper="nadia-space"][data-theme="dark"] {--wallpaper-shade:#1b1326c7}
-:root[data-wallpaper="nadia-space"] .mobile-workspace {background-color:transparent}
+:root[data-wallpaper]:not([data-wallpaper="plain"]) .mobile-workspace {background-color:transparent}
 
 @media screen {
- :root[data-wallpaper="nadia-space"] {
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) {
   --wallpaper-panel:color-mix(in srgb,var(--theme-surface) 65%,transparent);
   --wallpaper-panel-active:color-mix(in srgb,var(--theme-surface-raised) 65%,transparent);
  }
- :root[data-wallpaper="nadia-space"] :is(
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) :is(
   .sidebar,.topbar,.mobile-workspace-header,.panel,.drawer,.modal,
   .queue-card,.work-card,.personal-metrics > button,.kanban-toolbar,.kanban-lane-header,.kanban-card,
   .mobile-device-notifications
  ) {
   background-color:var(--wallpaper-panel);
  }
- :root[data-wallpaper="nadia-space"] :is(
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) :is(
   .queue-card:hover,.work-card[aria-pressed="true"],.personal-metrics > button:hover,
   .personal-metrics > button:focus-visible,.kanban-card:hover,.sidebar nav button:hover,.sidebar nav button.active
  ) {
   background-color:var(--wallpaper-panel-active);
  }
- :root[data-wallpaper="nadia-space"] :is(.topbar,.mobile-workspace-header,.drawer,.modal) {
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) :is(.topbar,.mobile-workspace-header,.drawer,.modal) {
   backdrop-filter:blur(8px);
  }
- :root[data-wallpaper="nadia-space"] .panel :is(.panel-footer,.chart-footer,.focus-task) {
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) .panel :is(.panel-footer,.chart-footer,.focus-task) {
   background-color:transparent;
  }
- :root[data-wallpaper="nadia-space"] .panel .focus-task:hover {
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) .panel .focus-task:hover {
   background-color:color-mix(in srgb,var(--theme-surface-raised) 35%,transparent);
  }
- :root[data-wallpaper="nadia-space"] .kanban-lane {
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) .kanban-lane {
   background-color:color-mix(in srgb,var(--theme-surface-soft) 18%,transparent);
  }
- :root[data-wallpaper="nadia-space"] .kanban-lane[data-drop="active"] {
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) .kanban-lane[data-drop="active"] {
   background-color:color-mix(in srgb,var(--theme-accent) 20%,transparent);
  }
 }
 
 @media (max-width:650px) {
- :root[data-wallpaper="nadia-space"] body::before {background-position:center,91% center}
- .wallpaper-options {gap:9px}
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) body::before {background-position:center,var(--wallpaper-mobile-position,80%) center}
+ .wallpaper-options {grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}
 }
 @media print {
- :root[data-wallpaper="nadia-space"] body::before {display:none}
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) body::before {display:none}
 }
