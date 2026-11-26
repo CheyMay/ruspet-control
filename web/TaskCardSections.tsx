@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {useState} from 'react';
 import {TaskIntegration} from './TaskIntegration.js';
 import type {Task,User} from '../shared/types.js';
@@ -65,7 +66,7 @@ export function TaskCardFields({task,showPlanning,date}:{task:Task;showPlanning:
    <dl className="task-card-fields">
     <div><dt>Важная задача</dt><dd>{flag(task.important)}</dd></div>
     <div><dt>Риск потери клиента</dt><dd>{flag(task.customer_risk)}</dd></div>
-    <div><dt>Родительская задача</dt><dd>{task.parent_id?'#'+task.parent_id:'Не указана'}</dd></div>
+    <div><dt>Родительская задача</dt><dd>{task.parent_id?<TaskId number={task.parent_id}/>: 'Не указана'}</dd></div>
     <div><dt>Первоначальный крайний срок</dt><dd>{date(task.original_deadline,true)}</dd></div>
     {showPlanning&&<><div><dt>Плановое начало · МСК</dt><dd>{date(task.planned_start??null,true)}</dd></div>
      <div><dt>Плановое окончание · МСК</dt><dd>{date(task.planned_end,true)}</dd></div></>}

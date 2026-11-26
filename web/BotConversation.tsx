@@ -1,4 +1,5 @@
-import {useEffect,useRef,useState} from 'react';
+import {TaskId} from './TaskId.js';
+import {Fragment,useEffect,useRef,useState} from 'react';
 import {Clock3,House,ListTodo,Search,Send} from 'lucide-react';
 import type {BotScreen} from '../server/bot.js';
 import {api,ApiError} from './api.js';
@@ -88,7 +89,13 @@ export function BotConversation({mobile=false,initial='home',textDraft=false,ref
    </div>
    {view?.document&&<a className="button primary" href={'/api/reports/'+view.document.reportId+'/pdf'} target="_blank" rel="noreferrer">Скачать PDF</a>}
    {view?.links?.filter(link=>!mobile||link.text!=='Войти на сайт').map(link=><a key={link.url} className="text-button" href={link.url} target="_blank" rel="noreferrer">{link.text}</a>)}
-   {view&&<div className="bot-buttons">{view.buttons.map((row,i)=><div key={i}>{row.map(b=><button disabled={busy} key={b.token} onClick={()=>void run('/bot/click',{token:b.token},b.text==='Поиск')}>{b.text}</button>)}</div>)}</div>}
+   {view&&<div className="bot-buttons">{view.buttons.map((row,i)=><div key={i}>{row.map(b=>{
+     const reference=b.text.match(/^(?:Открыть )?#(\d+|L-[\w-]+)(?=\s|$)/i);
+     return <Fragment key={b.token}>{reference&&<TaskId number={reference[1]}/>}
+      <button disabled={busy} onClick={()=>void run('/bot/click',{token:b.token},b.text==='Поиск')}>
+       {reference?b.text.slice(reference[0].length).trim().replace(/^·\s*/, '')||'Открыть задачу':b.text}
+      </button></Fragment>;
+    })}</div>)}</div>}
    {error&&<div className="alert error" role="alert"><span>{error}</span>{!view&&<button className="button secondary" disabled={busy} onClick={()=>open(initial)}>Повторить</button>}</div>}
    <form className="bot-compose" onSubmit={event=>{event.preventDefault();sendText(enterDraft);}}>
     <textarea ref={field} aria-label="Ответ боту" value={text} maxLength={4000} onChange={event=>setText(event.target.value)} placeholder={enterDraft?'Вставьте поручение или напишите команду…':'Ответ, номер задачи или поручение…'}/>

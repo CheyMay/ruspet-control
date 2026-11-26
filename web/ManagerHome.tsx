@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {taskNumber} from '../shared/task-number.js';
 import {ArrowRight,CalendarDays,Clock3,ListTodo} from 'lucide-react';
 import {canComplete} from '../shared/actions.js';
@@ -36,8 +37,7 @@ export function ManagerHome({data,queue,open,tasks,placed,actions,team,sales,cal
    {focus.length?focus.slice(0,3).map(item=>{
     const task=item.task;
     const label=item.needsAcceptance?'Ознакомиться с задачей':item.action?.label??(item.deadlineState==='earlier'?'Просрочена':item.deadlineState==='expired'?'Срок истёк сегодня':'Крайний срок сегодня');
-    return <div className="personal-task-row" key={task.id}><button type="button" className="focus-task" onClick={()=>open(task.id,item.tab)}>
-     <span className="focus-task-id">#{taskNumber(task)}</span>
+    return <div className="personal-task-row" key={task.id}><TaskId number={taskNumber(task)} className="home-task-number"/><button type="button" className="focus-task" onClick={()=>open(task.id,item.tab)}>
      <div><strong>{task.title}</strong><TaskPeople task={task} users={data.users}/><small>{label}{task.deadline?' · '+timestamp.format(new Date(task.deadline))+' МСК':''}</small><TaskMeta task={task}/></div>
      <ArrowRight size={17}/>
     </button>{complete&&canComplete(data.user,task,data.approvalScope)&&!item.pendingApproval&&!item.needsAcceptance&&!item.action&&

@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {useEffect,useState} from 'react';
 import {api} from './api.js';
 type Status={run:{id:string;state:string;scope:{files:string}}|null;complete?:boolean;pending?:number;sections:{resource:string;state:string;count:number}[];issues:{id:string;resource:string;external_id:string;error:string}[];limitations?:string[]};
@@ -17,7 +18,7 @@ export function BitrixArchiveStatus(){
   {selected.length>0&&<div><h3>Первые менеджеры пилота</h3>{selected.map(person=><p key={person.expected_name}>{person.expected_name} · {person.ready?'Профиль и ID Битрикс24 подтверждены':person.matches.length===1?'Профиль найден, проверьте роль и привязку Битрикс24':'Нужно однозначно выбрать профиль сотрудника'}</p>)}</div>}
   {status?.run&&<><p><strong>{status.complete?'Первоначальный архив готов':status.run.state==='paused'?'Загрузка приостановлена':status.run.state==='captured'?'Обход завершён: проверяем пропуски и события':'Загрузка выполняется'}</strong> · обновлений по событиям в очереди: {status.pending||0}</p><p className="muted">Файлы: {status.run.scope.files==='binary'?'метаданные и содержимое':'только метаданные'}</p>
    <div className="table-scroll"><table><thead><tr><th>Раздел</th><th>Завершено шагов</th><th>В очереди</th><th>Требуют внимания</th></tr></thead><tbody>{[...groups].map(([name,counts])=><tr key={name}><td>{name}</td><td>{counts.done}</td><td>{counts.pending}</td><td>{counts.blocked}</td></tr>)}</tbody></table></div>
-   {status.issues.map(issue=><p key={issue.id} className="red-text">{label(issue.resource)} · #{issue.external_id}: {issue.error}</p>)}
+   {status.issues.map(issue=><p key={issue.id} className="red-text">{label(issue.resource)} · {issue.resource==='task'?<TaskId number={String(issue.external_id)}/>:'#'+issue.external_id}: {issue.error}</p>)}
    {status.limitations?.map(text=><p className="muted" key={text}>{text}</p>)}
   </>}
  </section>;

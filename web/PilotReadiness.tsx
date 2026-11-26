@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {useEffect,useState} from 'react';
 import {api} from './api.js';
 import {integrationLabels} from '../shared/integration-status.js';
@@ -24,6 +25,6 @@ export function PilotReadiness({root=false}:{root?:boolean}){
   {!value.linkedExchange&&!value.writeEnabled&&!value.enabled&&<small>Для запуска сначала настройте обработчик на сервере.</small>}
   {operationError&&<p className="alert error" role="alert">{operationError}</p>}
  </div>}
- {queue.length>0&&<><h3>Очередь обмена · первые {queue.length}</h3><div className="table-scroll"><table><thead><tr><th>Задача</th><th>Состояние</th><th>Операция для сверки</th></tr></thead><tbody>{queue.map(q=><tr key={q.event_id}><td><a className="text-button" href={'/?view=tasks&task='+encodeURIComponent(q.task_id)}>#{q.task_id}</a></td><td>{integrationLabels[q.state]||q.state}{q.error&&<p>{q.error}</p>}</td><td><code>{q.event_id}</code><br/><small>{q.phase}</small></td></tr>)}</tbody></table></div></>}
+ {queue.length>0&&<><h3>Очередь обмена · первые {queue.length}</h3><div className="table-scroll"><table><thead><tr><th>Задача</th><th>Состояние</th><th>Операция для сверки</th></tr></thead><tbody>{queue.map(q=><tr key={q.event_id}><td><TaskId number={q.task_id}/> <a className="text-button" href={'/?view=tasks&task='+encodeURIComponent(q.task_id)}>Открыть</a></td><td>{integrationLabels[q.state]||q.state}{q.error&&<p>{q.error}</p>}</td><td><code>{q.event_id}</code><br/><small>{q.phase}</small></td></tr>)}</tbody></table></div></>}
  </section>;
 }

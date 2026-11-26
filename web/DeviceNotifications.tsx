@@ -25,7 +25,7 @@ const isStandalone=()=>window.matchMedia('(display-mode: standalone)').matches||
  (navigator as Navigator&{standalone?:boolean}).standalone===true;
 const isAppleMobile=()=>/iP(?:hone|ad|od)/i.test(navigator.userAgent)||
  (navigator.platform==='MacIntel'&&navigator.maxTouchPoints>1);
-type Status={publicKey:string|null;active:boolean};
+type Status={publicKey:string|null;active:boolean;enabled:boolean};
 
 export function DeviceNotifications({install=false,userId}:{install?:boolean;userId:string}){
  const [settings,setSettings]=useState<Status|null>(null),[registration,setRegistration]=useState<ServiceWorkerRegistration|null>(null);
@@ -43,15 +43,15 @@ export function DeviceNotifications({install=false,userId}:{install?:boolean;use
   void api<Status>('/notifications/push').then(async value=>{
    const result=await worker;
    if(!active)return;
-   setSettings(value);
+   setSettings({...value,active:false});
    if(!result){if(active)setWorkerFailed(true);return;}
    if(!supported)return;
    const current=await navigator.serviceWorker.ready;
    if(!active)return;
    const subscription=await current.pushManager.getSubscription();
-   if(active&&!value.active&&subscription&&localStorage.getItem(deviceOwner)===userId&&Notification.permission==='granted'){
-    const saved=await api<Pick<Status,'active'>>('/notifications/push','POST',subscription.toJSON());
-    if(active)setSettings(old=>old?{...old,active:saved.active}:old);
+   if(subscription&&localStorage.getItem(deviceOwner)===userId&&Notification.permission==='granted'){
+    if(!value.active)await api('/notifications/push','POST',subscription.toJSON());
+    if(active)setSettings({...value,active:true});
    }
    if(active)setRegistration(current);
   }).catch(e=>{if(active)setError(e.message);});
@@ -68,7 +68,7 @@ export function DeviceNotifications({install=false,userId}:{install?:boolean;use
   if(!registration||!settings?.publicKey)return;
   setBusy(true);setError('');setMessage('');
   try{
-   if(settings.active){
+   if(settings.active&&settings.enabled){
     const subscription=await registration.pushManager.getSubscription();
     if(subscription){
      await api('/notifications/push','DELETE',{endpoint:subscription.endpoint});
@@ -86,9 +86,10 @@ export function DeviceNotifications({install=false,userId}:{install?:boolean;use
    const key=Uint8Array.from(atob(base64),char=>char.charCodeAt(0));
    const subscription=await registration.pushManager.getSubscription()??
     await registration.pushManager.subscribe({userVisibleOnly:true,applicationServerKey:key});
-   await api('/notifications/push','POST',subscription.toJSON());
+   await api('/notifications/push','POST',{...subscription.toJSON(),enableDelivery:true});
    localStorage.setItem(deviceOwner,userId);
-   setSettings({...settings,active:true});
+   setSettings({...settings,active:true,enabled:true});
+   window.dispatchEvent(new Event('ruspet-push-enabled'));
   }catch(e){setError((e as Error).message);}finally{setBusy(false);}
  }
  async function sendTest(){
@@ -117,12 +118,12 @@ export function DeviceNotifications({install=false,userId}:{install?:boolean;use
     permission==='denied'?'Уведомления запрещены. Разрешите их в настройках уведомлений РУСПЭТ или в разрешениях сайта в браузере.':
     settings&&!settings.publicKey?'Push на сервере пока недоступны.':
     !registration||!settings?'Проверяем готовность устройства…':
-    settings.active?'Уведомления включены. Проверьте доставку кнопкой рядом.':'Приходят о сроках и новых задачах, даже когда страница закрыта.'}</small></div>
+    settings.active&&settings.enabled?'Уведомления включены. Проверьте доставку кнопкой рядом.':'Приходят о сроках и новых задачах, даже когда страница закрыта.'}</small></div>
    {supported&&(!apple||standalone)&&permission!=='denied'&&<div className="device-notification-actions">
     <button className="button secondary" type="button" disabled={busy||!settings?.publicKey||!registration} onClick={()=>void change()}>
-     <Bell size={16}/>{settings?.active?'Выключить':'Включить'}
+     <Bell size={16}/>{settings?.active&&settings.enabled?'Выключить push':'Включить push'}
     </button>
-    {settings?.active&&<button className="button secondary" type="button" disabled={busy||!registration} onClick={()=>void sendTest()}>Проверить push</button>}
+    {settings?.active&&settings.enabled&&<button className="button secondary" type="button" disabled={busy||!registration} onClick={()=>void sendTest()}>Проверить push</button>}
    </div>}
   </div>
   {error&&<p className="red-text" role="alert">{error}</p>}

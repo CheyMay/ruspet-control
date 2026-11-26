@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {useEffect,useState} from 'react';
 import {api} from './api.js';
 
@@ -48,7 +49,7 @@ export function DirectorWeeklyTasks({week,open}:{week:string;open:(id:string)=>v
   {!rows&&!error&&<p>Загружаем задачи…</p>}
   {rows?.length===0&&<p>Нет задач в работе за этот период.</p>}
   {rows?.map(task=><article key={task.id} className="incident-row">
-   <div><button className="text-button" type="button" onClick={()=>open(task.id)}>#{task.number} · {task.title}</button><p>Исполнитель · {task.assignee}</p></div>
+   <div><TaskId number={task.number}/> · <button className="text-button" type="button" onClick={()=>open(task.id)}>{task.title}</button><p>Исполнитель · {task.assignee}</p></div>
    <label><input type="checkbox" checked={task.watched||task.required} disabled={task.required||busy!==null}
     onChange={e=>void select(task.id,e.target.checked)}/> {task.required?'Уже в маршруте':'Согласовывать переносы'}</label>
   </article>)}

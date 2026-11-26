@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {taskNumber} from '../shared/task-number.js';
 import {useEffect,useState,type FormEvent} from 'react';
 import {CompanyPeople} from './Crm.js';
@@ -32,9 +33,9 @@ export function CompanyWork({id,users,openTask,createTask,onContact}:{id:string;
   {!work&&!error&&<p role="status">Загружаем задачи и контакты…</p>}
   {work&&<><p className="muted">Связанные задачи · {work.total}{work.total>50?' · показано 50':''}</p>
    {work.total===0&&<p>Связанных задач пока нет.</p>}
-   {work.tasks.map(task=><div className="automation-run" key={task.id}><div><button type="button" className="text-button task-link" onClick={()=>openTask(task.id)}>#{taskNumber(task)} · {task.title}</button>
+   {work.tasks.map(task=><div className="automation-run" key={task.id}><div><TaskId number={taskNumber(task)}/> · <button type="button" className="text-button task-link" onClick={()=>openTask(task.id)}>{task.title}</button>
     <p>{status[task.status]??task.status} · {person(task.assignee_id)} · {moscowTimestamp(task.deadline)}</p></div></div>)}
-   {!!work.history.length&&<details className="automation-log"><summary>Последние действия по задачам</summary>{work.history.map(entry=><p key={entry.id}>{moscowTimestamp(entry.created_at)} · {person(entry.actor_id)} · #{taskNumber(work.tasks.find(task=>task.id===entry.task_id)??{id:entry.task_id})} · {entry.message}</p>)}</details>}
+   {!!work.history.length&&<details className="automation-log"><summary>Последние действия по задачам</summary>{work.history.map(entry=><p key={entry.id}>{moscowTimestamp(entry.created_at)} · {person(entry.actor_id)} · <TaskId number={taskNumber(work.tasks.find(task=>task.id===entry.task_id)??{id:entry.task_id})}/> · {entry.message}</p>)}</details>}
   </>}
   <ClientNotes key={id} id={id}/>
   <CompanyPeople id={id}/>

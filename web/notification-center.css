@@ -1,0 +1,29 @@
+.personal-notices {min-inline-size:0;overflow-wrap:anywhere}
+.mobile-notice-tabs {margin-bottom:10px}
+.notice-heading {display:flex;flex-wrap:wrap;align-items:center;gap:10px}
+.notice-setup {margin:0 16px 12px;padding:10px 12px;border:1px solid var(--line);border-radius:8px}
+.notice-setup > summary {cursor:pointer;font-weight:600}
+.notice-group {grid-template-columns:28px minmax(0,1fr);align-items:start}
+.notice-icon {
+ display:grid;place-items:center;inline-size:28px;block-size:28px;
+ border-radius:7px;background:var(--theme-surface-raised);color:var(--theme-text-secondary);
+}
+.notice-group[data-unread=true] .notice-icon {color:var(--theme-accent)}
+.notice-actions {margin-top:8px}
+.notice-actions :is(button,a) {white-space:normal;text-align:left}
+.notice-task {display:inline-flex;align-items:center;flex-wrap:wrap;gap:2px 6px;min-inline-size:0}
+.notice-task .text-button {display:inline-flex;align-items:center;gap:3px}
+.notification-sound,.device-notification-row {
+ display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px 12px;
+}
+.device-notification-row > div:first-child {flex:1 1 17rem;min-width:0;overflow-wrap:anywhere}
+.notification-sound {border-top:1px solid var(--line);padding:10px 0}
+.notification-sound > label {display:inline-flex;align-items:center;gap:6px}
+.notification-sound > small {flex-basis:100%}
+@media (max-width:520px){
+ .notice-heading {padding:12px}
+ .notice-setup {margin-inline:12px}
+ .notice-group {grid-template-columns:24px minmax(0,1fr);gap:8px;padding:12px}
+ .notice-icon {inline-size:24px;block-size:24px}
+ .notice-actions .text-button {min-block-size:34px}
+}

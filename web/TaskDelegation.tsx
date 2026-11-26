@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {useEffect,useState,type FormEvent} from 'react';
 import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
@@ -61,16 +62,16 @@ export function TaskDelegation({task,user,users,open,onCreated,readOnly=false}:{
  if(!available&&!links?.source&&!links?.copies.length&&!task.delegated_from_id)return null;
  return <section className="task-delegation">
   <div className="automation-heading"><h3>Делегирование</h3>{available&&<button className="button secondary" type="button" onClick={()=>{setTargets(null);setManual(false);setError('');setClient(null);setClientQuery('');setClients(null);setClientError('');setShow(true);}}>Делегировать задачу</button>}</div>
-  {links?.source&&<p>Исходная задача · <button className="text-button" onClick={()=>open(links.source!.id)}>#{links.source.id} · {links.source.title}</button></p>}
+  {links?.source&&<p>Исходная задача · <TaskId number={links.source.id}/> · <button className="text-button" onClick={()=>open(links.source!.id)}>{links.source.title}</button></p>}
   {task.delegated_from_id&&!links?.source&&<p className="muted">Поручение от руководителя</p>}
   {linkError&&<p className="red-text" role="alert">{linkError}</p>}
-  {newId&&<p role="status">Поручение создано · <button className="text-button" onClick={()=>open(newId)}>Открыть #{newId}</button></p>}
+  {newId&&<p role="status">Поручение создано · <TaskId number={newId}/> · <button className="text-button" onClick={()=>open(newId)}>Открыть поручение</button></p>}
   {links?.copies.map(copy=><div className="automation-run" key={copy.id}><div>
-   <button className="text-button" onClick={()=>open(copy.id)}>#{copy.id} · {copy.title}</button>
+   <TaskId number={copy.id}/> · <button className="text-button" onClick={()=>open(copy.id)}>{copy.title}</button>
    <p>{users.find(person=>person.id===copy.assignee_id)?.name||'Исполнитель'} · {status[copy.status]}</p>
   </div></div>)}
   {show&&<div className="modal-backdrop"><form className="modal task-editor" role="dialog" aria-modal="true" aria-label="Делегировать задачу" onSubmit={submit}>
-   <div className="panel-heading"><div><h2>Делегировать задачу</h2><p>#{task.id} · {task.title}</p></div><button type="button" className="text-button" disabled={busy} onClick={()=>setShow(false)}>Закрыть</button></div>
+   <div className="panel-heading"><div><h2>Делегировать задачу</h2><p><TaskId number={task.id}/> · {task.title}</p></div><button type="button" className="text-button" disabled={busy} onClick={()=>setShow(false)}>Закрыть</button></div>
    <p className="muted">Руководитель принимает поручение менеджера. После приёмки всех поручений исходная задача закрывается автоматически. Её бюджет и крайний срок сохраняются.</p>
    {error&&<p className="alert error" role="alert">{error}</p>}
    {!targets&&!error&&<p role="status">Загружаем подчинённых…</p>}

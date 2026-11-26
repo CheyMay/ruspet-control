@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {TaskPeople} from './TaskPeople.js';
 import {useEffect,useMemo,useState} from 'react';
 import {api} from './api.js';
@@ -97,7 +98,7 @@ export function TaskHints({title,description,companyId,tasks,users,owner}:{title
   {title.trim()&&!description.trim()&&<p>Добавьте ожидаемый результат. Например, какой документ приложить или с кем согласовать решение.</p>}
   {owner&&<p>{users.find(u=>u.id===owner)?.name||'Исполнитель'} · {pending} открытых задач в вашей выборке.</p>}
   {!!matches.length&&<><p>Похожие открытые задачи{companyId?' этой компании':''}</p><ul>{matches.map(({task})=><li key={task.id}>
-   <a target="_blank" rel="noopener" className="text-button" href={'/?view=tasks&task='+encodeURIComponent(task.id)}>#{task.id} · {task.title}</a><TaskPeople task={task} users={users}/><small>{task.deadline?' · '+moscowTimestamp(task.deadline):''}</small>
+   <TaskId number={task.id}/> · <a target="_blank" rel="noopener" className="text-button" href={'/?view=tasks&task='+encodeURIComponent(task.id)}>{task.title}</a><TaskPeople task={task} users={users}/><small>{task.deadline?' · '+moscowTimestamp(task.deadline):''}</small>
   </li>)}</ul></>}
  </aside>;
 }

@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {taskNumber} from '../shared/task-number.js';
 import {ArrowRight,CalendarClock,Clock3,ListChecks,Search,SlidersHorizontal} from 'lucide-react';
 import {useEffect,useMemo,useState} from 'react';
@@ -62,7 +63,7 @@ export function ActionWorkspace({data,open,complete,deadline:moveDeadline,accept
    (item.deadlineState==='expired'?'Истёк сегодня в '+time.format(new Date(deadline)):'Крайний срок '+shortDate.format(new Date(deadline)))+' МСК':'';
   return <article className="work-row" key={task.id}>
    <div className="work-row-content">
-    <div className="work-row-meta"><span>#{taskNumber(task)}</span>{clock&&<span className={item.deadlineState==='expired'||item.deadlineState==='earlier'?'urgent':''}>{clock}</span>}</div>
+    <div className="work-row-meta"><TaskId number={taskNumber(task)}/>{clock&&<span className={item.deadlineState==='expired'||item.deadlineState==='earlier'?'urgent':''}>{clock}</span>}</div>
     <button type="button" className="work-task-title" onClick={()=>void open(task.id)}>{task.title}</button>
     <div className="work-row-people"><span>Исполнитель · {name(task.assignee_id)}</span><span>Постановщик · {name(task.creator_id)}</span></div>
     {(item.label!=='Выполнить задачу'||!myStep)&&<p className="work-step">{myStep?'Ваш шаг':name(item.ownerId)||'Следующий шаг'} · {item.label}</p>}

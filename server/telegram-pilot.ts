@@ -9,7 +9,7 @@ import {publicOrigin} from './report-content.js';
 import {escapeHtml,workdayReports} from '../shared/report-links.js';
 import {businessDay} from '../shared/queues.js';
 import {visibleControlNotice} from './pending-task-work.js';
-import {approvalNoticeKind,topicOn} from './notifications.js';
+import {approvalNoticeKind,needsPush,pushInvitationPrefix,topicOn} from './notifications.js';
 import {groupNotifications} from '../shared/notifications.js';
 import {tickTaskReminders,pendingAlerts} from './reminders.js';
 import {claimTelegramTaskNotice,taskNoticeScreen} from './task-notices.js';
@@ -65,7 +65,15 @@ export async function configurePilot(u:User,input:{enabled:boolean;delivery:bool
    THEN now() ELSE task_delivery_enabled_at END WHERE id=1`,[input.enabled,input.delivery,input.taskDelivery??null,input.deadlineDelivery??null,input.workdayDelivery??null]);
 }
 let lastSend=0;const chatSend=new Map<string,number>();
-async function send(chat:string,s:BotScreen,message?:number){const slot=Math.max(Date.now(),lastSend+80,(chatSend.get(chat)||0)+1050);lastSend=slot;chatSend.set(chat,slot);if(slot>Date.now())await sleep(slot-Date.now());if(s.document){const user=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0];assert(user,403,'Чат не привязан.');const report=await getReport(user,s.document.reportId),bytes=await reportPdf(report);const form=new FormData();form.set('chat_id',chat);form.set('caption',s.text.slice(0,1000));form.set('document',new Blob([new Uint8Array(bytes)],{type:'application/pdf'}),`ruspet-${report.day}.pdf`);let response:Response;try{response=await telegramRequest(`https://api.telegram.org/bot${await token()}/sendDocument`,form,35000)}catch{throw new AppError(502,'Не получено подтверждение отправки PDF. Проверьте чат перед повтором.');}const data=await response.json() as any;if(typeof data?.ok!=='boolean')throw new AppError(502,'Отправка PDF не подтверждена мостом.');if(!data.ok)throw new TelegramRejected('sendDocument',data,response.status);if(!Number.isInteger(data.result?.message_id))throw new AppError(502,'Нет подтверждения отправки PDF.');return data.result;}const body={chat_id:chat,text:s.text,...(s.format==='HTML'?{parse_mode:'HTML'}:{}),reply_markup:s.replyKeyboard==='contact'?{keyboard:[[{text:'Поделиться своим номером',request_contact:true}],[{text:'Не могу поделиться номером'}]],resize_keyboard:true,one_time_keyboard:true}:s.replyKeyboard==='remove'?{remove_keyboard:true}:{inline_keyboard:s.buttons.filter(r=>r.length).map(r=>r.map(b=>({text:b.text,callback_data:b.token}))).concat((s.links||[]).map(b=>[{text:b.text,url:b.url}] as any))},link_preview_options:{is_disabled:true}};return sendTelegramText(call,body,s.replyKeyboard?undefined:message)}
+function telegramInlineKeyboard(screen:BotScreen){
+ const keyboard:Record<string,unknown>[][]=screen.buttons.filter(row=>row.length).map(row=>row.map(button=>({text:button.text,callback_data:button.token})));
+ if(screen.copyTaskNumber&&screen.copyTaskNumber.length<=256){
+  keyboard.push([{text:'Скопировать #'+screen.copyTaskNumber,copy_text:{text:screen.copyTaskNumber}}]);
+ }
+ for(const link of screen.links??[])keyboard.push([{text:link.text,url:link.url}]);
+ return keyboard;
+}
+async function send(chat:string,s:BotScreen,message?:number){const slot=Math.max(Date.now(),lastSend+80,(chatSend.get(chat)||0)+1050);lastSend=slot;chatSend.set(chat,slot);if(slot>Date.now())await sleep(slot-Date.now());if(s.document){const user=(await pool.query('SELECT u.* FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1',[chat])).rows[0];assert(user,403,'Чат не привязан.');const report=await getReport(user,s.document.reportId),bytes=await reportPdf(report);const form=new FormData();form.set('chat_id',chat);form.set('caption',s.text.slice(0,1000));form.set('document',new Blob([new Uint8Array(bytes)],{type:'application/pdf'}),`ruspet-${report.day}.pdf`);let response:Response;try{response=await telegramRequest(`https://api.telegram.org/bot${await token()}/sendDocument`,form,35000)}catch{throw new AppError(502,'Не получено подтверждение отправки PDF. Проверьте чат перед повтором.');}const data=await response.json() as any;if(typeof data?.ok!=='boolean')throw new AppError(502,'Отправка PDF не подтверждена мостом.');if(!data.ok)throw new TelegramRejected('sendDocument',data,response.status);if(!Number.isInteger(data.result?.message_id))throw new AppError(502,'Нет подтверждения отправки PDF.');return data.result;}const body={chat_id:chat,text:s.text,...(s.format==='HTML'?{parse_mode:'HTML'}:{}),reply_markup:s.replyKeyboard==='contact'?{keyboard:[[{text:'Поделиться своим номером',request_contact:true}],[{text:'Не могу поделиться номером'}]],resize_keyboard:true,one_time_keyboard:true}:s.replyKeyboard==='remove'?{remove_keyboard:true}:{inline_keyboard:telegramInlineKeyboard(s)},link_preview_options:{is_disabled:true}};return sendTelegramText(call,body,s.replyKeyboard?undefined:message)}
 async function reply(chat:string,s:BotScreen,started:number,message?:number){
  const kind=s.document?'pdf':s.timingKind;
  let ok=false;
@@ -185,6 +193,7 @@ export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:str
  const included=(await visibleTasks(user)).map(t=>t.id);
  return (await pool.query<{id:string;task_id:string|null;created_at:string;body:string}>(`SELECT o.* FROM outbox o LEFT JOIN notification_preferences p ON p.user_id=o.recipient_id
   WHERE o.withdrawn_at IS NULL AND o.read_at IS NULL AND NOT o.task_assignment AND o.task_notice IS NULL AND o.management_notice IS NULL AND o.dedupe_key NOT LIKE 'staff-review:%' AND o.personal_plan_alert_id IS NULL
+   AND o.dedupe_key NOT LIKE 'enable-push:%'
    AND o.recipient_id=$1 AND (o.task_id IS NULL OR o.task_id=ANY($4::text[])) AND ${visibleControlNotice}
    AND (o.dedupe_key NOT LIKE 'approval:%' OR NOT EXISTS(SELECT 1 FROM approval_hierarchy h WHERE h.creator_first AND h.sales_head_id=o.recipient_id))
    AND CASE WHEN ${approvalNoticeKind} THEN ${topicOn('telegram','approvals')} ELSE NOT $7 AND ${topicOn('telegram','updates')} END
@@ -194,6 +203,7 @@ export async function pendingOutbox(user:User,enabledAt:string|null,pairedAt:str
 }
 export async function deliver(now=new Date()){
  const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];if(!cfg.enabled)return;
+ if(cfg.delivery)await deliverPushInvitations(now);
  const personal=cfg.delivery?null:(await pool.query(`SELECT
   EXISTS(SELECT 1 FROM task_reminders WHERE enabled AND personal_delivery) AS schedules,
   EXISTS(SELECT 1 FROM task_alerts WHERE (dedupe_key LIKE 'task-once:%' OR personal_plan_epoch IS NOT NULL)
@@ -261,6 +271,40 @@ export async function deliver(now=new Date()){
   await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id]);
  }
  catch{await pool.query("UPDATE telegram_delivery SET state='uncertain',error='Нет подтверждения Telegram. Автоповтор остановлен, чтобы не дублировать возможную доставку.' WHERE id=$1",[id])}
+ }
+}
+async function deliverPushInvitations(now:Date){
+ const hour=new Date(+now+3*3600000).getUTCHours();
+ if(hour<10||hour>=19)return;
+ const rows=(await pool.query<{id:string;chat_id:string;body:string}>(`SELECT o.id,b.chat_id,o.body
+  FROM outbox o JOIN telegram_binding b ON b.user_id=o.recipient_id
+  LEFT JOIN notification_preferences p ON p.user_id=o.recipient_id
+  WHERE o.dedupe_key LIKE $1 AND o.withdrawn_at IS NULL AND o.read_at IS NULL AND ${needsPush('o.recipient_id')}
+   AND COALESCE(p.telegram_digest,true) AND ${topicOn('telegram','updates')}
+   AND (NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=o.recipient_id)
+    OR EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=o.recipient_id AND a.enabled))
+   AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text)
+  ORDER BY o.created_at,o.id LIMIT 20`,[pushInvitationPrefix+businessDay(now)+':%'])).rows;
+ for(const row of rows){
+  const id=randomUUID();
+  const claimed=await transaction(async db=>{
+   await db.query('SELECT 1 FROM outbox WHERE id=$1 FOR UPDATE',[row.id]);
+   return (await db.query(`INSERT INTO telegram_delivery(id,chat_id,outbox_ids,state,created_at)
+    SELECT $1,b.chat_id,jsonb_build_array(o.id::text),'sending',$4
+    FROM outbox o JOIN telegram_binding b ON b.user_id=o.recipient_id AND b.chat_id=$2
+    LEFT JOIN notification_preferences p ON p.user_id=o.recipient_id
+    WHERE o.id=$3 AND o.withdrawn_at IS NULL AND o.read_at IS NULL AND ${needsPush('o.recipient_id')}
+     AND COALESCE(p.telegram_digest,true) AND ${topicOn('telegram','updates')}
+     AND NOT EXISTS(SELECT 1 FROM telegram_delivery d WHERE d.outbox_ids ? o.id::text)`,[id,row.chat_id,row.id,now.toISOString()])).rowCount;
+  });
+  if(!claimed)continue;
+  try{
+   const url=new URL('/mobile?view=notifications&setup=1',publicOrigin()).href;
+   const sent=await send(row.chat_id,{text:row.body,buttons:[],links:[{text:'Включить уведомления',url}]});
+   await pool.query("UPDATE telegram_delivery SET state='sent',message_id=$2,sent_at=now() WHERE id=$1",[id,sent.message_id]);
+  }catch(error){
+   await pool.query('UPDATE telegram_delivery SET state=$2 WHERE id=$1',[id,error instanceof TelegramRejected?'failed':'uncertain']);
+  }
  }
 }
 async function deliverManagementNotices(user:User,chatId:string,now:Date,management:boolean,workday:boolean,pairedAt:string){

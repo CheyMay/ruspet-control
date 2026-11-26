@@ -1,0 +1,23 @@
+.help-hint {
+ display:inline-grid;place-items:center;flex:none;inline-size:25px;block-size:25px;
+ padding:0;border:0;border-radius:5px;background:none;color:var(--theme-text-secondary);vertical-align:middle;
+}
+.help-hint:hover,.help-hint[aria-expanded=true] {background:var(--theme-surface-raised);color:var(--theme-accent)}
+.help-hint-popup {
+ position:fixed;inset:auto;margin:0;z-index:2147483647;overflow:auto;overflow-wrap:anywhere;
+ padding:12px 14px;border:1px solid var(--theme-border);border-radius:8px;
+ background:var(--theme-surface,#fff);color:var(--theme-text,#21342a);
+ font-size:13px;line-height:1.5;font-weight:400;box-shadow:0 6px 20px #0003;
+}
+.task-id-copy {display:inline;position:relative;max-inline-size:100%}
+.task-id > span.task-id-copy {margin-left:0;font-size:inherit;color:inherit}
+.task-id-copy > button {
+ display:inline;border:0;background:none;color:inherit;padding:0 2px;
+ font:inherit;text-align:inherit;text-decoration:underline dotted;text-underline-offset:3px;
+ overflow-wrap:anywhere;max-inline-size:100%;
+}
+.task-id-copy > button:hover {color:var(--theme-accent);text-decoration-style:solid}
+.task-id-copy-status:empty {display:none}
+.task-id-copy-status {margin-inline:4px;color:var(--theme-accent);font-size:.85em;font-weight:600}
+.home-task-number {margin-inline-start:12px;color:var(--theme-text-secondary);font-size:12px}
+.command-choice {cursor:pointer}

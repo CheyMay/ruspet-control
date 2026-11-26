@@ -1,3 +1,4 @@
+import {TaskReferences} from './TaskId.js';
 import {ArrowUpRight,Clock3,Search,X} from 'lucide-react';
 import {useEffect,useId,useRef,useState,type KeyboardEvent} from 'react';
 import {searchKindLabels,searchKinds,searchRank,searchTerms,type SearchFilters,type SearchHit,type SearchResponse} from '../shared/workspace-search.js';
@@ -128,13 +129,14 @@ export function CommandPanel({userId,commands,branches,people,close,open}:Props)
       <div className="command-group-label">{group.recent&&<Clock3 size={13}/>} {group.label}</div>
       {group.items.map(item=>{
        const index=choices.indexOf(item);
-       return <button key={item.key} id={optionId(index)} type="button" tabIndex={-1} role="option" aria-selected={index===selected}
-        className="command-choice" onMouseDown={event=>event.preventDefault()} onMouseMove={()=>setHighlight(index)} onClick={item.run}>
+       return <div key={item.key} id={optionId(index)} role="option" aria-selected={index===selected}
+        className="command-choice" onMouseDown={event=>{if(!(event.target as HTMLElement).closest('.task-id-copy'))event.preventDefault();}}
+        onMouseMove={()=>setHighlight(index)} onClick={item.run}>
         <span><strong><Highlight text={item.label} terms={terms}/></strong>
-         {item.subtitle&&<small><Highlight text={item.subtitle} terms={terms}/></small>}
+         {item.subtitle&&<small><TaskReferences text={item.subtitle}/></small>}
          {item.excerpt&&<small className="command-excerpt"><Highlight text={item.excerpt} terms={terms}/></small>}
         </span><ArrowUpRight size={16} aria-hidden="true"/>
-       </button>;
+       </div>;
       })}
      </div>)}
     </div>

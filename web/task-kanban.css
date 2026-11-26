@@ -65,3 +65,10 @@
  .kanban-scroll-controls { margin-inline-start: auto; }
  .task-panel[data-presentation="board"] .filters .search-input { flex: 1 1 130px; min-width: 0; }
 }
+
+.kanban-card {cursor:pointer}
+.kanban-card-title {
+ padding:0;border:0;background:none;color:inherit;font:inherit;font-size:15px;
+ line-height:1.34;font-weight:700;text-align:left;overflow-wrap:anywhere;
+}
+.kanban-card-title:hover {text-decoration:underline}

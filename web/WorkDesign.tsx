@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {metricPreset,premiumPreset} from '../shared/process-metrics.js';
 import {ProcessGraphEditor,seedGraph,seedMonitor} from './ProcessGraph.js';
 import {graphErrors,type ProcessGraph,type Trace} from '../shared/process-graph.js';
@@ -240,7 +241,7 @@ export function WorkDesign({user,users,draft,open,tasks,approvals,serverTime}:{u
      if(!task)return [];
      const state=runTaskState(task);
      return [<article className="automation-run" key={id}><div>
-      <button type="button" className="text-button" onClick={()=>open(id)}>#{taskNumber(task)} · {task.title}</button>
+      <TaskId number={taskNumber(task)}/> · <button type="button" className="text-button" onClick={()=>open(id)}>{task.title}</button>
       <p>{state} · {users.find(person=>person.id===task.assignee_id)?.name??'Исполнитель не указан'}
        {task.deadline?' · До '+moscowTimestamp(task.deadline)+' МСК':''}</p>
      </div></article>];
@@ -265,7 +266,7 @@ export function WorkDesign({user,users,draft,open,tasks,approvals,serverTime}:{u
   <section className="panel automation-settings"><h2>Периодические задачи</h2><p className="muted">Новое расписание создаётся из формы задачи. После паузы появится не более одной пропущенной задачи за запуск.</p>
    {!schedules&&<p>Загружаем расписания…</p>}
    {schedules?.length===0&&<p>Расписаний пока нет.</p>}
-   {schedules?.map(s=><div className="automation-run" key={s.id}><div><strong>{s.title}</strong><p>{s.enabled?'Следующий запуск · '+moscowTimestamp(s.next_at):'На паузе'} · Интервал {s.every} {s.frequency==='daily'?'дн.':s.frequency==='weekly'?'нед.':'мес.'}</p>{s.last_error&&<p className="red-text">{s.last_error}</p>}{s.last_task_id&&<button className="text-button" onClick={()=>open(s.last_task_id!)}>Последняя задача #{s.last_task_id}</button>}</div>
+   {schedules?.map(s=><div className="automation-run" key={s.id}><div><strong>{s.title}</strong><p>{s.enabled?'Следующий запуск · '+moscowTimestamp(s.next_at):'На паузе'} · Интервал {s.every} {s.frequency==='daily'?'дн.':s.frequency==='weekly'?'нед.':'мес.'}</p>{s.last_error&&<p className="red-text">{s.last_error}</p>}{s.last_task_id&&<span><button className="text-button" onClick={()=>open(s.last_task_id!)}>Последняя задача</button> · <TaskId number={s.last_task_id}/></span>}</div>
     <button className="button secondary" disabled={busy} onClick={()=>void toggle('/work-design/schedules/'+s.id,!s.enabled)}>{s.enabled?'На паузу':'Возобновить'}</button></div>)}
   </section>
  </>;

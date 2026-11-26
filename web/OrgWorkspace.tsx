@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {useEffect,useState,type FormEvent} from 'react';
 import {api} from './api.js';
 import {moscowTimestamp} from './SystemHealth.js';
@@ -90,9 +91,9 @@ export function DelegationInbox({open}:{open:(id:string)=>void}){
   {!entries&&!error&&<p>Загружаем поручения…</p>}
   {visible?.length===0&&<p>В этой выборке пока нет поручений.</p>}
   {!!visible?.length&&<div className="table-scroll"><table><thead><tr><th>Поручение</th><th>Исполнитель</th><th>Крайний срок</th><th>Состояние</th><th>Исходная задача</th></tr></thead><tbody>
-   {visible.map(row=><tr key={row.id}><td><button className="text-button" onClick={()=>open(row.id)}>#{row.id} · {row.title}</button>{row.substitution&&<small>Замещение · {row.manager}</small>}</td>
+   {visible.map(row=><tr key={row.id}><td><TaskId number={row.id}/> · <button className="text-button" onClick={()=>open(row.id)}>{row.title}</button>{row.substitution&&<small>Замещение · {row.manager}</small>}</td>
     <td>{row.assignee}</td><td className={matches(row,'overdue')?'red-text':undefined}>{moscowTimestamp(row.deadline)}</td>
-    <td>{row.status==='active'?'В работе':filters[row.status]}</td><td>{row.sourceId?<button className="text-button" onClick={()=>open(row.sourceId!)}>#{row.sourceId} · {row.sourceTitle}</button>:'—'}</td></tr>)}
+    <td>{row.status==='active'?'В работе':filters[row.status]}</td><td>{row.sourceId?<><TaskId number={row.sourceId}/> · <button className="text-button" onClick={()=>open(row.sourceId!)}>{row.sourceTitle}</button></>:'—'}</td></tr>)}
   </tbody></table></div>}
  </section>;
 }

@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {useEffect,useState} from 'react';
 import {CalendarDays,ChevronLeft,ChevronRight} from 'lucide-react';
 import {taskNumber} from '../shared/task-number.js';
@@ -119,9 +120,9 @@ export function PersonalCalendar({open,refreshKey}:{open?:(id:string)=>void;refr
   const target=new Date(Date.UTC(year,m+delta,1)).toISOString().slice(0,7);
   setDay(target===today.slice(0,7)?today:target+'-01');
  };
- const taskLink=(task:CalendarDeadline,label:string)=>open?
-  <button type="button" className="text-button" onClick={()=>open(task.id)}>{label}</button>:
-  <a className="text-button" href={'/?view=tasks&scope=mine&full=1&task='+encodeURIComponent(task.id)}>{label}</a>;
+ const taskLink=(task:CalendarDeadline)=><><TaskId number={taskNumber(task)}/> · {open?
+  <button type="button" className="text-button" onClick={()=>open(task.id)}>{task.title}</button>:
+  <a className="text-button" href={'/?view=tasks&scope=mine&full=1&task='+encodeURIComponent(task.id)}>{task.title}</a>}</>;
  return <section className="personal-calendar panel">
   <div className="panel-heading calendar-title">
    <div><h2>Мой календарь</h2><p>Личный план и крайние сроки · МСК</p></div>
@@ -130,7 +131,7 @@ export function PersonalCalendar({open,refreshKey}:{open?:(id:string)=>void;refr
   {failure&&<div className="alert error" role="alert">{failure} <button className="text-button" onClick={()=>setAttempt(attempt+1)}>Повторить</button></div>}
   {data&&data.awaiting.length>0&&<section className="calendar-new">
    <h3>К ознакомлению · {data.awaiting.length}</h3>
-   <ul>{data.awaiting.map(task=><li key={task.id}>{taskLink(task,'#'+taskNumber(task)+' · '+task.title)}
+   <ul>{data.awaiting.map(task=><li key={task.id}>{taskLink(task)}
     {task.deadline&&<small>Крайний срок {planTime.format(new Date(task.deadline))} МСК</small>}</li>)}</ul>
   </section>}
   <div className="personal-calendar-grid">
@@ -164,7 +165,7 @@ export function PersonalCalendar({open,refreshKey}:{open?:(id:string)=>void;refr
     {data&&!(scheduledByDay.get(day)?.length)&&<p className="muted">На этот день задач в плане пока нет.</p>}
     <ul className="calendar-task-list">{scheduledByDay.get(day)?.map(task=><li key={task.id}>
      <time>{moscowClock(task.plan.plannedAt!).slice(11)}</time>
-     <div>{taskLink(task,'#'+taskNumber(task)+' · '+task.title)}
+     <div>{taskLink(task)}
       {task.plan.nextStep&&<strong>{task.plan.nextStep}</strong>}
       <small>{task.status==='completed'?'Завершена':task.status==='review'?'Ждёт приёмки':
        task.deadline?'Крайний срок '+planTime.format(new Date(task.deadline))+' МСК':'Без крайнего срока'}</small></div>
@@ -172,7 +173,7 @@ export function PersonalCalendar({open,refreshKey}:{open?:(id:string)=>void;refr
     {data&&<h4>Крайние сроки</h4>}
     {data&&!(deadlinesByDay.get(day)?.length)&&<p className="muted">На этот день крайних сроков нет.</p>}
     <ul className="calendar-task-list">{deadlinesByDay.get(day)?.map(task=><li key={task.id}>
-     <time>{moscowClock(task.deadline!).slice(11)}</time><div>{taskLink(task,'#'+taskNumber(task)+' · '+task.title)}
+     <time>{moscowClock(task.deadline!).slice(11)}</time><div>{taskLink(task)}
      {task.status==='review'&&<small>Ждёт приёмки</small>}</div>
     </li>)}</ul>
     {data?.canLogWork&&day<=today&&<WorkLog key={day} day={day} work={data.work.find(w=>w.date===day)} saved={entry=>{

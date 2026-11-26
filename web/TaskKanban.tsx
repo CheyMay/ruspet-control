@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {taskNumber} from '../shared/task-number.js';
 import {useEffect,useLayoutEffect,useRef,useState,type DragEvent} from 'react';
 import {ArrowLeft,ArrowRight,CalendarClock,CalendarDays,Columns3,List,UserRoundPen} from 'lucide-react';
@@ -19,17 +20,17 @@ export function TaskViewSwitch({board,change}:{board:boolean;change:(view:'list'
 }
 
 function TaskBoardCard({task,names,viewerId,now,open,startDrag,endDrag}:{task:Task;names:ReadonlyMap<string,string>;viewerId:string;now:Date;open:(id:string)=>void;
- startDrag?: (event:DragEvent<HTMLButtonElement>)=>void;endDrag:()=>void}){
+ startDrag?: (event:DragEvent<HTMLElement>)=>void;endDrag:()=>void}){
  const deadline=task.deadline?new Date(task.deadline):null;
  const valid=deadline&&Number.isFinite(+deadline);
  const due=valid?(year.format(now)===year.format(deadline)?shortDate:fullDate).format(deadline):null;
  const myRole=task.creator_id!==viewerId?null:task.assignee_id===viewerId?'Я постановщик и исполнитель':'Я постановщик';
- return <button type="button" className="kanban-card" draggable={!!startDrag} onDragStart={startDrag} onDragEnd={endDrag} onClick={()=>open(task.id)}>
-  <span className="kanban-card-reference"><span>#{taskNumber(task)}</span><span className="kanban-card-meta">
+ return <article className="kanban-card" draggable={!!startDrag} onDragStart={startDrag} onDragEnd={endDrag} onClick={()=>open(task.id)}>
+  <span className="kanban-card-reference"><TaskId number={taskNumber(task)}/><span className="kanban-card-meta">
    {taskPrice(task)!==null&&<span>{formatPrice(task)}</span>}
    {myRole&&<span className="kanban-card-creator" role="img" aria-label={myRole} title={myRole}><UserRoundPen size={15} aria-hidden="true"/></span>}
   </span></span>
-  <strong>{task.title}</strong>
+  <button type="button" className="kanban-card-title" onClick={event=>{event.stopPropagation();open(task.id);}}>{task.title}</button>
   {(task.assignment_pending||task.priority==='high'||task.critical)&&<span className="task-flags">
    {task.assignment_pending&&<small>Не принята</small>}{task.priority==='high'&&<small>Высокий приоритет</small>}{task.critical&&<small>Критичная</small>}
   </span>}
@@ -39,7 +40,7 @@ function TaskBoardCard({task,names,viewerId,now,open,startDrag,endDrag}:{task:Ta
    <span><span>Исполнитель</span> {names.get(task.assignee_id)??task.assignee_id}</span>
    <span><span>Постановщик</span> {names.get(task.creator_id)??task.creator_id}</span>
   </span>
- </button>;
+ </article>;
 }
 
 export function TaskKanban({tasks,users,viewerId,now,pending,filtered,open,canMove,move}:{tasks:Task[];users:User[];viewerId:string;now:Date;

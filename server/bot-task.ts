@@ -27,8 +27,9 @@ export function deadlineProposalButton(task:Task,list:Payload['list'],explanatio
 }
 
 export async function renderBotTask(u:User,ch:string,p:Payload,db:Db=pool){
- const htmlScreen=(user:User,channel:string,text:string,rows:Parameters<typeof baseHtmlScreen>[3])=>baseHtmlScreen(user,channel,text,rows,db);
  const d=await detail(u,p.id!,db,p.op==='task_approval'),t=d.task,now=new Date();
+ const htmlScreen=async(user:User,channel:string,text:string,rows:Parameters<typeof baseHtmlScreen>[3])=>
+  ({...await baseHtmlScreen(user,channel,text,rows,db),copyTaskNumber:taskNumber(t)});
  const taskFacts=['Создана: '+date(t.created_at)+' МСК',
   ...(t.client_names?.length?['Клиент: '+botExcerpt(t.client_names.join(' · '),240)]:[])];
  const pending=d.approvals.find(a=>activeTaskApproval(t,a)),last=d.submissions[0];

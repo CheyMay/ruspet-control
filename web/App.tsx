@@ -1,3 +1,4 @@
+import {TaskId,TaskReferences} from './TaskId.js';
 import {branchApprovalLead} from '../shared/branches.js';
 import {StaffOnboarding} from './StaffOnboarding.js';
 import {BitrixArchiveStatus} from './BitrixArchiveStatus.js';
@@ -38,6 +39,7 @@ import {MobileWorkspace} from './MobileWorkspace.js';
 import {PersonalCalendar,PersonalTaskPlan} from './PersonalCalendar.js';
 import {NotificationCenter,NotificationSettings} from './NotificationCenter.js';
 import {syncDeviceNotifications} from './DeviceNotifications.js';
+import {playNotificationSound,unlockNotificationSound} from './NotificationSound.js';
 import {SettingsSections} from './SettingsSections.js';
 import {canOpenWorkspacePage,type WorkspacePage as Page} from '../shared/workspace-access.js';
 import {TaskReminders} from './TaskReminders.js';
@@ -109,7 +111,7 @@ function Empty({children}: {children:ReactNode}){return <div className="empty"><
 function Badge({state,children}: {state:string;children?:ReactNode}) {return <span className={`badge ${state}`}><i/>{children||stateLabels[state]||state}</span>;}
 function Avatar({user,small=false}: {user?:User;small?:boolean}){return <span className={`avatar ${small?'small':''} color-${(user?.id.length||0)%4}`}>{initials(user?.name||'—')}</span>;}
 function Tabs({items,value,onChange}: {items:{id:string;label:string;count?:number}[];value:string;onChange:(id:string)=>void}) {return <div className="tabs" role="tablist">{items.map(item=><button role="tab" aria-selected={value===item.id} key={item.id} className={value===item.id?'selected':''} onClick={()=>onChange(item.id)}>{item.label}{item.count!==undefined&&<span>{item.count}</span>}</button>)}</div>;}
-function Timeline({events,users}: {events:Event[];users:User[]}){return <div className="timeline">{events.map(e=><div className="timeline-row" key={e.id}><span className={`event-dot ${e.kind.includes('reject')?'red':''}`}/><div><strong>{e.message}</strong><p>{users.find(u=>u.id===e.actor_id)?.name||'Система'} · {date(e.created_at,true)}</p>{typeof e.data.comment==='string'&&e.data.comment&&<blockquote>{e.data.comment}</blockquote>}{e.kind==='deadline_changed'&&<p className="change-line">{date((e.data.before as Task)?.deadline,true)} <ArrowRight size={13}/> {date((e.data.after as Task)?.deadline,true)}</p>}</div></div>)}</div>;}
+function Timeline({events,users}: {events:Event[];users:User[]}){return <div className="timeline">{events.map(e=><div className="timeline-row" key={e.id}><span className={`event-dot ${e.kind.includes('reject')?'red':''}`}/><div><strong><TaskReferences text={e.message}/></strong><p>{users.find(u=>u.id===e.actor_id)?.name||'Система'} · {date(e.created_at,true)}</p>{typeof e.data.comment==='string'&&e.data.comment&&<blockquote>{e.data.comment}</blockquote>}{e.kind==='deadline_changed'&&<p className="change-line">{date((e.data.before as Task)?.deadline,true)} <ArrowRight size={13}/> {date((e.data.after as Task)?.deadline,true)}</p>}</div></div>)}</div>;}
 export function App(){
  const compact=useSyncExternalStore(watchPhone,()=>phone.matches);
  const [users,setUsers]=useState<User[]>([]),[data,setData]=useState<Bootstrap|null>(null),[requestedPage,setPage]=useState<Page>('overview'),[error,setError]=useState(''),[toast,setToast]=useState(''),[busy,setBusy]=useState(false),[loading,setLoading]=useState(true);
@@ -296,11 +298,27 @@ export function App(){
   return()=>navigator.serviceWorker.removeEventListener('message',received);
  },[data?.user.id]);
  useEffect(()=>{
+  if(!data?.user.id||viewingEmployee)return;
+  const unlock=()=>{void unlockNotificationSound();};
+  const updatePush=()=>{void refresh().catch(()=>{});};
+  window.addEventListener('click',unlock);
+  window.addEventListener('keydown',unlock);
+  window.addEventListener('ruspet-push-enabled',updatePush);
+  return()=>{
+   window.removeEventListener('click',unlock);
+   window.removeEventListener('keydown',unlock);
+   window.removeEventListener('ruspet-push-enabled',updatePush);
+  };
+ },[data?.user.id]);
+ useEffect(()=>{
   if(!data||viewingEmployee)return;
   const previous=lastNoticeCheck.current;
   lastNoticeCheck.current={userId:data.user.id,at:data.serverTime};
-  if(previous?.userId===data.user.id&&data.notifications.some(notice=>(notice.task_assignment||notice.task_notice||notice.staff_review||notice.management_notice)&&!notice.read_at&&notice.created_at>previous.at))
-   showToast('Новые рабочие уведомления');
+  const notices=data.notifications.filter(notice=>!notice.read_at&&notice.created_at>(previous?.at??data.serverTime));
+  if(previous?.userId===data.user.id&&notices.length){
+   showToast(notices.some(notice=>!notice.push_invitation)?'Новые рабочие уведомления':'Разрешите push в разделе «Уведомления»');
+   if(notices.some(notice=>!notice.push_invitation))playNotificationSound(data.user.id);
+  }
  },[data]);
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!tour&&!commandOpen){if(boardMove){if(!busy){setBoardMove(null);setError('');}}else if(completingTask&&!busy)setCompletingTask(null);else if(editor)setEditor(null);else if(requestType)setRequestType(null);else closeTask();}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[requestType,editor,completingTask,boardMove,busy,tour,commandOpen]);
  useEffect(()=>{
@@ -440,7 +458,7 @@ export function App(){
     const approval=data!.approvals.find(a=>activeTaskApproval(t,a));
     const next=taskNextAction(t,approval,data!.approvalScope);
     return <tr key={t.id}>
-    <td><button className="task-link" onClick={()=>void openTask(t.id)}><span className="task-id">#{taskNumber(t)} <span>{t.code}</span></span><strong>{t.title}</strong></button><TaskMeta task={t}/>{(t.priority==='high'||t.critical)&&<div className="task-flags">{t.priority==='high'&&<small>Высокий приоритет</small>}{t.critical&&<small className="red-text">Критичная</small>}</div>}</td>
+    <td><span className="task-id"><TaskId number={taskNumber(t)}/> <span>{t.code}</span></span><button type="button" className="task-link" onClick={()=>void openTask(t.id)}><strong>{t.title}</strong></button><TaskMeta task={t}/>{(t.priority==='high'||t.critical)&&<div className="task-flags">{t.priority==='high'&&<small>Высокий приоритет</small>}{t.critical&&<small className="red-text">Критичная</small>}</div>}</td>
     <td><TaskPeople task={t} users={data!.users}/><small>{t.branch_id}</small></td>
     <td><strong>{formatPrice(t)}</strong><small>{priceLabels[priceBand(t)]}</small></td>
     <td className={overdue(t)?'late-date':''}>{date(t.deadline,true)}
@@ -513,7 +531,7 @@ export function App(){
   branches={[...new Set(data.tasks.map(task=>task.branch_id).filter(Boolean))].sort((a,b)=>a.localeCompare(b,'ru'))}
   people={data.users} close={()=>setCommandOpen(false)} open={openSearchHit}/>;
  if(mobileView){
-  return <><MobileWorkspace key={data.user.id} user={data.user} refresh={refresh} calendarRefresh={data.serverTime} analytics={data.analyticsAccess} unread={data.notifications.some(item=>!item.read_at)} connectionNotice={connectionNotice} onSearch={()=>setCommandOpen(true)}/>{commandPanel}</>;
+  return <><MobileWorkspace key={data.user.id} user={data.user} refresh={refresh} calendarRefresh={data.serverTime} analytics={data.analyticsAccess} items={data.notifications} unread={data.notifications.some(item=>!item.read_at)} connectionNotice={connectionNotice} onSearch={()=>setCommandOpen(true)}/>{commandPanel}</>;
  }
  const company=hasCompanyOverview(data.user),teamAllowed=managed(data.user);
  const trainingStep=tour?.steps[tour.index];
@@ -613,7 +631,7 @@ export function App(){
      {filter!=='unaccepted'&&<button type="button" className="button secondary" onClick={()=>go('tasks','unaccepted','mine')}>Показать все</button>}
     </div>
     {filter!=='unaccepted'&&<ul>{unaccepted.slice(0,3).map(task=><li key={task.id}>
-     <div><button type="button" className="text-button assignment-title" onClick={()=>void openTask(task.id)}>#{taskNumber(task)} · {task.title}</button>
+     <div><TaskId number={taskNumber(task)}/> · <button type="button" className="text-button assignment-title" onClick={()=>void openTask(task.id)}>{task.title}</button>
       {task.description&&<p className="muted assignment-description">{task.description.trim().slice(0,160)}{task.description.trim().length>160?'…':''}</p>}</div>
      <button type="button" className="button primary" onClick={()=>void openTask(task.id)}>Ознакомиться</button>
     </li>)}</ul>}
@@ -650,7 +668,7 @@ export function App(){
   {page==='journal'&&<Journal data={data} open={openTask}/>}
   {page==='notifications'&&<>
    <Tabs value={noticeTab} onChange={setNoticeTab} items={[{id:'feed',label:'Лента'},{id:'reminders',label:'Напоминания'}]}/>
-   {noticeTab==='reminders'?<ReminderInbox readOnly={viewingEmployee} key={data.user.id} userId={data.user.id} open={openTask} onChange={refresh}/>:<NotificationCenter key={data.user.id} items={data.notifications} readOnly={viewingEmployee} open={openTask} refresh={refresh}/>}
+   {noticeTab==='reminders'?<ReminderInbox readOnly={viewingEmployee} key={data.user.id} userId={data.user.id} open={openTask} onChange={refresh}/>:<NotificationCenter key={data.user.id} userId={data.user.id} items={data.notifications} readOnly={viewingEmployee} open={openTask} refresh={refresh}/>}
   </>}
   {page==='catalog'&&<ProductCatalog key={data.user.id} manage={canManageCatalog(data.user)}/>}
   {page==='okb'&&canUseOkb(data.user)&&<WorkspaceSection label="Загружаем клиентов…"><Okb key={data.user.id} initialId={okbCompany} users={data.users} user={data.user} openTask={id=>{setOkbCompany(null);void openTask(id);}} createTask={companyId=>{setOkbCompany(null);setEditor({task:null,companyId});}}/></WorkspaceSection>}
@@ -676,7 +694,7 @@ export function App(){
   <footer className="main-footer"><span>РУСПЭТ · Контроль и согласование задач</span></footer></main></div>
   {selected&&<div className="drawer-backdrop" onMouseDown={event=>{if(event.target===event.currentTarget)closeTask();}}>
    <div className="drawer task-card" role="dialog" aria-modal="true" aria-label="Карточка задачи">
-    <div className="drawer-top"><span>ЗАДАЧА #{detail?taskNumber(detail.task):taskNumber(data.tasks.find(task=>task.id===selected)??{id:selected})}</span>
+    <div className="drawer-top"><span>ЗАДАЧА <TaskId number={detail?taskNumber(detail.task):taskNumber(data.tasks.find(task=>task.id===selected)??{id:selected})}/></span>
      <div className="task-card-toolbar">
       {detail&&!cardReadOnly&&<>
        {detail.editAccess.canEdit?<button type="button" className="button secondary" disabled={busy} onClick={()=>setEditor({task:detail.task})}><Pencil size={15}/>Редактировать</button>:
@@ -799,9 +817,9 @@ export function App(){
       key={detail.task.id} value={groups.items[detail.task.id]??''} onChange={async groupId=>{
        await api('/tasks/'+encodeURIComponent(detail.task.id)+'/group','PUT',{groupId:groupId||null});await refreshGroups();
       }}/>}
-     {detail.task.parent_id&&taskIndex.has(detail.task.parent_id)&&<button type="button" className="text-button" onClick={()=>void openTask(detail.task.parent_id!)}>Родительская задача · #{detail.task.parent_id}</button>}
+     {detail.task.parent_id&&taskIndex.has(detail.task.parent_id)&&<span><button type="button" className="text-button" onClick={()=>void openTask(detail.task.parent_id!)}>Родительская задача</button> · <TaskId number={taskNumber(taskIndex.get(detail.task.parent_id)!)}/></span>}
      {data.tasks.some(item=>item.parent_id===detail.task.id)&&<div className="task-subtask-list">
-      <h3>Подзадачи</h3>{data.tasks.filter(item=>item.parent_id===detail.task.id).map(item=><button key={item.id} type="button" className="text-button" onClick={()=>void openTask(item.id)}>#{item.id} · {item.title}</button>)}
+      <h3>Подзадачи</h3>{data.tasks.filter(item=>item.parent_id===detail.task.id).map(item=><span key={item.id}><TaskId number={taskNumber(item)}/> · <button type="button" className="text-button" onClick={()=>void openTask(item.id)}>{item.title}</button></span>)}
      </div>}
      <TaskDelegation readOnly={cardReadOnly} key={detail.task.id} task={detail.task} user={data.user} users={data.users} open={openTask}
       onCreated={()=>{void refreshDetail(detail.task.id).catch(e=>setError(e.message));void refresh().catch(()=>{});}}/>
@@ -908,7 +926,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
   disabled={busy||!branchAvailable||!!deadlineError} onClick={()=>approve(true)}>Согласовать и передать рукфилу</button>
   <small>{branchAvailable?branchLead.name:'Руководитель филиала не настроен или совпадает с участником запроса'}</small></span>:null;
  return <section className={`panel approval-card ${inDrawer?'in-drawer':''}`}>
-  <div className="approval-header"><div><span className="eyebrow">{a.type==='deadline'?'ПЕРЕНОС КРАЙНЕГО СРОКА':'ЗАКРЫТИЕ ЗАДАЧИ'} · #{task?taskNumber(task):a.task_id}</span>{!inDrawer&&<button className="approval-title" onClick={()=>void openTask(a.task_id,'approvals')}>{task?.title}<ArrowUpRight size={16}/></button>}</div><Badge state={a.canceled_at?'canceled':a.state==='pending'&&!active?'stale':a.state}/></div>
+  <div className="approval-header"><div><span className="eyebrow">{a.type==='deadline'?'ПЕРЕНОС КРАЙНЕГО СРОКА':'ЗАКРЫТИЕ ЗАДАЧИ'} · <TaskId number={task?taskNumber(task):a.task_id}/></span>{!inDrawer&&<button className="approval-title" onClick={()=>void openTask(a.task_id,'approvals')}>{task?.title}<ArrowUpRight size={16}/></button>}</div><Badge state={a.canceled_at?'canceled':a.state==='pending'&&!active?'stale':a.state}/></div>
   <div className="approval-task-meta">
    {task&&<TaskPeople task={task} users={data.users}/>}
    <p>Цена задачи <strong>{task?formatPrice(task):'—'}</strong></p>
@@ -988,7 +1006,7 @@ function RequestModal({type,task,initialDeadline,min,busy,error,close,submit}:{
   <div className="panel-heading"><h2>{type==='deadline'?'Запросить перенос срока':'Запросить закрытие'}</h2>
    <button type="button" className="icon-button" aria-label="Закрыть запрос" onClick={close} disabled={busy}><X size={20}/></button>
   </div>
-  <p>#{taskNumber(task)} · {task.title}</p>
+  <p><TaskId number={taskNumber(task)}/> · {task.title}</p>
   {error&&<div className="alert error" role="alert">{error}</div>}
   {type==='deadline'&&<>
    <p className="muted">Текущий крайний срок: {date(task.deadline,true)}{task.deadline?' МСК':''}</p>

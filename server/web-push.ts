@@ -1,12 +1,12 @@
 import {readFileSync} from 'node:fs';
 import webpush from 'web-push';
 import {z} from 'zod';
-import {pool} from './db.js';
+import {pool,transaction} from './db.js';
 import {assert} from './domain.js';
 import {publicOrigin} from './report-content.js';
 import {generateWebTaskNotices} from './task-notices.js';
 import {generateWebPlanNotices,visiblePlanNotice} from './personal-calendar.js';
-import {approvalNoticeKind,topicOn} from './notifications.js';
+import {approvalNoticeKind,generatePushInvitations,topicOn} from './notifications.js';
 import {hasPendingTaskAcceptance,visibleDeadlineNotice} from './pending-task-work.js';
 import type {ManagementNotice,User} from '../shared/types.js';
 
@@ -22,7 +22,7 @@ const endpoint=z.string().max(2048).refine(pushHost,'Этот сервис push-
 export const webPushSubscription=z.object({endpoint,keys:z.object({
  p256dh:z.string().regex(/^[A-Za-z0-9_-]+$/).length(87),
  auth:z.string().regex(/^[A-Za-z0-9_-]+$/).length(22)
-})});
+}),enableDelivery:z.boolean().optional()});
 export const webPushEndpoint=z.object({endpoint});
 type Subscription=z.infer<typeof webPushSubscription>;
 type Keys={publicKey:string;privateKey:string;subject:string};
@@ -41,18 +41,26 @@ function vapidKeys(){
 
 export async function webPushStatus(user:User,sessionHash:string){
  const active=(await pool.query('SELECT 1 FROM web_push_subscriptions WHERE user_id=$1 AND session_hash=$2 LIMIT 1',[user.id,sessionHash])).rowCount;
- return {publicKey:vapidKeys()?.publicKey??null,active:!!active};
+ const enabled=(await pool.query('SELECT push_enabled FROM notification_preferences WHERE user_id=$1',[user.id])).rows[0]?.push_enabled??true;
+ return {publicKey:vapidKeys()?.publicKey??null,active:!!active,enabled};
 }
 export async function saveWebPush(user:User,sessionHash:string,subscription:Subscription){
  assert(vapidKeys(),503,'Push-уведомления на сервере пока не настроены.');
- const {endpoint,keys}=subscription;
- const result=await pool.query(`INSERT INTO web_push_subscriptions(endpoint,session_hash,user_id,p256dh,auth)
+ const {endpoint,keys,enableDelivery}=subscription;
+ return transaction(async db=>{
+ const result=await db.query(`INSERT INTO web_push_subscriptions(endpoint,session_hash,user_id,p256dh,auth)
   SELECT $1,token_hash,user_id,$4,$5 FROM sessions WHERE token_hash=$2 AND user_id=$3 AND expires_at>now()
   ON CONFLICT(endpoint) DO UPDATE SET session_hash=excluded.session_hash,user_id=excluded.user_id,p256dh=excluded.p256dh,auth=excluded.auth,
    created_at=CASE WHEN web_push_subscriptions.user_id<>excluded.user_id THEN now() ELSE web_push_subscriptions.created_at END`,
   [endpoint,sessionHash,user.id,keys.p256dh,keys.auth]);
  assert(result.rowCount,401,'Войдите в систему снова.');
+ if(enableDelivery){
+  await db.query(`INSERT INTO notification_preferences(user_id,push_enabled) VALUES($1,true)
+   ON CONFLICT(user_id) DO UPDATE SET push_enabled=true`,[user.id]);
+  await db.query("UPDATE outbox SET withdrawn_at=now() WHERE recipient_id=$1 AND dedupe_key LIKE 'enable-push:%' AND withdrawn_at IS NULL",[user.id]);
+ }
  return {active:true};
+ });
 }
 export async function removeWebPush(user:User,endpoint:string){
  await pool.query('DELETE FROM web_push_subscriptions WHERE user_id=$1 AND endpoint=$2',[user.id,endpoint]);
@@ -138,7 +146,7 @@ export function startWebTaskNotices(){
  const run=async()=>{
   if(running)return;
   running=true;
-  try{const now=new Date();await generateWebPlanNotices(now);await generateWebTaskNotices(now);await deliverWebPush(now);}
+  try{const now=new Date();await generateWebPlanNotices(now);await generateWebTaskNotices(now);if(vapidKeys())await generatePushInvitations(now);await deliverWebPush(now);}
   catch{console.error('Web task notifications tick failed');}
   finally{running=false;}
  };

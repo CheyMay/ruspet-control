@@ -1,3 +1,4 @@
+import {TaskId,TaskReferences} from './TaskId.js';
 import {useEffect,useState} from 'react';
 import {api} from './api.js';
 
@@ -37,9 +38,9 @@ export function ReminderInbox({userId,readOnly=false,open,onChange}:{
   return <article key={alert.id}>
    <small>{format.format(new Date(alert.due_at))} МСК{state==='history'&&
     (alert.acknowledged_at?' · Просмотрено':alert.canceled_at?' · Отменено':' · Срок напоминания истёк')}</small>
-   <p>{alert.body}</p>
+   <p><TaskReferences text={alert.body}/></p>
    <div className="task-scope-actions">
-    {alert.task_id&&<button className="text-button" type="button" onClick={()=>open(alert.task_id!)}>К задаче #{alert.task_id}</button>}
+    {alert.task_id&&<><TaskId number={alert.task_id}/><button className="text-button" type="button" onClick={()=>open(alert.task_id!)}>К задаче</button></>}
     {state==='active'&&!readOnly&&<button className="button secondary" type="button" disabled={busy}
      onClick={()=>void acknowledge(alert.id)}>Отметить просмотренным</button>}
    </div>

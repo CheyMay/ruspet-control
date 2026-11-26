@@ -1,3 +1,4 @@
+import {TaskId} from './TaskId.js';
 import {taskNumber} from '../shared/task-number.js';
 import {TaskGroupPicker} from './TaskGroups.js';
 import {VoiceRecorder} from './VoiceRecorder.js';
@@ -48,7 +49,7 @@ export function CompleteTaskDialog({task,users,busy,error,save,close,withdrawsDe
   onSubmit={async event=>{event.preventDefault();if(await save(comment))close();}}>
   <div className="panel-heading"><h2 id="complete-task-heading">{title}</h2>
    <button className="icon-button" type="button" disabled={busy} onClick={close} aria-label="Закрыть">✕</button></div>
-  <p className="eyebrow">#{taskNumber(task)}</p><h3>{task.title}</h3>
+  <p className="eyebrow"><TaskId number={taskNumber(task)}/></p><h3>{task.title}</h3>
   <TaskPeople task={task} users={users}/>
   {action==='submit'&&<p className="muted">Результат будет передан постановщику на приёмку.</p>}
   {withdrawsDeadline&&<p className="muted">{deadlineWithdrawalNote}</p>}
@@ -150,7 +151,7 @@ export function TaskEditor({task,copyOf,parent,users,user,busy,save,saveError,cl
   },'POST','Расписание сохранено'):await save(task?`/tasks/${encodeURIComponent(task.id)}`:copyOf?`/tasks/${encodeURIComponent(copyOf.id)}/copy`:'/tasks',body,task?'PUT':'POST',copyOf?'Копия создана':undefined);
   if(success){storeDraft(draftKey);close();}
  }}>
-  <div className="panel-heading"><div><h2>{heading}</h2>{parent&&<p>Родительская задача #{parent.id} · {parent.title}</p>}{copyOf&&<p>Исходная задача #{copyOf.id}. Проверьте поля перед созданием.</p>}</div><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
+  <div className="panel-heading"><div><h2>{heading}</h2>{parent&&<p>Родительская задача <TaskId number={taskNumber(parent)}/> · {parent.title}</p>}{copyOf&&<p>Исходная задача <TaskId number={taskNumber(copyOf)}/>. Проверьте поля перед созданием.</p>}</div><button type="button" className="icon-button" onClick={close} aria-label="Закрыть">✕</button></div>
   <div className="task-compose-body">
   {draft.title!==undefined&&<div className="task-draft-banner"><span>Черновик восстановлен</span><button type="button" className="text-button" onClick={()=>{storeDraft(draftKey);close();}}>Удалить черновик</button></div>}
   {saveError&&<p className="alert error" role="alert">{saveError}</p>}

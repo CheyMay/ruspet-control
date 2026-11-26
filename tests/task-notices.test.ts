@@ -195,7 +195,7 @@ test('checkpoints combine deadlines and leave pending transfers with their curre
 });
 
 test('web push is opt-in per device, rejects internal URLs and sends one private summary',async()=>{
- const status=await api(worker,'/notifications/push');assert.deepEqual(status.body,{publicKey:keys.publicKey,active:false});
+ const status=await api(worker,'/notifications/push');assert.deepEqual(status.body,{publicKey:keys.publicKey,active:false,enabled:true});
  const subscription={endpoint:'https://fcm.googleapis.com/fcm/send/fixture',keys:{p256dh:keys.publicKey,auth:randomBytes(16).toString('base64url')}};
  assert.equal((await api(worker,'/notifications/push','POST',{...subscription,endpoint:'https://127.0.0.1/internal'})).status,400);
  assert.equal((await api(worker,'/notifications/push','POST',subscription)).status,200);
@@ -809,4 +809,61 @@ test('creator decides first and the sales head only receives required or selecte
  assert(rows.some(row=>row.id===salesTask&&row.required));
  assert(rows.some(row=>row.id===ordinaryTask&&row.watched));
  assert(!rows.some(row=>row.id===mine));
+});
+
+
+test('push invitations are daily, target active accounts without push and stop after opt-in',async t=>{
+ const {generatePushInvitations}=await import('../server/notifications.js');
+ const disabled='fixture-push-inactive';
+ await db.pool.query("INSERT INTO users(id,name,role,branch_id,position) VALUES($1,'Неактивный профиль','employee','Тест','Сотрудник')",[disabled]);
+ await db.pool.query(`INSERT INTO login_accounts(username,user_id,password_hash,enabled)
+  VALUES('fixture-push-active',$1,'not-a-real-password',true),('fixture-push-disabled',$2,'not-a-real-password',false)`,[worker.id,disabled]);
+ t.after(async()=>{
+  await db.pool.query("DELETE FROM outbox WHERE dedupe_key LIKE 'enable-push:%'");
+  await db.pool.query("DELETE FROM login_accounts WHERE username IN ('fixture-push-active','fixture-push-disabled')");
+ });
+ const day='2035-03-25',next='2035-03-26';
+ const rows=async()=> (await api(worker,'/notifications')).body.filter((item:{push_invitation?:boolean})=>item.push_invitation);
+ await generatePushInvitations(at(day,'09:59'));assert.equal((await rows()).length,0);
+ await Promise.all([generatePushInvitations(at(day,'10:00')),generatePushInvitations(at(day,'10:00'))]);
+ const first=(await rows())[0];assert(first);assert.equal((await rows()).length,1);
+ assert.equal((await db.pool.query("SELECT 1 FROM outbox WHERE recipient_id=$1 AND dedupe_key LIKE 'enable-push:%'",[disabled])).rowCount,0);
+ const {deliver}=await import('../server/telegram-pilot.js');
+ const originalFetch=globalThis.fetch,originalToken=process.env.TELEGRAM_BOT_TOKEN,originalProxy=process.env.TELEGRAM_PROXY_URL;
+ const settings=(await db.pool.query('SELECT delivery,task_delivery,deadline_delivery FROM telegram_settings WHERE id=1')).rows[0];
+ const sent:{chat_id:string;text:string;reply_markup:{inline_keyboard:{url?:string}[][]}}[]=[];
+ process.env.TELEGRAM_BOT_TOKEN='FIXTURE_TOKEN';delete process.env.TELEGRAM_PROXY_URL;
+ globalThis.fetch=async(input,init)=>{
+  if(String(input).startsWith('https://api.telegram.org/')){
+   sent.push(JSON.parse(String(init?.body)));
+   return Response.json({ok:true,result:{message_id:1}});
+  }
+  return originalFetch(input,init);
+ };
+ try{
+  await db.pool.query('UPDATE telegram_settings SET delivery=true,task_delivery=false,deadline_delivery=false WHERE id=1');
+  await db.pool.query('UPDATE notification_preferences SET telegram_digest=false WHERE user_id=$1',[worker.id]);
+  await deliver(at(day,'10:01'));
+  assert(!sent.some(message=>message.chat_id===chat&&message.text===first.body));
+  await db.pool.query('UPDATE notification_preferences SET telegram_digest=true WHERE user_id=$1',[worker.id]);
+  await deliver(at(day,'10:02'));await deliver(at(day,'10:03'));
+  const invitations=sent.filter(message=>message.chat_id===chat&&message.text===first.body);
+  assert.equal(invitations.length,1);
+  assert.equal(invitations[0].chat_id,chat);
+  assert.equal(invitations[0].reply_markup.inline_keyboard[0][0].url,'https://fixture.example/mobile?view=notifications&setup=1');
+ }finally{
+  globalThis.fetch=originalFetch;
+  if(originalToken===undefined)delete process.env.TELEGRAM_BOT_TOKEN;else process.env.TELEGRAM_BOT_TOKEN=originalToken;
+  if(originalProxy===undefined)delete process.env.TELEGRAM_PROXY_URL;else process.env.TELEGRAM_PROXY_URL=originalProxy;
+  await db.pool.query('UPDATE telegram_settings SET delivery=$1,task_delivery=$2,deadline_delivery=$3 WHERE id=1',
+   [settings.delivery,settings.task_delivery,settings.deadline_delivery]);
+  await db.pool.query("DELETE FROM telegram_delivery WHERE outbox_ids ? $1",[first.id]);
+ }
+ await generatePushInvitations(at(next,'10:00'));assert.equal((await rows()).length,1);assert.notEqual((await rows())[0].id,first.id);
+ const subscription={endpoint:'https://fcm.googleapis.com/fcm/send/fixture-invitation',keys:{p256dh:keys.publicKey,auth:randomBytes(16).toString('base64url')}};
+ t.after(async()=>{await api(worker,'/notifications/push','DELETE',{endpoint:subscription.endpoint});});
+ assert.equal((await api(worker,'/notifications/push','POST',{...subscription,enableDelivery:true})).status,200);
+ assert.equal((await api(worker,'/notifications/preferences')).body.pushEnabled,true);
+ assert.equal((await rows()).length,0);
+ await generatePushInvitations(at('2035-03-27','10:00'));assert.equal((await rows()).length,0);
 });
