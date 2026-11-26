@@ -34,3 +34,30 @@ input::placeholder,textarea::placeholder { color:var(--theme-text-muted); opacit
 .appearance-preview-action { display:inline-block; padding:7px 13px; border-radius:4px; font-size:12px; }
 @media(max-width:1100px) { .base-palette-options { grid-template-columns:repeat(3,minmax(0,1fr)); } }
 @media(max-width:650px) { .appearance-heading { flex-direction:column; gap:10px; } .base-palette-options { grid-template-columns:repeat(2,minmax(0,1fr)); } .appearance-group { margin-top:22px; } .appearance-preview { padding:12px; gap:12px; } }
+
+:root { --nadia-wallpaper: url('./assets/nadia-space.webp'); }
+.wallpaper-options {
+ display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:12px;
+ max-inline-size:620px;margin-top:6px;
+}
+.wallpaper-swatch {
+ display:block;aspect-ratio:3 / 2;border-radius:5px;
+ background:var(--theme-background) center / cover no-repeat;
+}
+.wallpaper-swatch[data-preview="nadia-space"] {
+ background-color:#e9adc1;background-image:var(--nadia-wallpaper);
+}
+:root[data-wallpaper="nadia-space"] body {isolation:isolate}
+:root[data-wallpaper="nadia-space"] body::before {
+ content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
+ background:linear-gradient(var(--wallpaper-shade,#f7e6ee80),var(--wallpaper-shade,#f7e6ee80)),var(--nadia-wallpaper) center / cover no-repeat;
+}
+:root[data-wallpaper="nadia-space"][data-theme="dark"] {--wallpaper-shade:#1b1326c7}
+:root[data-wallpaper="nadia-space"] .mobile-workspace {background-color:transparent}
+@media (max-width:650px) {
+ :root[data-wallpaper="nadia-space"] body::before {background-position:center,91% center}
+ .wallpaper-options {gap:9px}
+}
+@media print {
+ :root[data-wallpaper="nadia-space"] body::before {display:none}
+}

@@ -21,18 +21,22 @@
  };
  const baseVars=['background','surface','surface-soft','surface-raised','text','text-secondary','text-muted','border','border-strong'];
  const accentVars=['accent','accent-solid','focus'];
+ const wallpapers=['plain','nadia-space'];
  const read=key=>{try{return localStorage.getItem(key);}catch{return null;}};
  const save=(key,value)=>{try{localStorage.setItem(key,value);}catch{/* Keep the selection for this tab. */}};
  const valid=(catalog,id,fallback)=>Object.hasOwn(catalog,id)?id:fallback;
  let theme=read('ruspet-theme')==='dark'?'dark':'light';
+ let wallpaper='plain';
  const preferences={};
  function load(){
   const legacy=valid(accents,read('ruspet-accent'),'green');
+  const savedWallpaper=read('ruspet-wallpaper');
+  wallpaper=wallpapers.includes(savedWallpaper)?savedWallpaper:'plain';
   for(const mode of ['light','dark'])preferences[mode]={base:valid(bases,read('ruspet-base-'+mode),'forest'),accent:valid(accents,read('ruspet-accent-'+mode),legacy)};
  }
  function apply(){
   const {base,accent}=preferences[theme],baseValues=bases[base][theme],accentValues=accents[accent][theme];
-  root.dataset.theme=theme;root.dataset.base=base;root.dataset.accent=accent;
+  root.dataset.theme=theme;root.dataset.base=base;root.dataset.accent=accent;root.dataset.wallpaper=wallpaper;
   baseVars.forEach((key,i)=>root.style.setProperty('--theme-'+key,baseValues[i]));
   accentVars.forEach((key,i)=>root.style.setProperty('--theme-'+key,accentValues[i]));
   document.querySelector('meta[name="theme-color"]')?.setAttribute('content',baseValues[0]);
@@ -41,15 +45,16 @@
  window.ruspetAppearance={
   bases:Object.entries(bases).map(([id,p])=>({id,label:p.label,light:p.light.slice(0,4),dark:p.dark.slice(0,4)})),
   accents:Object.entries(accents).map(([id,p])=>({id,label:p.label,light:p.light[1],dark:p.dark[0]})),
-  getSnapshot:()=>[theme,preferences[theme].base,preferences[theme].accent].join(':'),
+  getSnapshot:()=>[theme,preferences[theme].base,preferences[theme].accent,wallpaper].join(':'),
   subscribe:listener=>{window.addEventListener('ruspet-appearance-change',listener);return()=>window.removeEventListener('ruspet-appearance-change',listener);},
   setTheme:mode=>{if(!['light','dark'].includes(mode))return;theme=mode;save('ruspet-theme',theme);apply();},
   setBase:id=>{if(!Object.hasOwn(bases,id))return;preferences[theme].base=id;save('ruspet-base-'+theme,id);apply();},
-  setAccent:id=>{if(!Object.hasOwn(accents,id))return;preferences[theme].accent=id;save('ruspet-accent-'+theme,id);apply();}
+  setAccent:id=>{if(!Object.hasOwn(accents,id))return;preferences[theme].accent=id;save('ruspet-accent-'+theme,id);apply();},
+  setWallpaper:id=>{if(!wallpapers.includes(id))return;wallpaper=id;save('ruspet-wallpaper',id);apply();}
  };
  load();apply();
  window.addEventListener('storage',event=>{
-  if(event.key!==null&&!['ruspet-theme','ruspet-accent','ruspet-base-light','ruspet-base-dark','ruspet-accent-light','ruspet-accent-dark'].includes(event.key))return;
+  if(event.key!==null&&!['ruspet-theme','ruspet-accent','ruspet-base-light','ruspet-base-dark','ruspet-accent-light','ruspet-accent-dark','ruspet-wallpaper'].includes(event.key))return;
   theme=read('ruspet-theme')==='dark'?'dark':'light';load();apply();
  });
 })();
