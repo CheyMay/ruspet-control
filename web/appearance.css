@@ -54,6 +54,42 @@ input::placeholder,textarea::placeholder { color:var(--theme-text-muted); opacit
 }
 :root[data-wallpaper="nadia-space"][data-theme="dark"] {--wallpaper-shade:#1b1326c7}
 :root[data-wallpaper="nadia-space"] .mobile-workspace {background-color:transparent}
+
+@media screen {
+ :root[data-wallpaper="nadia-space"] {
+  --wallpaper-panel:color-mix(in srgb,var(--theme-surface) 65%,transparent);
+  --wallpaper-panel-active:color-mix(in srgb,var(--theme-surface-raised) 65%,transparent);
+ }
+ :root[data-wallpaper="nadia-space"] :is(
+  .sidebar,.topbar,.mobile-workspace-header,.panel,.drawer,.modal,
+  .queue-card,.work-card,.personal-metrics > button,.kanban-toolbar,.kanban-lane-header,.kanban-card,
+  .mobile-device-notifications
+ ) {
+  background-color:var(--wallpaper-panel);
+ }
+ :root[data-wallpaper="nadia-space"] :is(
+  .queue-card:hover,.work-card[aria-pressed="true"],.personal-metrics > button:hover,
+  .personal-metrics > button:focus-visible,.kanban-card:hover,.sidebar nav button:hover,.sidebar nav button.active
+ ) {
+  background-color:var(--wallpaper-panel-active);
+ }
+ :root[data-wallpaper="nadia-space"] :is(.topbar,.mobile-workspace-header,.drawer,.modal) {
+  backdrop-filter:blur(8px);
+ }
+ :root[data-wallpaper="nadia-space"] .panel :is(.panel-footer,.chart-footer,.focus-task) {
+  background-color:transparent;
+ }
+ :root[data-wallpaper="nadia-space"] .panel .focus-task:hover {
+  background-color:color-mix(in srgb,var(--theme-surface-raised) 35%,transparent);
+ }
+ :root[data-wallpaper="nadia-space"] .kanban-lane {
+  background-color:color-mix(in srgb,var(--theme-surface-soft) 18%,transparent);
+ }
+ :root[data-wallpaper="nadia-space"] .kanban-lane[data-drop="active"] {
+  background-color:color-mix(in srgb,var(--theme-accent) 20%,transparent);
+ }
+}
+
 @media (max-width:650px) {
  :root[data-wallpaper="nadia-space"] body::before {background-position:center,91% center}
  .wallpaper-options {gap:9px}
