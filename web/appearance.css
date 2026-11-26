@@ -113,6 +113,9 @@ input::placeholder,textarea::placeholder { color:var(--theme-text-muted); opacit
  :root[data-wallpaper]:not([data-wallpaper="plain"]) :is(.topbar,.mobile-workspace-header,.drawer,.modal) {
   backdrop-filter:blur(8px);
  }
+ :root[data-wallpaper]:not([data-wallpaper="plain"]) :is(.topbar,.mobile-workspace-header) {
+  background-color:color-mix(in srgb,var(--theme-chrome) 65%,transparent);
+ }
  :root[data-wallpaper]:not([data-wallpaper="plain"]) .panel :is(.panel-footer,.chart-footer,.focus-task) {
   background-color:transparent;
  }

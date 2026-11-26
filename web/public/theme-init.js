@@ -22,12 +22,12 @@
  const baseVars=['background','surface','surface-soft','surface-raised','text','text-secondary','text-muted','border','border-strong'];
  const accentVars=['accent','accent-solid','focus'];
  const wallpapers={
-  plain:'Однотонный',
-  'nadia-space':'Специально для Нади',
-  'jdm-sakura':'Лососевый JDM',
-  'iron-garage':'Железный гараж',
-  'capybara-break':'Капибара на перерыве',
-  'night-frequency':'Ночная частота'
+  plain:{label:'Однотонный'},
+  'nadia-space':{label:'Специально для Нади',light:'#f5dce7',dark:'#302333'},
+  'jdm-sakura':{label:'Лососевый JDM',light:'#f4d3c6',dark:'#382726'},
+  'iron-garage':{label:'Железный гараж',light:'#eee0d0',dark:'#2c2521'},
+  'capybara-break':{label:'Капибара на перерыве',light:'#ede9ce',dark:'#2c2c21'},
+  'night-frequency':{label:'Ночная частота',light:'#dceaf3',dark:'#13273a'}
  };
  const read=key=>{try{return localStorage.getItem(key);}catch{return null;}};
  const save=(key,value)=>{try{localStorage.setItem(key,value);}catch{/* Keep the selection for this tab. */}};
@@ -45,13 +45,18 @@
   root.dataset.theme=theme;root.dataset.base=base;root.dataset.accent=accent;root.dataset.wallpaper=wallpaper;
   baseVars.forEach((key,i)=>root.style.setProperty('--theme-'+key,baseValues[i]));
   accentVars.forEach((key,i)=>root.style.setProperty('--theme-'+key,accentValues[i]));
-  document.querySelector('meta[name="theme-color"]')?.setAttribute('content',baseValues[0]);
+  const chrome=wallpapers[wallpaper][theme]??baseValues[0];
+  root.style.setProperty('--theme-chrome',chrome);
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content',chrome);
+  const manifest=document.querySelector('link[rel="manifest"]');
+  const manifestUrl='/manifest.webmanifest?color='+chrome.slice(1);
+  if(manifest&&manifest.getAttribute('href')!==manifestUrl)manifest.setAttribute('href',manifestUrl);
   window.dispatchEvent(new Event('ruspet-appearance-change'));
  }
  window.ruspetAppearance={
   bases:Object.entries(bases).map(([id,p])=>({id,label:p.label,light:p.light.slice(0,4),dark:p.dark.slice(0,4)})),
   accents:Object.entries(accents).map(([id,p])=>({id,label:p.label,light:p.light[1],dark:p.dark[0]})),
-  wallpapers:Object.entries(wallpapers).map(([id,label])=>({id,label})),
+  wallpapers:Object.entries(wallpapers).map(([id,{label}])=>({id,label})),
   getSnapshot:()=>[theme,preferences[theme].base,preferences[theme].accent,wallpaper].join(':'),
   subscribe:listener=>{window.addEventListener('ruspet-appearance-change',listener);return()=>window.removeEventListener('ruspet-appearance-change',listener);},
   setTheme:mode=>{if(!['light','dark'].includes(mode))return;theme=mode;save('ruspet-theme',theme);apply();},

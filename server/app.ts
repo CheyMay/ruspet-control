@@ -44,6 +44,7 @@ import {constants as zlib} from 'node:zlib';
 import {verifyPassword} from './passwords.js';
 import { randomBytes, randomUUID, createHash } from 'node:crypto';
 import { resolve } from 'node:path';
+import { readFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { z, ZodError } from 'zod';
 import { pool } from './db.js';
@@ -503,6 +504,13 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   res.sendFile(resolve('server/time/plan.html'));
  });
  app.use('/assets',compress,express.static(resolve('dist/assets'),{maxAge:'1y',immutable:true}));
+ app.get('/manifest.webmanifest',async(req,res,next)=>{
+  const color=req.query.color;
+  if(typeof color!=='string'||!(/^[a-f0-9]{6}$/i.test(color)))return next();
+  const manifest=JSON.parse(await readFile(resolve('dist/manifest.webmanifest'),'utf8'));
+  const tint='#'+color;
+  res.type('application/manifest+json').json({...manifest,theme_color:tint,background_color:tint});
+ });
  app.use(express.static(resolve('dist')));app.get('/{*path}',(_req,res)=>res.sendFile(resolve('dist/index.html')));
  app.use((error:unknown,_req:express.Request,res:express.Response,_next:express.NextFunction)=>{
   if(error instanceof ZodError)return res.status(400).json({error:'Проверьте заполнение полей.',fields:error.issues.map(i=>({path:i.path,message:i.message}))});

@@ -54,7 +54,7 @@ import type {AnalyticsSelection} from '../shared/team-analytics.js';
 import {TaskKanban,TaskViewSwitch} from './TaskKanban.js';
 import {Login} from './Login.js';
 import {ThemeToggle} from './ThemeToggle.js';
-import {CapMark} from './CapMark.js';
+import {CapMark,WorkspaceLoading} from './CapMark.js';
 import {ActionWorkspace} from './ActionWorkspace.js';
 import {BotConversation} from './BotConversation.js';
 import {TelegramSettings} from './TelegramSettings.js';
@@ -480,7 +480,7 @@ export function App(){
    </tr>;})}</tbody>
   </table></div>:<Empty>Задач с выбранными условиями нет. Попробуйте изменить фильтры.</Empty>;
  }
- if(loading)return <div className="boot" role="status" aria-live="polite"><CapMark loading/><h2>РУСПЭТ</h2><p>Загружаем рабочее пространство…</p></div>;
+ if(loading)return <WorkspaceLoading/>;
  if(!data&&viewingEmployee)return <div className="boot"><h2>Просмотр недоступен</h2><p role="alert">{error}</p><a className="button secondary" href="/">Перейти в панель</a></div>;
  if(!data&&!demo&&!error)return <Login onLogin={value=>{snapshot.current=undefined;pendingWrites.current.clear();setConnectionIssue(null);setData(value);}}/>;
  if(!data)return <div className="boot"><h2>Не удалось открыть систему</h2><p>{error}</p><button onClick={()=>location.reload()}>Попробовать снова</button></div>;

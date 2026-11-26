@@ -1,5 +1,6 @@
 :root {
  color-scheme: light;
+ --theme-chrome: var(--theme-background,#f1f5f1);
  --theme-on-accent: #fff;
  --theme-danger: #a4473c;
  --theme-danger-surface: #fbece8;
@@ -53,9 +54,6 @@
 [data-theme="dark"] .button.secondary:hover { background: var(--theme-surface-raised); }
 [data-theme="dark"] :is(.sidebar nav button.active,.tabs button.selected,.text-button,.number-link) { color: var(--theme-accent); }
 [data-theme="dark"] .sidebar nav button.active { background: var(--theme-surface-raised); }
-[data-theme="dark"] .cap-mark { color: var(--theme-on-accent); background: var(--theme-accent-solid); }
-[data-theme="dark"] .workspace-mark .cap-mark { background: transparent; }
-[data-theme="dark"] .cap-mark svg { color: inherit; }
 [data-theme="dark"] .queue-card { border-color: var(--theme-border) !important; }
 [data-theme="dark"] .queue-card:hover { border-color: var(--theme-accent) !important; }
 [data-theme="dark"] .red-text { color: var(--theme-danger) !important; }
@@ -66,45 +64,68 @@
 [data-theme="dark"] * { scrollbar-color: var(--theme-border-strong) var(--theme-surface-soft); }
 
 .theme-toggle {
- display: inline-flex;
- align-items: center;
- justify-content: center;
- flex: 0 0 auto;
- width: 42px;
- height: 42px;
- padding: 0;
- border: 1px solid var(--theme-border, #dce4dd);
- border-radius: 11px;
- background: var(--theme-surface-soft, #f2f5f1);
- transition: background .15s, border-color .15s;
+ display:grid;place-items:center;flex:none;width:42px;height:42px;padding:0;
+ border:1px solid var(--theme-border);border-radius:11px;background:var(--theme-surface-soft);
+ transition:background .16s,border-color .16s;
 }
-.theme-toggle:hover { background: var(--theme-surface-raised, #e5ede5); border-color: var(--theme-border-strong, #a4b9aa); }
-.theme-cap { width: 38px; height: 38px; transition: transform .18s ease; }
-.theme-toggle:hover .theme-cap { transform: rotate(-10deg) translateY(-1px); }
-.theme-toggle:active .theme-cap { transform: rotate(5deg); }
-.dark-cap {
- --cap-body-start: #53665b; --cap-body-mid: #293b31; --cap-body-end: #17261e;
- --cap-top-start: #718477; --cap-top-end: #31483a;
- --cap-edge: #182c20; --cap-ridge: #7e9483; --cap-highlight: #a8b9aa; --cap-shadow: #1e32222b;
+.theme-toggle:hover {background:var(--theme-surface-raised);border-color:var(--theme-border-strong)}
+.theme-hop {
+ display:block;width:35px;height:35px;perspective:125px;
 }
-.light-cap {
- --cap-body-start: #f3f0dc; --cap-body-mid: #d9ddca; --cap-body-end: #9ba99a;
- --cap-top-start: #fffdf0; --cap-top-end: #d7e0cc;
- --cap-edge: #7b907d; --cap-ridge: #f7fae9; --cap-highlight: #ffffff; --cap-shadow: #00000038;
+.theme-rotator,.boot-spinner {position:relative;display:block;width:100%;height:100%;transform-style:preserve-3d}
+.theme-rotator {transition:transform 520ms cubic-bezier(.33,.05,.23,1)}
+.theme-toggle[aria-pressed=true] .theme-rotator {transform:rotateY(180deg)}
+.cap-face {display:block;position:absolute;inset:0;backface-visibility:hidden}
+.cap-face-front {transform:translateZ(1.5px)}
+.cap-face-back {transform:rotateY(180deg) translateZ(1.5px)}
+.cap-art {display:block;width:100%;height:100%}
+.cap-mark {
+ display:grid;place-items:center;flex:none;width:38px;height:38px;padding:3px;box-sizing:border-box;
+ border:1px solid color-mix(in srgb,var(--theme-accent-solid) 70%,white 30%);border-radius:11px;
+ background:linear-gradient(152deg,color-mix(in srgb,var(--theme-accent-solid) 80%,white 20%),var(--theme-accent-solid) 72%);
+ box-shadow:inset 0 1px 0 #ffffff28,0 2px 4px var(--theme-shadow);
 }
-[data-theme="dark"] .theme-toggle { background: var(--theme-surface-raised); border-color: var(--theme-border-strong); }
-[data-theme="dark"] .theme-toggle:hover { background: var(--theme-surface); border-color: var(--theme-accent); }
-.login-brand { display: flex; justify-content: space-between; align-items: center; }
+.brand .cap-mark {width:36px;height:36px}
+.login-brand {display:flex;justify-content:space-between;align-items:center}
+.boot.workspace-loading {
+ min-height:100dvh;gap:20px;text-align:center;padding:24px;
+ background:radial-gradient(ellipse at 50% 46%,color-mix(in srgb,var(--theme-accent-solid) 12%,var(--theme-chrome)) 0%,var(--theme-chrome) 68%);
+}
+.boot-stage {
+ display:grid;place-items:center;position:relative;width:132px;height:132px;
+ perspective:360px;isolation:isolate;
+}
+.boot-stage::after {
+ content:"";position:absolute;inset:auto 33px 23px;height:11px;z-index:-1;border-radius:50%;
+ background:var(--theme-accent-solid);filter:blur(6px);opacity:.23;
+}
+.boot-orbit {
+ position:absolute;inset:0;border:1px solid var(--theme-border-strong);border-radius:50%;
+ opacity:.37;
+}
+.boot-orbit::after {
+ content:"";position:absolute;top:-3px;left:calc(50% - 2px);width:5px;height:5px;
+ background:var(--theme-accent);border-radius:50%;
+}
+.boot-orbit {animation:boot-orbit 3s linear infinite}
+.boot-spinner {width:92px;height:92px;animation:boot-cap-spin 2.8s linear infinite}
+.boot-copy h2 {color:var(--theme-text);letter-spacing:.12em}
+.boot-copy p {margin-top:6px;font-size:13px}
+@keyframes boot-cap-spin {
+ from {transform:rotateZ(-12deg) rotateY(24deg)}
+ to {transform:rotateZ(-12deg) rotateY(384deg)}
+}
+@keyframes boot-orbit {to {transform:rotate(360deg)}}
 @media (max-width:650px) {
- .theme-toggle { width: 34px; height: 34px; border-radius: 9px; }
- .theme-cap { width: 32px; height: 32px; }
- .topbar-right { gap: 6px; }
- .user-switch > div { min-width: 0; }
- .user-switch strong { max-width: 110px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+ .theme-toggle {width:36px;height:36px;border-radius:9px}
+ .theme-hop {width:30px;height:30px}
+ .topbar-right {gap:6px}
+ .user-switch > div {min-width:0}
+ .user-switch strong {max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 }
 @media (prefers-reduced-motion:reduce) {
- .theme-cap { transition: none; }
- .theme-toggle:hover .theme-cap,.theme-toggle:active .theme-cap { transform: none; }
+ .theme-toggle,.theme-rotator {transition:none}
+ .boot-spinner,.boot-orbit {animation:none}
 }
 @media print {
  :root[data-theme="dark"] { color-scheme: light; }
