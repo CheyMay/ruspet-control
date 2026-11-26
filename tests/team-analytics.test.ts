@@ -106,7 +106,9 @@ test('analytics totals reconcile by deadline, show Monday on Friday and count ap
  assert.equal(today.numbers.review,1);
  assert.equal(today.numbers.outside,2);
  assert.equal(today.rows.length,0);
- assert.deepEqual(today.morning,{total:15,worked:5,untouched:10});
+ assert.deepEqual(today.morning,{total:15,worked:5,untouched:10,
+  deadlines:{total:15,overdue:5,today:2,nextWorkday:3,later:3,withoutDeadline:2},
+  progress:{completed:5,review:0,rescheduled:0,discussed:0,other:0,untouched:10}});
  assert.equal(today.waiting.find(wait=>wait.stage==='approval')?.count,2);
  assert.equal(today.waiting.find(wait=>wait.stage==='approval')?.oldest,'2026-11-20T05:00:00.000Z');
  const drill=await analytics.analyticsOverview(person('deputy'),group,'day',now,{metric:'remaining:later'});
@@ -174,6 +176,12 @@ test('analytics API enforces scopes and returns aggregate figures without task d
  assert(selection.ids.includes('cross-k'));
  assert(!selection.ids.includes('cross-r'));
  assert(!selection.ids.includes('buyer'));
+ path.set('metric','morning-progress:untouched');
+ const morningList=await fetch(base+'/analytics/drilldown?'+path,{headers:{Cookie:deputy}});
+ assert.equal(morningList.status,200);
+ const morningSelection=await morningList.json();
+ assert(morningSelection.ids.includes('old'));assert(!morningSelection.ids.includes('buyer'));
+ assert.equal((await fetch(base+'/analytics/drilldown?'+path,{headers:{Cookie:employee}})).status,403);
  const layout=async(cookie:string,body?:unknown)=>fetch(base+'/analytics/layout',{
   method:body?'PUT':'GET',headers:{Cookie:cookie,'Content-Type':'application/json'},body:body?JSON.stringify(body):undefined
  });
@@ -281,4 +289,50 @@ test('the morning snapshot keeps the original assignee when a later reassignment
  await db.pool.query('INSERT INTO event_retractions(event_id,undo_id,created_at) VALUES($1,$2,$3)',[edit,undoId,today('11:00')]);
  const drill=await analytics.analyticsOverview(person('deputy'),['sales:branches','branch:Крым','person:rep-crimea'],'day',now,{metric:'untouched'});
  assert(drill.selection?.ids.includes(original.id));
+});
+
+test('morning bars preserve the 09:00 deadlines and reconcile distinct outcomes, drilldowns and undone actions',async()=>{
+ const group=['department:Закупки','person:buyer'];
+ const moved=await task('morning-moved','buyer','Закупки',tomorrow('16:00'));
+ await change('deadline_changed',{...moved,deadline:today('10:00')},moved,today('10:15'));
+ await change('comment',moved,moved,today('11:00'));
+ const completed=await task('morning-done','buyer','Закупки',today('13:00'),'completed',today('10:30'));
+ const active={...completed,status:'active' as const,completed_at:null};
+ await change('comment',active,active,today('09:30'));
+ await change('task_completed',active,completed,today('10:30'));
+ const review=await task('morning-review','buyer','Закупки',yesterday('15:00'),'review');
+ await change('review_submitted',{...review,status:'active'},review,today('09:30'));
+ await change('comment',review,review,today('10:00'));
+ const discussed=await task('morning-discussed','buyer','Закупки',null);
+ await change('approval_clarification_requested',discussed,discussed,today('10:00'));
+ const planned=await task('morning-planned','buyer','Закупки',monday('12:00'));
+ await change('assignment_accepted',{...planned,deadline:monday('12:00')},planned,today('10:00'));
+ await task('morning-untouched','buyer','Закупки',today('11:00'));
+ const undone=await task('morning-undone','buyer','Закупки',today('14:00'));
+ const after={...undone,deadline:tomorrow('14:00')};
+ const edited=await change('deadline_changed',undone,after,today('10:00')),undoId=randomUUID();
+ await db.pool.query("INSERT INTO undo_actions(id,task_id,actor_id,label,before_state,after_state) VALUES($1,$2,'director','Отмена переноса','{}','{}')",[undoId,undone.id]);
+ await change('action_undone',after,undone,today('11:00'));
+ await db.pool.query('INSERT INTO event_retractions(event_id,undo_id,created_at) VALUES($1,$2,$3)',[edited,undoId,today('11:00')]);
+ const boundary=await task('morning-boundary','buyer','Закупки',today('16:00'));
+ await change('comment',boundary,boundary,today('09:00'));
+ await change('bitrix_change',{...boundary,deadline:today('16:00')},boundary,today('10:10'));
+ const added=await task('morning-added','buyer','Закупки',today('17:00'));
+ await db.pool.query('UPDATE tasks SET created_at=$2 WHERE id=$1',[added.id,today('09:30')]);
+ await change('comment',added,added,today('10:00'));
+
+ const data=await analytics.analyticsOverview(person('director'),group,'day',now);
+ assert.deepEqual(data.morning,{total:9,worked:5,untouched:4,
+  deadlines:{total:9,overdue:2,today:5,nextWorkday:1,later:0,withoutDeadline:1},
+  progress:{completed:1,review:1,rescheduled:1,discussed:1,other:1,untouched:4}});
+ const progressIds=new Set<string>();
+ for(const [part,count] of Object.entries(data.morning!.progress)){
+  const result=await analytics.analyticsOverview(person('director'),group,'day',now,{metric:`morning-progress:${part}` as import('../shared/team-analytics.js').AnalyticsMetric});
+  assert.equal(result.selection?.total,count);
+  for(const id of result.selection!.ids){assert(!progressIds.has(id));progressIds.add(id);}
+ }
+ assert.equal(progressIds.size,9);assert(!progressIds.has(added.id));
+ const morningToday=await analytics.analyticsOverview(person('director'),group,'day',now,{metric:'morning:today'});
+ assert.deepEqual(morningToday.selection?.ids.sort(),[moved.id,completed.id,'morning-untouched',undone.id,boundary.id].sort());
+ assert.equal((await analytics.analyticsOverview(person('director'),group,'day',new Date(today('08:59')))).morning,null);
 });

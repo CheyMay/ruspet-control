@@ -45,13 +45,17 @@ export async function analyticsWaits(db:Db,tasks:Task[],now:Date){
 export async function morningActivity(db:Db,from:Date,now:Date){
  const recorded=[
   'assignment_accepted','personal_plan_changed','personal_plan_set','comment','task_edited','approval_requested',
-  'approval_rejected','approval_clarification_answered','step_approved','deadline_changed','deadline_confirmed',
+  'approval_rejected','approval_clarification_requested','approval_clarification_answered','step_approved','deadline_changed','deadline_confirmed',
   'review_submitted','review_returned','task_completed','explanation'
  ];
- const {rows}=await db.query<{task_id:string;before:Partial<Task>|null;worked:boolean}>(`WITH since AS (
+ // Different UTC offsets can represent the same deadline.
+ const deadlineChanged="NULLIF(e.data#>>'{before,deadline}','')::timestamptz IS DISTINCT FROM NULLIF(e.data#>>'{after,deadline}','')::timestamptz";
+ const {rows}=await db.query<{task_id:string;before:Partial<Task>|null;worked:boolean;rescheduled:boolean;discussed:boolean}>(`WITH since AS (
   SELECT e.task_id,e.created_at,e.id,e.data->'before' AS before,
+   (${deadlineChanged}) AS deadline_changed,
+   e.kind IN ('comment','explanation','approval_clarification_requested','approval_clarification_answered') AS discussed,
    (e.kind=ANY($3) OR e.kind='bitrix_change' AND (e.data#>'{before,status}' IS DISTINCT FROM e.data#>'{after,status}'
-    OR e.data#>'{before,deadline}' IS DISTINCT FROM e.data#>'{after,deadline}'))
+    OR (${deadlineChanged})))
     AND NOT EXISTS(SELECT 1 FROM event_retractions r WHERE r.event_id=e.id AND r.created_at<=$2) AS worked
   FROM task_events e WHERE e.created_at>$1 AND e.created_at<=$2 AND e.task_id IS NOT NULL AND
    (e.data ? 'before' OR e.kind=ANY($3))
@@ -59,7 +63,9 @@ export async function morningActivity(db:Db,from:Date,now:Date){
   SELECT DISTINCT ON (task_id) task_id,before FROM since WHERE before ? 'status'
   ORDER BY task_id,created_at,coalesce((before->>'version')::integer,0),id
  )
- SELECT s.task_id,v.before,bool_or(s.worked) AS worked FROM since s LEFT JOIN versions v USING(task_id)
+ SELECT s.task_id,v.before,bool_or(s.worked) AS worked,
+  bool_or(s.worked AND s.deadline_changed) AS rescheduled,bool_or(s.worked AND s.discussed) AS discussed
+ FROM since s LEFT JOIN versions v USING(task_id)
  GROUP BY s.task_id,v.before`,[from.toISOString(),now.toISOString(),recorded]);
  return new Map(rows.map(row=>[row.task_id,row]));
 }

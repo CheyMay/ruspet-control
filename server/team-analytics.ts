@@ -115,7 +115,8 @@ export async function analyticsOverview(user:User,selection:string[],period:'day
   let morning:AnalyticsMorning|null=null;
   if(period==='day'&&+now>=+morningAt&&(!source.tracking||Date.parse(source.tracking)<=+morningAt)){
    const activity=await morningActivity(db,morningAt,now);
-   morning={total:0,worked:0,untouched:0};
+   morning={total:0,worked:0,untouched:0,deadlines:emptyWork(),
+    progress:{completed:0,review:0,rescheduled:0,discussed:0,other:0,untouched:0}};
    for(const current of raw){
     if(Date.parse(current.created_at)>+morningAt)continue;
     const record=activity.get(current.id);
@@ -125,8 +126,12 @@ export async function analyticsOverview(user:User,selection:string[],period:'day
     if(before.status==='completed'&&(!Number.isFinite(closedAt)||closedAt<=+morningAt))continue;
     if(!scope.visible(before)||!matches(scope.path(before)))continue;
     const worked=!!record?.worked||current.status==='completed'&&closedAt>+morningAt;
+    const deadline=deadlineBucket(before.deadline,date,nextWorkday,morningAt);
+    const progress=!worked?'untouched':current.status==='completed'?'completed':current.status==='review'?'review':
+     record?.rescheduled?'rescheduled':record?.discussed?'discussed':'other';
     morning.total++;morning[worked?'worked':'untouched']++;
-    select(current.id,'morning',worked?'worked':'untouched');
+    morning.deadlines.total++;morning.deadlines[deadline]++;morning.progress[progress]++;
+    select(current.id,'morning',worked?'worked':'untouched',`morning:${deadline}`,`morning-progress:${progress}`);
    }
   }
   const waits=await analyticsWaits(db,candidates.filter(task=>matches(scope.path(task))),now);

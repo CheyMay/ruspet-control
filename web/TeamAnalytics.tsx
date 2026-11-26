@@ -2,7 +2,7 @@ import {ClientPortfolio} from './Crm.js';
 import {HelpHint} from './Management.js';
 import {useEffect,useRef,useState,type PointerEvent} from 'react';
 import {ChartNoAxesCombined,ChevronRight,RefreshCw} from 'lucide-react';
-import {analyticsColumns,analyticsDeadlineParts,type AnalyticsColumn,type AnalyticsDay,type AnalyticsLayout,type AnalyticsMetric,
+import {analyticsColumns,analyticsDeadlineParts,analyticsMorningProgressParts,type AnalyticsMorning,type AnalyticsColumn,type AnalyticsDay,type AnalyticsLayout,type AnalyticsMetric,
  type AnalyticsOverview,type AnalyticsRow,type AnalyticsWait,type CompletedWork,type RemainingWork} from '../shared/team-analytics.js';
 import {useSectionParam} from './section-history.js';
 import {api} from './api.js';
@@ -56,6 +56,40 @@ function Completed({title,work,period,nextLabel,open}:{title:React.ReactNode;wor
  return <Summary title={title} total={work.total} open={()=>open('completed')} bar={<CompletedBar work={work}/>} positive>
   {deadlineParts.map((part,i)=><Measure key={part} label={labels[i]} value={work[part]} tone={part} open={()=>open(`completed:${part}`)}/>)}
  </Summary>;
+}
+
+function Morning({work,nextLabel,open}:{work:AnalyticsMorning;nextLabel:string;open:OpenMetric}){
+ const deadlineLabels=['Просрочено к 09:00','Крайний срок сегодня',nextLabel,'Позднее','Без крайнего срока'];
+ const progressLabels={completed:'Выполнено',review:'На приёмке',rescheduled:'Изменён крайний срок',
+  discussed:'Комментарии и объяснения',other:'Другие действия',untouched:'Без действий с 09:00'};
+ const percent=work.total?Math.round(work.worked/work.total*100):0;
+ return <>
+  <dl className="bi-morning">
+   <Measure label="Было в 09:00" value={work.total} open={()=>open('morning')}/>
+   <Measure label="Проработано с 09:00" value={work.worked} open={()=>open('worked')}/>
+   <Measure label="Из утренних без действий" value={work.untouched} open={()=>open('untouched')}/>
+  </dl>
+  <div className="bi-morning-details">
+   <div className="bi-morning-detail">
+    <h3>Крайние сроки на 09:00</h3>
+    <DeadlineBar work={work.deadlines}/>
+    <dl className="bi-morning-legend">{deadlineParts.map((part,i)=><Measure key={part} label={deadlineLabels[i]}
+     value={work.deadlines[part]} tone={part} urgent={part==='overdue'} open={()=>open(`morning:${part}`)}/>)}</dl>
+   </div>
+   <div className="bi-morning-detail">
+    <div className="bi-section-heading"><h3>Работа с утренними задачами</h3><span className="bi-morning-percent">{percent}% проработано</span></div>
+    <div className="bi-deadline-bar bi-progress-bar" aria-hidden="true">{analyticsMorningProgressParts.filter(part=>work.progress[part]>0)
+     .map(part=><span key={part} data-progress={part} style={{flexGrow:work.progress[part]}}/>)}</div>
+    <dl className="bi-morning-legend">{analyticsMorningProgressParts.map(part=><div key={part}>
+     <dt><i className="bi-deadline-dot" data-progress={part} aria-hidden="true"/>
+      {work.progress[part]>0?<button type="button" className="bi-measure-link" onClick={()=>open(`morning-progress:${part}`)}>{progressLabels[part]}</button>:progressLabels[part]}</dt>
+     <dd>{work.progress[part]}</dd>
+    </div>)}</dl>
+   </div>
+  </div>
+  <p className="bi-morning-note">Каждая утренняя задача учитывается один раз. Завершение и приёмка показаны отдельно от переноса срока и обсуждения.
+   Другие действия — ознакомление, планирование, редактирование и решения по согласованиям. Нажмите на показатель, чтобы открыть задачи.</p>
+ </>;
 }
 
 function WeekChart({days,date}:{days:AnalyticsDay[];date:string}){
@@ -238,13 +272,9 @@ export function TeamAnalytics({splitTeams=false,onTasks,renderTitle,editButton}:
    </dl>
    {period==='day'&&<section className="panel bi-section">
     <div className="bi-section-heading"><h2>{renderTitle('analytics.morning','Срез на 09:00 МСК')}</h2>
-     <HelpHint text="Срез восстановлен по истории незавершённых задач. «Проработано» означает, что по утренней задаче есть действие, например комментарий, перенос или сдача результата."/>
+     <HelpHint text="Состав и крайние сроки зафиксированы на 09:00 по истории незавершённых задач. Полоска справа показывает текущее состояние проработанных утренних задач. Новые задачи после 09:00 в срез не входят; отменённые действия не засчитываются."/>
     </div>
-    {data.morning?<dl className="bi-morning">
-     <Measure label="Было в 09:00" value={data.morning.total} open={()=>open('morning')}/>
-     <Measure label="Проработано с 09:00" value={data.morning.worked} open={()=>open('worked')}/>
-     <Measure label="Из утренних без действий" value={data.morning.untouched} open={()=>open('untouched')}/>
-    </dl>:<p className="muted">Срез на 09:00 пока недоступен.</p>}
+    {data.morning?<Morning work={data.morning} nextLabel={nextLabel} open={open}/>:<p className="muted">Срез на 09:00 пока недоступен.</p>}
    </section>}
    <section className="panel bi-section">
     <h2>{renderTitle('analytics.waiting','Где ждут следующего шага')}</h2>
