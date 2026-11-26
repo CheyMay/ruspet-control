@@ -1,3 +1,4 @@
+import {lowBudgetDeadlineRoute,withBranchReview} from './branch-approvals.js';
 import {isDeepStrictEqual} from 'node:util';
 import {approvalHierarchy,configuredApprovalRoute,creatorFirstRoute} from './approval-hierarchy.js';
 import type {Db} from './db.js';
@@ -55,8 +56,11 @@ export async function keepTaskApprovals(db:Db,before:Task,after:Task,fields:read
    continue;
   }
   const recheck=fields.some(field=>['price','assignee_id','creator_id','branch_id'].includes(field));
+  const low=recheck&&approval.type==='deadline'?lowBudgetDeadlineRoute(after,approval.requester_id):undefined;
+  if(low===null){await cancelTaskApproval(db,approval,actorId,'Постановщик может изменить срок низкобюджетной задачи без дополнительного этапа',{source,fields});continue;}
   const calculated=approval.type==='completion'?completionApprovalRoute(after):
-   hierarchy&&recheck?(hierarchy.creator_first?await creatorFirstRoute(db,hierarchy,after,approval.requester_id):configuredApprovalRoute(hierarchy,after,approval.requester_id)):null;
+   low!==undefined?await withBranchReview(db,after,approval.requester_id,low,approval.branch_review_user_id):
+   hierarchy&&recheck?(hierarchy.creator_first?await creatorFirstRoute(db,hierarchy,after,approval.requester_id,approval.branch_review_user_id):configuredApprovalRoute(hierarchy,after,approval.requester_id)):null;
   const route=calculated?.length?calculated:approval.route;
   const routeIssue=approval.type==='completion'?false:recheck?
    calculated?.length===0||route.some(step=>step.userId===approval.requester_id):!!approval.task_change?.routeIssue;

@@ -242,6 +242,7 @@ test('an admin can send a single batch for pending director decisions without in
  const branch=(await db.pool.query<User>("SELECT * FROM users WHERE id='branch-fixture'")).rows[0];
  await db.pool.query("INSERT INTO org_reporting(employee_id,manager_id) VALUES($1,$2),($2,$3)",[worker.id,branch.id,director.id]);
  const id=await makeTask('РВМ* Работа для проверки руководителями',null);
+ await db.pool.query('UPDATE tasks SET price=5000 WHERE id=$1',[id]);
  const a=await service.requestApproval(worker,id,{type:'deadline',reason:'Уточнение нового срока задачи',
   proposedDeadline:at('2035-01-10','16:00').toISOString(),expectedVersion:1});
  await service.decide(branch,a.id,{decision:'approve',comment:''});
@@ -346,7 +347,7 @@ test('Friday evening sends one private digest with the Monday plan and creator r
  }
 });
 
-test('pricing controls deadline approvals and only the creator accepts completion',async()=>{
+test('pricing controls deadline approvals and only the creator accepts completion',async t=>{
  const hierarchy=await import('../server/approval-hierarchy.js'),service=await import('../server/service.js');
  const adminUser=(await db.pool.query<User>("SELECT * FROM users WHERE id='admin'")).rows[0];
  const liza=(await db.pool.query<User>("SELECT * FROM users WHERE id='anna'")).rows[0];
@@ -372,12 +373,12 @@ test('pricing controls deadline approvals and only the creator accepts completio
  await hierarchy.setApprovalHierarchy(adminUser,'branch-fixture',director.id,false,[worker.id]);
  const previous=await create(liza,worker,85);
  await request(previous,worker);
- assert.deepEqual(await route(previous),[director.id]);
+ assert.deepEqual(await route(previous),[liza.id]);
  await hierarchy.setApprovalHierarchy(adminUser,'branch-fixture',director.id,false,[worker.id],{
   creatorApproverId:liza.id,extraDeadlineAssigneeIds:[worker.id],onlySelfDirect:true,
  });
- assert.deepEqual(await route(previous),[liza.id,director.id]);
- assert.equal((await approval(previous)).action_revision,2);
+ assert.deepEqual(await route(previous),[liza.id]);
+ assert.equal((await approval(previous)).action_revision,1);
  assert.equal(await deadline(previous),old);
 
  const self=await create(worker,worker,200);
@@ -389,7 +390,7 @@ test('pricing controls deadline approvals and only the creator accepts completio
  const ordinary=await create(adminUser,other,85);
  await assert.rejects(()=>workflow.reviewTask(other,ordinary,'submit','',1),/Укажите результат/);
  await request(ordinary,other);
- assert.deepEqual(await route(ordinary),[director.id]);
+ assert.deepEqual(await route(ordinary),[adminUser.id]);
  assert.equal(await deadline(ordinary),old);
 
  const low=await create(liza,other,4999.99),boundary=await create(liza,other,5000),maksim=await create(liza,worker,85);
@@ -397,7 +398,7 @@ test('pricing controls deadline approvals and only the creator accepts completio
  await db.pool.query("INSERT INTO bitrix_task_links(task_id,external_id,baseline,linked_version) VALUES($1,890009,'{}',1)",[maksim]);
  await db.pool.query('UPDATE bitrix_live_config SET sync_linked_tasks=true WHERE id=1');
  const writeCount=async()=>Number((await db.pool.query("SELECT count(*) FROM bitrix_operations WHERE task_id=$1 AND payload->>'kind'='deadline_changed'",[maksim])).rows[0].count);
- for(const [id,actor,expected] of [[low,other,[liza.id]],[boundary,other,[liza.id,director.id]],[maksim,worker,[liza.id,director.id]]] as const){
+ for(const [id,actor,expected] of [[low,other,[liza.id]],[boundary,other,[liza.id,director.id]],[maksim,worker,[liza.id]]] as const){
   await request(id,actor);
   assert.deepEqual(await route(id),expected);
   assert.equal(await deadline(id),old);
@@ -406,17 +407,19 @@ test('pricing controls deadline approvals and only the creator accepts completio
  await assert.rejects(()=>allow(maksim,director),/другой согласующий/);
  const original=await approval(maksim),earlier=at('2035-01-22','17:00').toISOString();
  await login(liza);await login(director);
+ await (await import('../server/branch-approvals.js')).saveBranchApprovalLeads(adminUser,[{branchId:'Тест',userId:director.id}]);
+ t.after(()=>db.pool.query("DELETE FROM approval_branch_leads WHERE branch_id='Тест'"));
  const decidePath='/approvals/'+original.id+'/decision';
  const first={expectedStep:0,expectedRevision:original.action_revision};
  assert.equal(original.plan,'');
  assert.equal((await api(liza,decidePath,'POST',{...first,decision:'reject'})).status,400);
  assert.equal((await api(liza,decidePath,'POST',{...first,decision:'clarify'})).status,400);
  const lizaComment='Расчёт нужен до отгрузки.';
- assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve',approvedDeadline:earlier,comment:lizaComment})).body.state,'pending');
+ assert.equal((await api(liza,decidePath,'POST',{...first,decision:'approve',approvedDeadline:earlier,comment:lizaComment,forwardToBranch:true})).body.state,'pending');
  assert.equal((await approval(maksim)).approved_deadline,earlier);
  assert((await api(director,'/tasks/'+maksim)).body.comments.some((item:any)=>item.approval_id===original.id&&item.author_id===liza.id&&item.body.includes(lizaComment)));
  assert.equal(await deadline(maksim),old);assert.equal(await writeCount(),0);
- const final={expectedStep:1,expectedRevision:original.action_revision};
+ const final={expectedStep:1,expectedRevision:(await approval(maksim)).action_revision};
  assert.equal((await api(director,decidePath,'POST',{...final,decision:'approve',approvedDeadline:'2000-01-01T12:00:00+03:00'})).status,400);
  assert.equal((await api(director,decidePath,'POST',{...final,decision:'approve'})).body.state,'approved');
  assert.equal(await deadline(maksim),earlier);assert.equal(await writeCount(),1);
@@ -788,7 +791,7 @@ test('creator decides first and the sales head only receives required or selecte
  await db.pool.query("UPDATE users SET position='Менеджер по продажам' WHERE id=$1",[worker.id]);
  await db.pool.query('UPDATE approval_hierarchy SET creator_first=true WHERE id=1');
  const make=async(assignee:User,title:string)=>(await workflow.createTask(creator,{title,assigneeId:assignee.id,description:'Проверка маршрута',
-  deadline:at('2035-03-28','16:00').toISOString(),plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null,price:500})).id;
+  deadline:at('2035-03-28','16:00').toISOString(),plannedStart:null,plannedEnd:null,important:false,customerRisk:false,parentId:null,price:5000})).id;
  const input={type:'deadline' as const,proposedDeadline:at('2035-03-29','16:00').toISOString(),reason:'Клиент подтвердил другую дату.',expectedVersion:1};
  const salesTask=await make(worker,'Продажи · проверка первого этапа'),ordinaryTask=await make(other,'Закупки · проверка первого этапа');
  const sales=await service.requestApproval(worker,salesTask,input),ordinary=await service.requestApproval(other,ordinaryTask,input);

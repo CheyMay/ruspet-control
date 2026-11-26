@@ -2,9 +2,9 @@ import {taskNumber} from '../shared/task-number.js';
 import {ArrowRight,CalendarClock,Clock3,ListChecks,Search,SlidersHorizontal} from 'lucide-react';
 import {useEffect,useMemo,useState} from 'react';
 import {businessDay} from '../shared/queues.js';
-import {canComplete} from '../shared/actions.js';
+import {quickWorkActions} from '../shared/work-actions.js';
 import {workBuckets as buckets,workLabels,workQueue,type WorkBucket,type WorkScope,type WorkTask} from '../shared/work-queue.js';
-import type {Bootstrap,Task} from '../shared/types.js';
+import type {Approval,Bootstrap,Task} from '../shared/types.js';
 import {pushSectionStep} from './section-history.js';
 import {EmployeeFilter,matchesFilter} from './SearchFilter.js';
 import {TeamScopeSwitch} from './TeamScopeSwitch.js';
@@ -19,9 +19,10 @@ const kinds={all:'Любой шаг',execution:'Работа по задаче',
  review:'Приёмка результата',answer:'Объяснение',clarification:'Уточнение',edit_permission:'Редактирование',rework:'Доработка'};
 type Filter='all'|WorkBucket;
 type Props={data:Bootstrap;open:(id:string,tab?:string)=>Promise<void>;complete?:(task:Task)=>void;
+ deadline?:(task:Task)=>void;accept?:(task:Task,approval?:Approval)=>void;approve?:(task:Task,approval:Approval,forward?:boolean)=>void;
  busy?:boolean;initial?:Filter;queue?:ReturnType<typeof workQueue>};
 
-export function ActionWorkspace({data,open,complete,busy=false,initial='all',queue:personal}:Props){
+export function ActionWorkspace({data,open,complete,deadline:moveDeadline,accept,approve,busy=false,initial='all',queue:personal}:Props){
  const [scope,setScope]=useState<WorkScope>('mine'),[bucket,setBucket]=useState<Filter>(initial);
  const [query,setQuery]=useState(''),[kind,setKind]=useState('all'),[owner,setOwner]=useState('all');
  const [dateField,setDateField]=useState<'deadline'|'since'>('deadline'),[from,setFrom]=useState(''),[to,setTo]=useState('');
@@ -55,7 +56,7 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
   planned:'Со сроком позже или без крайнего срока'};
  function row(item:WorkTask){
   const task=item.task,myStep=item.ownerId===data.user.id;
-  const finish=complete&&myStep&&task.assignee_id===data.user.id&&!item.action&&!item.needsAcceptance&&!item.pendingApproval&&canComplete(data.user,task,data.approvalScope);
+  const quick=quickWorkActions(data,item);
   const button=item.action?labels[item.action.kind]:item.tab==='approvals'?'К согласованию':item.tab==='result'?'К результату':null;
   const deadline=task.deadline,clock=deadline?item.deadlineState==='today'?'До '+time.format(new Date(deadline))+' МСК':
    (item.deadlineState==='expired'?'Истёк сегодня в '+time.format(new Date(deadline)):'Крайний срок '+shortDate.format(new Date(deadline)))+' МСК':'';
@@ -67,8 +68,16 @@ export function ActionWorkspace({data,open,complete,busy=false,initial='all',que
     {(item.label!=='Выполнить задачу'||!myStep)&&<p className="work-step">{myStep?'Ваш шаг':name(item.ownerId)||'Следующий шаг'} · {item.label}</p>}
    </div>
    <div className="work-row-action">
-    {finish?<button type="button" className="button secondary" disabled={busy} onClick={()=>complete(task)}>Завершить</button>:
-     button&&item.tab!=='info'&&<button type="button" className={'button '+(myStep?'primary':'secondary')} onClick={()=>void open(task.id,item.tab)}>{button}<ArrowRight size={15}/></button>}
+    {quick.finish&&complete&&<button type="button" className="button primary" disabled={busy} onClick={()=>complete(task)}>Закрыть задачу</button>}
+    {quick.deadline&&moveDeadline&&<button type="button" className="button secondary" disabled={busy} onClick={()=>moveDeadline(task)}>Перенести срок</button>}
+    {quick.accept&&accept&&<button type="button" className="button primary" disabled={busy} onClick={()=>accept(task)}>Принять задачу</button>}
+    {quick.approval&&(quick.approval.type==='completion'?accept&&<button type="button" className="button primary" disabled={busy} onClick={()=>accept(task,quick.approval!)}>Принять задачу</button>:
+     approve&&<button type="button" className="button primary" disabled={busy} onClick={()=>approve(task,quick.approval!)}>Согласовать</button>)}
+    {quick.forward&&approve&&<span className="approval-branch-forward"><button type="button" className="button secondary" disabled={busy||!quick.branchLead}
+     title={quick.branchLead?'Следующий этап: '+quick.branchLead.name:'Руководитель филиала не настроен или совпадает с участником запроса'}
+     onClick={()=>approve(task,quick.approval!,true)}>Согласовать и передать рукфилу</button>
+     <small>{quick.branchLead?quick.branchLead.name:'Проверьте назначение рукфила в настройках согласований'}</small></span>}
+    {button&&item.tab!=='info'&&<button type="button" className="button secondary" disabled={busy} onClick={()=>void open(task.id,item.tab)}>{quick.approval||quick.accept?'Подробнее':button}<ArrowRight size={15}/></button>}
    </div>
   </article>;
  }

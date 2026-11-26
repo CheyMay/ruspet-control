@@ -1,6 +1,8 @@
 import assert from 'node:assert/strict';
 import {test} from 'node:test';
 import {workCount,workQueue} from '../shared/work-queue.js';
+import {quickWorkActions} from '../shared/work-actions.js';
+import {branchApprovalLead} from '../shared/branches.js';
 import type {Approval,Bootstrap,ControlRequest,Task,User} from '../shared/types.js';
 
 const now='2026-11-20T12:00:00+03:00',today='2026-11-20T16:00:00+03:00',tomorrow='2026-11-21T09:00:00+03:00';
@@ -19,6 +21,29 @@ function approval(id:string,taskId:string,owner:string,values:Partial<Approval>=
 const data=(actor:User,values:Partial<Bootstrap>):Bootstrap=>({
  user:actor,users:[actor],tasks:[],approvals:[],controls:[],submissions:[],serverTime:now,
  events:[],findings:[],reports:[],notifications:[],rulesVersion:1,source:null,rules:{} as Bootstrap['rules'],metrics:{} as Bootstrap['metrics'],...values
+});
+
+test('ordinary assignees get close and deadline shortcuts for overdue and today while self tasks complete directly',()=>{
+ const worker=user('worker'),tasks=[task('late','worker','2026-11-19T12:00:00+03:00'),task('today','worker',today)];
+ const state=data(worker,{tasks}),queue=workQueue(state);
+ for(const item of [queue.overdue[0],queue.today[0]]){const quick=quickWorkActions(state,item);assert.equal(quick.finish,'submit');assert(quick.deadline);}
+ const self=task('self','worker',today,{creator_id:'worker'}),own=data(worker,{tasks:[self]});
+ assert.equal(quickWorkActions(own,workQueue(own).today[0]).finish,'complete');
+ const awaiting=data(worker,{tasks,pendingAssignmentIds:['late']});assert.equal(quickWorkActions(awaiting,workQueue(awaiting).overdue[0]).finish,null);
+ const readonly=data(worker,{tasks:[{...tasks[0],workspace_read_only:true}]});
+ const row={...queue.overdue[0],task:readonly.tasks[0]};assert.equal(quickWorkActions(readonly,row).finish,null);assert.equal(quickWorkActions(readonly,row).deadline,false);
+});
+
+test('quick approval and result acceptance belong to the current actor and keep branch responsibilities separate from the sales role',()=>{
+ const creator=user('creator'),head={...user('head','sales_head'),branch_id:'Головной офис / Продажи'},lead=user('lead','branch_manager');lead.branch_id='Краснодар';
+ const request=approval('a','low','creator'),low=task('low','worker',today,{creator_id:'creator',price:4999.99});
+ const state=data(creator,{users:[creator,head,lead],tasks:[low],approvals:[request],branchApprovalLeads:[{branchId:'Крым',userId:head.id},{branchId:'Краснодар',userId:lead.id}]});
+ const quick=quickWorkActions(state,workQueue(state).next[0]);assert.equal(quick.approval?.id,request.id);assert(quick.forward);assert.equal(quick.branchLead?.id,head.id);
+ assert.equal(branchApprovalLead('Краснодар',state.users,state.branchApprovalLeads)?.id,lead.id);
+ const missing={...state,branchApprovalLeads:[{branchId:'Крым',userId:null}]};assert.equal(quickWorkActions(missing,workQueue(missing).next[0]).branchLead,null);
+ const high={...state,tasks:[{...low,price:5000}]};assert.equal(quickWorkActions(high,workQueue(high).next[0]).forward,false);
+ const review=data(creator,{tasks:[{...low,status:'review'}]});assert(quickWorkActions(review,workQueue(review).next[0]).accept);
+ const foreign=data(user('worker'),{tasks:[{...low,status:'review'}]});assert.equal(quickWorkActions(foreign,workQueue(foreign).waiting[0]).accept,false);
 });
 
 test('personal work queue separates expired tasks, remaining deadlines, next steps and waiting without duplicates',()=>{

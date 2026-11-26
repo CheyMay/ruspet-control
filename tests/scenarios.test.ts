@@ -531,7 +531,7 @@ test('bot lists four tasks per screen, preserves the search page and keeps full 
  const onlyTask=second.buttons.flat().find(b=>b.text.startsWith('#'));assert(onlyTask);
  const card=await botClick(anna,channel,onlyTask.token);
  assert.match(card.text,/Крайний срок/);assert.match(card.text,/&lt;28 мм&gt;/);assert(!card.text.includes('Последняя строка техзадания'));
- assert(card.text.length<500);assert.equal(card.buttons[0][0].text,'Добавить в мой план');
+ assert(card.text.length<500);assert.equal(card.buttons[0][0].text,'Сдать результат');
  const details=await botClick(anna,channel,botButton(card,'Описание'));assert.match(details.text,/<b>Описание/);assert(!details.text.includes('Номер партии'));
  const end=await botClick(anna,channel,botButton(details,'Продолжение →'));assert.match(end.text,/Последняя строка техзадания/);
  const fields=await botClick(anna,channel,botButton(details,'Поля задачи'));assert.match(fields.text,/Номер партии: Тест 26/);assert(!fields.text.includes('Сверить позиции'));

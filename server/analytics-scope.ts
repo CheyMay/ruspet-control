@@ -1,3 +1,4 @@
+import {branchApprovalLeads} from './branch-approvals.js';
 import type {Db} from './db.js';
 import type {Task,User} from '../shared/types.js';
 import type {AnalyticsAccess,AnalyticsGroup} from '../shared/team-analytics.js';
@@ -63,6 +64,10 @@ export async function loadAnalyticsScope(user:User,db:Db){
   if(managers.size!==1)continue;
   const manager=byId.get([...managers][0]);
   if(manager&&!manager.root_access&&(manager.role==='director'||manager.role==='sales_head'))leadershipByBranch.set(branch,manager);
+ }
+ for(const binding of await branchApprovalLeads(db)){
+  const person=binding.userId?byId.get(binding.userId):undefined;
+  if(person&&!person.root_access&&salesBranches.includes(binding.branchId))leadershipByBranch.set(binding.branchId,person);
  }
  const directBranches=new Set([user.branch_id]);
  if(salesLead)for(const p of immediate.values())if(sales.has(p.id)&&salesUnit(p.branch_id))directBranches.add(p.branch_id);

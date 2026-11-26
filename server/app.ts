@@ -1,3 +1,4 @@
+import {branchApprovalLeads,saveBranchApprovalLeads} from './branch-approvals.js';
 import {importStaff,staffSummary} from './staff-import.js';
 import {listRegistrations,reviewRegistration} from './telegram-onboarding.js';
 import {telegramLoginRouter,sessionUser,clearBrowserLogin,setTelegramBinding,readCookie,sessionCookieOptions,sessionIdleInterval,touchSession} from './telegram-login.js';
@@ -388,6 +389,14 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const {enabled}=z.object({enabled:z.boolean()}).parse(req.body);
   res.json(await setApprovalWatch(req.actor,String(req.params.id),enabled));
  });
+ app.get('/api/approval-branch-leads',async(req,res)=>{
+  assert(req.actor.role==='admin',403,'Назначения филиалов видит администратор.');
+  res.json(await branchApprovalLeads(pool));
+ });
+ app.put('/api/approval-branch-leads',async(req,res)=>{
+  const rows=z.array(z.object({branchId:z.string().trim().min(1).max(100),userId:z.string().min(1).max(100).nullable()})).min(1).max(100).parse(req.body);
+  res.json(await saveBranchApprovalLeads(req.actor,rows));
+ });
  app.get('/api/approval-hierarchy',async(req,res)=>{
   assert(req.actor.role==='admin',403,'Маршрут настраивает администратор.');
   res.json(await approvalHierarchy(pool));
@@ -455,7 +464,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  });
  app.post('/api/tasks/:id/approvals',async(req,res)=>taskWrite(req,res,201,()=>service.requestApproval(req.actor,String(req.params.id),z.object({type:z.enum(['deadline','completion']),reason:text,plan:z.string().trim().max(4000).optional(),proposedDeadline:date.optional(),expectedVersion:z.number().int().positive()}).parse(req.body))));
  app.post('/api/approvals/history-refresh',async(req,res)=>res.json(await service.queueApprovalHistories(req.actor)));
- app.post('/api/approvals/:id/decision',async(req,res)=>taskWrite(req,res,200,()=>service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),approvedDeadline:date.optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
+ app.post('/api/approvals/:id/decision',async(req,res)=>taskWrite(req,res,200,()=>service.decide(req.actor,z.uuid().parse(req.params.id),z.object({decision:z.enum(['approve','reject','later','clarify']),comment:z.string().trim().max(4000).default(''),expectedStep:z.number().int().min(0).optional(),expectedRevision:z.number().int().positive().optional(),approvedDeadline:date.optional(),forwardToBranch:z.boolean().optional(),remindMinutes:z.number().int().min(5).max(1440).optional()}).parse(req.body))));
  app.post('/api/approvals/:id/clarification',async(req,res)=>{
   const {answer,expectedRevision}=z.object({answer:z.string().trim().min(5).max(4000),expectedRevision:z.number().int().positive().optional()}).parse(req.body);
   await taskWrite(req,res,200,()=>service.answerClarification(req.actor,z.uuid().parse(req.params.id),answer,expectedRevision));

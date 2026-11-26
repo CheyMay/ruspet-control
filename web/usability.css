@@ -36,6 +36,8 @@ main select:disabled { opacity:.6; }
  .filters :is(select,input:not([type="checkbox"])) { min-height:42px; }
 }
 @media(max-width:490px) {
+ .topbar .breadcrumb { min-width:0; }
+ .topbar .breadcrumb strong { overflow:hidden; text-overflow:ellipsis; }
  .breadcrumb>span,.breadcrumb>svg,.topbar .user-switch .avatar { display:none; }
  .topbar .topbar-right { min-width:0; gap:5px; }
  .topbar .user-switch { padding-inline-start:0; gap:4px; }

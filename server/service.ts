@@ -1,4 +1,5 @@
-import {activeTaskApproval,canReview,canSetApprovedDeadline,completionApprovalRoute} from '../shared/actions.js';
+import {branchApprovalLeads,lowBudgetDeadlineRoute,resolveBranchApprovalLead} from './branch-approvals.js';
+import {activeTaskApproval,canForwardDeadlineToBranch,canReview,canSetApprovedDeadline,completionApprovalRoute} from '../shared/actions.js';
 import {loadDeadlineHistories,queueDeadlineHistories} from './deadline-history.js';
 import {taskPrice} from '../shared/pricing.js';
 import {cancelTaskApproval,keepTaskApprovals} from './approval-updates.js';
@@ -6,7 +7,7 @@ import {delegatedTaskAccepted} from './delegation-review.js';
 import {taskEditAccess} from './task-edit-permissions.js';
 import {controlsTask,staffWorkIds} from './staff-rollout.js';
 import {approvalHierarchy,approvalScope,approvalWatch,branchApprover,creatorFirstRoute,hierarchyRoute,requiresDeadlineApproval} from './approval-hierarchy.js';
-import {branchCovers,unassignedBranch} from '../shared/branches.js';
+import {branchCovers,canApproveBranch,unassignedBranch} from '../shared/branches.js';
 import {lockDelegationChain,requireAcceptedDelegations} from './delegation-lock.js';
 import {recordTaskAction} from './undo-record.js';
 import {enqueueBitrixOperation} from './bitrix-live.js';
@@ -105,17 +106,20 @@ export async function bootstrap(user:User,light=false,compactWorkspace=false,inc
   WHERE p.task_id=ANY($1) AND t.status='active' AND p.state='pending' AND p.task_version=t.version AND p.requester_id=t.assignee_id`,[ids])).rows;
  const controls=(await db.query('SELECT * FROM control_requests WHERE task_id=ANY($1) ORDER BY created_at DESC',[ids])).rows
   .filter(c=>!paused.has(c.task_id)||!['waiting','escalated'].includes(c.state));
+ const branchLeads=await branchApprovalLeads(db);
  const people=new Set([...tasks.flatMap(t=>[t.assignee_id,t.creator_id]),...approvals.flatMap((a:Approval)=>a.route.map(step=>step.userId))]);
- const users=(await db.query<User>('SELECT * FROM users ORDER BY name')).rows.filter(u=>globalAccess(user)||branchCovers(user.branch_id,u.branch_id)||u.id===user.id||people.has(u.id));
+ for(const binding of branchLeads)if(binding.userId&&tasks.some(task=>branchCovers(binding.branchId,task.branch_id)))people.add(binding.userId);
+ const users=(await db.query<User>('SELECT * FROM users ORDER BY name')).rows.filter(u=>globalAccess(user)||branchCovers(user.branch_id,u.branch_id)||u.id===user.id||people.has(u.id)||
+  canApproveBranch(u)&&tasks.some(task=>branchCovers(u.branch_id,task.branch_id)));
  const teamIds=await teamMemberIds(user,db);
  const pendingAssignmentIds=includePrivate?await pendingAssignmentTasks(user,ids,db):[];
  const pendingAssignments=pendingAssignmentIds.length;
- if(light)return {pendingAssignments,pendingAssignmentIds,approvalScope:scope,user,users,tasks,teamIds,salesTeams,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
+ if(light)return {branchApprovalLeads:branchLeads,pendingAssignments,pendingAssignmentIds,approvalScope:scope,user,users,tasks,teamIds,salesTeams,approvals,editRequests,controls,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:null,findings:[],events:[],notifications:[],reports:[]};
  const available=(await db.query('SELECT * FROM tasks')).rows.filter(t=>canAccess(user,t)||taskIndex.has(t.id));
  const selection={total:available.length,included:tasks.length,checklist:available.filter(t=>exclusionReason(t)==='checklist').length,unfinishedAnalysis:available.filter(t=>exclusionReason(t)==='unfinished_analysis').length};
  const lastTaskChange=(await db.query("SELECT max(created_at) AS at FROM task_events WHERE task_id=ANY($1) AND (kind=ANY($2) OR (data ? 'before' AND data ? 'after'))",[ids,['created','task_edited','task_completed','deadline_changed','review_submitted','review_returned','action_undone']])).rows[0].at;
  const deadlineHistory=await loadDeadlineHistories(db,[...new Set(approvals.map(a=>a.task_id))]);
- return {analyticsAccess:includePrivate?await analyticsAccess(user,db):null,pendingAssignments,pendingAssignmentIds,
+ return {branchApprovalLeads:branchLeads,analyticsAccess:includePrivate?await analyticsAccess(user,db):null,pendingAssignments,pendingAssignmentIds,
  deadlineApproverId:hierarchy?.sales_head_id??null,deadlineHistory,approvalScope:scope,lastTaskChange,selection,user,users,
  tasks:compactWorkspace?tasks.map(({source_fields,...task})=>({...task,price:task.price??taskPrice({price:task.price,source_fields})})):tasks,
  teamIds,salesTeams,approvals,editRequests,controls,approvalComments:(await db.query('SELECT * FROM comments WHERE task_id=ANY($1) AND approval_id IS NOT NULL AND withdrawn_at IS NULL ORDER BY created_at',[ids])).rows,submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=ANY($1) ORDER BY submitted_at DESC',[ids])).rows,rules:cfg.config,rulesVersion:cfg.version,serverTime:new Date().toISOString(),metrics:metrics(tasks,approvals,controls),source:(await db.query('SELECT file_name,sheet_name,row_count,imported_at,assumptions FROM import_batches ORDER BY imported_at DESC LIMIT 1')).rows[0]||null,
@@ -165,7 +169,7 @@ export async function detail(user:User,id:string,db:Db=pool,includeDeadlineHisto
  const deadlineHistory=includeDeadlineHistory&&approvals.length?(await loadDeadlineHistories(db,[id]))[id]??[]:[];
  const personalPlan=includePrivate?await taskPersonalPlan(user,task,db):null;
  return {
-  task:{...task,bitrix_id:imported.bitrixId},personalPlan,assignmentReceipt:await taskAssignmentReceipt(task,personalPlan,db),deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,
+  branchApprovalLeads:await branchApprovalLeads(db),task:{...task,bitrix_id:imported.bitrixId},personalPlan,assignmentReceipt:await taskAssignmentReceipt(task,personalPlan,db),deadlineHistory,deadlineApproverId:hierarchy?.sales_head_id??null,approvalScope:approvalScope(hierarchy),approvalProgress,
   editAccess:task.workspace_read_only?{canEdit:false,canRequest:false,canDecide:false,request:null}:await taskEditAccess(user,task,db),
   approvalWatch:task.workspace_read_only?null:await approvalWatch(user,task,db),
   submissions:(await db.query('SELECT * FROM task_submissions WHERE withdrawn_at IS NULL AND task_id=$1 ORDER BY round DESC',[id])).rows,
@@ -271,11 +275,15 @@ async function answerControlCore(user:User,id:string,input:{reason:string;progre
 async function routeFor(db:Db,task:Task,selectors:Rules['routes']['deadline']):Promise<Step[]> {
  const users=(await db.query('SELECT * FROM users ORDER BY id')).rows as User[];
  const labels={branchManager:'Руководитель филиала',salesHead:'Руководитель продаж',director:'Директор',creator:'Постановщик'};
- return selectors.map(selector=>{
-  const scoped=selector==='branchManager'?branchApprover(users,task):undefined;
+ const bindings=selectors.includes('branchManager')?await branchApprovalLeads(db):[];
+ const assigned=bindings.some(item=>branchCovers(item.branchId,task.branch_id))?await resolveBranchApprovalLead(db,task):null;
+ const route=selectors.map(selector=>{
+  const scoped=selector==='branchManager'?(assigned??branchApprover(users,task)):undefined;
   const matches=selector==='branchManager'?(scoped?[scoped]:[]):users.filter(u=>selector==='creator'?u.id===task.creator_id:u.role===(selector==='salesHead'?'sales_head':'director'));
   assert(matches.length===1,422,matches.length?`Неоднозначный маршрут: несколько согласующих «${labels[selector]}». Настройте реальные роли и филиалы.`:`Не назначен согласующий: ${labels[selector]}`);return {userId:matches[0].id,label:labels[selector]};
  });
+ return route.filter((step,index)=>selectors[index]!=='salesHead'||
+  !selectors.some((selector,position)=>selector==='branchManager'&&route[position].userId===step.userId));
 }
 async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'completion';reason:string;plan?:string;proposedDeadline?:string;expectedVersion:number}) {
  return transaction(async db=>{
@@ -291,7 +299,8 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   if(input.type==='completion'&&taskRequiresResult(task))assert(plan.length>=min,400,`Результат: минимум ${min} символов.`);
   if(input.type==='deadline') { assert(input.proposedDeadline&&new Date(input.proposedDeadline)>new Date(),400,'Новый срок должен быть в будущем.'); assert(new Date(input.proposedDeadline).getTime()!==new Date(task.deadline||0).getTime(),400,'Новый срок совпадает с текущим.'); }
   const hierarchy=await approvalHierarchy(db,true);
-  const creatorRoute=input.type==='deadline'&&hierarchy?.creator_first?await creatorFirstRoute(db,hierarchy,task,user.id):undefined;
+  const lowRoute=input.type==='deadline'?lowBudgetDeadlineRoute(task,user.id):undefined;
+  const creatorRoute=lowRoute!==undefined?lowRoute:input.type==='deadline'&&hierarchy?.creator_first?await creatorFirstRoute(db,hierarchy,task,user.id):undefined;
   if(input.type==='deadline'&&(creatorRoute===null||creatorRoute===undefined&&!requiresDeadlineApproval(hierarchy,task,user.id))){
    const next=(await db.query<Task>('UPDATE tasks SET deadline=$2,transfer_count=transfer_count+1,version=version+1,updated_at=now() WHERE id=$1 RETURNING *',[id,input.proposedDeadline])).rows[0];
    await adapters.tasks.applyApprovedChange(db,next,task.version);
@@ -315,7 +324,7 @@ async function requestApprovalCore(user:User,id:string,input:{type:'deadline'|'c
   return {id:approvalId};
  });
 }
-export async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'|'later'|'clarify';comment:string;expectedStep?:number;expectedRevision?:number;approvedDeadline?:string;remindMinutes?:number}) {
+export async function decideCore(user:User,id:string,input:{decision:'approve'|'reject'|'later'|'clarify';comment:string;expectedStep?:number;expectedRevision?:number;approvedDeadline?:string;remindMinutes?:number;forwardToBranch?:boolean}) {
  return transaction(async db=>{
   const first=(await db.query('SELECT task_id FROM approvals WHERE id=$1',[id])).rows[0]; assert(first,404,'Согласование не найдено.');
   const task=await taskFor(db,first.task_id,user,true);
@@ -332,6 +341,20 @@ export async function decideCore(user:User,id:string,input:{decision:'approve'|'
   if(a.task_version!==task.version) {
    await db.query("UPDATE approvals SET state='stale' WHERE id=$1",[id]); await event(db,task.id,user.id,'approval_stale','Согласование остановлено: задача изменилась',{approvalId:id});
    return {state:'stale'};
+  }
+  if(a.branch_review_user_id&&a.current_step>0){
+   const lead=await resolveBranchApprovalLead(db,task);
+   assert(lead.id===a.branch_review_user_id,409,'Руководитель филиала изменился. Откройте актуальный маршрут.');
+  }
+  if(input.forwardToBranch){
+   assert(input.decision==='approve'&&canForwardDeadlineToBranch(user.id,a,task),403,'Передать низкобюджетный перенос руководителю филиала может постановщик на своём этапе.');
+   const lead=await resolveBranchApprovalLead(db,task);
+   assert(lead.id!==user.id&&lead.id!==a.requester_id,422,'Руководитель филиала не может повторно согласовать свой запрос или собственный этап.');
+   const previousRoute=a.route;
+   a.route=[...a.route,{userId:lead.id,label:'Руководитель филиала'}];
+   a.branch_review_user_id=lead.id;
+   await db.query('UPDATE approvals SET route=$2,branch_review_user_id=$3,action_revision=action_revision+1 WHERE id=$1',[id,JSON.stringify(a.route),lead.id]);
+   await event(db,task.id,user.id,'approval_branch_requested','Постановщик передал перенос руководителю филиала',{approvalId:id,previousRoute,route:a.route,branch:task.branch_id,approverId:lead.id});
   }
   if(input.approvedDeadline!==undefined){
    assert(input.decision==='approve'&&canSetApprovedDeadline(user.id,a,task,{

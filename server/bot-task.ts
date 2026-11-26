@@ -1,3 +1,6 @@
+import {resolveBranchApprovalLead} from './branch-approvals.js';
+import {AppError} from './domain.js';
+import {canForwardDeadlineToBranch} from '../shared/actions.js';
 import {approvalChangeLines} from '../shared/approval-changes.js';
 import {canEditTaskPrice} from '../shared/task-edit.js';
 import {button,htmlScreen as baseHtmlScreen,date,type Payload} from './bot-ui.js';
@@ -61,6 +64,13 @@ export async function renderBotTask(u:User,ch:string,p:Payload,db:Db=pool){
      revision:pending.action_revision,values:pending.approved_deadline||pending.proposed_deadline?{deadline:pending.approved_deadline??pending.proposed_deadline!}:{}}),
     ...(canSetApprovedDeadline(u.id,pending,t,{deadlineApproverId:d.deadlineApproverId,creatorApproverId:d.approvalScope?.creatorApproverId})?[form('Выбрать другой срок','approve_with_deadline',pending.id,pending.current_step)]:[])
    ]);
+   if(deadline&&canForwardDeadlineToBranch(u.id,pending,t)){
+    let lead:User|null=null;
+    try{lead=await resolveBranchApprovalLead(db,t)}catch(error){if(!(error instanceof AppError)||error.status!==422)throw error;}
+    if(lead&&lead.id!==u.id&&lead.id!==pending.requester_id)approvalRows.push([button('Согласовать и передать рукфилу','approval_deadline_prepare',
+     {...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision,
+      values:{deadline:pending.approved_deadline??pending.proposed_deadline??'',forwardToBranch:'true'}})]);
+   }
    if(deadline)approvalRows.push([form('Согласовать с комментарием','approve',pending.id,pending.current_step)]);
    approvalRows.push([...(deadline?[]:[button('Принять без комментария','approval_accept_prepare',{...extra,kind:'approve',target:pending.id,step:pending.current_step,revision:pending.action_revision})]),
     form(resultReview?'Вернуть с замечаниями':'Отклонить','reject',pending.id,pending.current_step)],

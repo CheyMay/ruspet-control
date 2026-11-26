@@ -383,8 +383,8 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   }
   if(p.op==='assignee_prepare'){const d=await detail(u,p.id!,db);assert(d.editAccess.canEdit,403,'Нет права редактировать задачу.');const person=(await db.query('SELECT name FROM users WHERE id=$1',[p.target])).rows[0];assert(person,400,'Исполнитель не найден.');return screen(u,ch,'Назначить исполнителем: '+person.name+'?',[[button('Указать причину','form',{kind:'edit_assignee',id:p.id,version:p.version,target:p.target})],[button('Отмена','cancel')]],db);}
   if(p.op==='accept_prepare')return screen(u,ch,`Принять результат по задаче #${p.id} без комментария?`,[[button('Да, принять результат','confirm',{kind:'accept',id:p.id,list:p.list,version:p.version,values:{comment:''}})],[button('Отмена','cancel')]],db);
-  if(p.op==='approval_deadline_prepare')return screen(u,ch,`Согласовать перенос задачи #${p.id} на ${date(p.values?.deadline??null)} МСК?`,[
-   [button('Да, согласовать','confirm',{...p,op:'confirm',values:{comment:''}})],
+  if(p.op==='approval_deadline_prepare')return screen(u,ch,`${p.values?.forwardToBranch==='true'?'Согласовать перенос и передать руководителю филиала':'Согласовать перенос'} задачи #${p.id} на ${date(p.values?.deadline??null)} МСК?`,[
+   [button(p.values?.forwardToBranch==='true'?'Да, передать рукфилу':'Да, согласовать','confirm',{...p,op:'confirm',values:{...p.values,comment:''}})],
    [button('К согласованию','task_approval',{id:p.id,list:p.list})]
   ],db);
   if(p.op==='approval_accept_prepare')return screen(u,ch,`Принять результат по задаче #${p.id} без комментария?`,[
@@ -467,7 +467,7 @@ export async function botClick(u:User,ch:string,token:string):Promise<BotScreen>
   else if(['approve','approve_with_deadline','reject','later','clarify'].includes(p.kind!)){
    const adjusted=p.kind==='approve_with_deadline';
    const r=await decide(u,p.target!,{decision:adjusted?'approve':p.kind as 'approve'|'reject'|'later'|'clarify',
-    comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes,approvedDeadline:adjusted?v.deadline:undefined});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос добавлен в обсуждение. Решение на этом этапе ждёт ответа автора.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':adjusted?'Срок согласован на '+date(v.deadline)+' МСК.':'Согласование завершено.'}
+    comment:v.comment||'',expectedStep:p.step,expectedRevision:p.revision,remindMinutes:p.minutes,forwardToBranch:v.forwardToBranch==='true',approvedDeadline:adjusted?v.deadline:undefined});result=r.state==='stale'?'Задача изменилась. Нужен новый запрос.':p.kind==='clarify'?'Вопрос добавлен в обсуждение. Решение на этом этапе ждёт ответа автора.':p.kind==='later'?'Напоминание назначено через час.':r.state==='pending'?'Ваш этап согласован. Запрос передан следующему руководителю.':p.kind==='reject'?'Запрос отклонён. Причина сохранена.':adjusted?'Срок согласован на '+date(v.deadline)+' МСК.':'Согласование завершено.'}
   else{
    const review=await reviewTask(u,p.id!,p.kind as 'submit'|'accept'|'return'|'complete',v.comment||'',p.version!);
    result=review.state==='review'?(p.kind==='submit'?'Результат передан на приёмку.':'Задача на приёмке.')+' Текущий согласующий указан в карточке.':

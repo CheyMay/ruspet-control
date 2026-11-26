@@ -8,6 +8,7 @@ import {staffWorkIds} from './staff-rollout.js';
 import {isSelfTask} from '../shared/actions.js';
 import {priceBand} from '../shared/pricing.js';
 import {isSalesManager} from '../shared/personal-calendar.js';
+import {branchApprovalLeads,resolveBranchApprovalLead,lowBudgetDeadlineRoute,withBranchReview} from './branch-approvals.js';
 import type {Approval,ApprovalScope,Step,Task,User} from '../shared/types.js';
 
 type Hierarchy={branch_manager_id:string;sales_head_id:string;sales_head_approves_all:boolean;direct_assignee_ids:string[]|null;
@@ -139,6 +140,7 @@ async function applyDirectScope(db:Db,actorId:string,hierarchy:Hierarchy,assigne
 }
 
 export function configuredApprovalRoute(hierarchy:Hierarchy,task:Task,requesterId:string):Step[]|null{
+ const low=lowBudgetDeadlineRoute(task,requesterId);if(low!==undefined)return low;
  const self=isSelfTask(task);
  if(hierarchy.only_self_direct&&self&&requesterId===task.creator_id)return null;
  const creatorRule=task.creator_id===hierarchy.creator_approver_id;
@@ -154,7 +156,9 @@ export function configuredApprovalRoute(hierarchy:Hierarchy,task:Task,requesterI
  return route;
 }
 
-export async function creatorFirstRoute(db:Db,hierarchy:Hierarchy,task:Task,requesterId:string):Promise<Step[]|null>{
+export async function creatorFirstRoute(db:Db,hierarchy:Hierarchy,task:Task,requesterId:string,branchReviewer?:string|null):Promise<Step[]|null>{
+ const low=lowBudgetDeadlineRoute(task,requesterId);
+ if(low!==undefined)return (await withBranchReview(db,task,requesterId,low,branchReviewer))??null;
  const head=hierarchy.sales_head_id;
  if(isSelfTask(task)&&requesterId===task.creator_id)
   return head!==requesterId&&await hasWatch(db,task.id,head)?directRoute(head):null;
@@ -175,7 +179,9 @@ async function alignPolicyRequests(db:Db,actorId:string,hierarchy:Hierarchy,task
    AND (CASE WHEN $5 THEN a.current_step=0 ELSE $1 OR t.creator_id=$2 OR t.assignee_id=ANY($3) END)
   ORDER BY a.id FOR UPDATE OF a`,[hierarchy.only_self_direct,hierarchy.creator_approver_id,hierarchy.extra_deadline_assignee_ids,taskId??null,hierarchy.creator_first]);
  for(const approval of rows){
-  const route=hierarchy.creator_first?await creatorFirstRoute(db,hierarchy,approval.task,approval.requester_id):configuredApprovalRoute(hierarchy,approval.task,approval.requester_id);
+  const calculated=hierarchy.creator_first?await creatorFirstRoute(db,hierarchy,approval.task,approval.requester_id,approval.branch_review_user_id):
+   await withBranchReview(db,approval.task,approval.requester_id,configuredApprovalRoute(hierarchy,approval.task,approval.requester_id),approval.branch_review_user_id);
+  const route=calculated??(priceBand(approval.task)==='low'?[]:null);
   if(!route||route.length===approval.route.length&&route.every((step,i)=>step.userId===approval.route[i].userId))continue;
   const sameApprover=hierarchy.creator_first&&!!route[0]&&route[0].userId===approval.route[approval.current_step]?.userId;
   await db.query(`UPDATE approvals SET route=$2,current_step=0,state=$3,action_revision=action_revision+1,
@@ -205,6 +211,7 @@ export async function applyCreatorFirstToPending(actor:User){
 }
 
 export async function hierarchyRoute(db:Db,hierarchy:Hierarchy,task:Task,requesterId:string){
+ const low=lowBudgetDeadlineRoute(task,requesterId);if(low!==undefined)return low??[];
  if(hierarchy.creator_first)return await creatorFirstRoute(db,hierarchy,task,requesterId)??[];
  const people=(await db.query<User>(`SELECT * FROM users WHERE NOT root_access
   AND (role IN ('branch_manager','admin') OR id=$1 OR id=$2)`,[hierarchy.sales_head_id,task.creator_id])).rows;
@@ -223,11 +230,12 @@ export async function hierarchyRoute(db:Db,hierarchy:Hierarchy,task:Task,request
  }
  const legacy=people.find(person=>person.id===hierarchy.branch_manager_id&&person.role==='branch_manager'&&person.company_branch_access);
  assert(legacy||task.branch_id!==unassignedBranch,422,'Укажите филиал задачи перед согласованием. Обратитесь к администратору.');
- const first=legacy??branchApprover(people,task,hierarchy.branch_manager_id);
+ const bindings=await branchApprovalLeads(db);
+ const first=bindings.some(item=>branchCovers(item.branchId,task.branch_id))?await resolveBranchApprovalLead(db,task):legacy??branchApprover(people,task,hierarchy.branch_manager_id);
  const creator=people.find(person=>person.id===task.creator_id&&person.id!==head.id&&eligible(person)&&canSee(person,task));
  const primary=first&&eligible(first)?{userId:first.id,label:'Руководитель филиала'}:
   creator?{userId:creator.id,label:'Постановщик'}:null;
- const headStep=eligible(head)&&(hierarchy.sales_head_approves_all||!primary||codeRequiresReview(task)||await hasWatch(db,task.id,head.id));
+ const headStep=eligible(head)&&head.id!==primary?.userId&&(hierarchy.sales_head_approves_all||!primary||codeRequiresReview(task)||await hasWatch(db,task.id,head.id));
  const route=[...(primary?[primary]:[]),...(headStep?[{userId:head.id,label:'Руководитель продаж'}]:[])];
  assert(route.length,422,'Для этого запроса нужен другой согласующий. Обратитесь к администратору.');
  return route;

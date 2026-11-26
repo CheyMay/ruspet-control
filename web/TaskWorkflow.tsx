@@ -38,22 +38,24 @@ export function ReviewActions({task,user,busy,act,scope,withdrawsDeadline=false}
  const requiresResult=taskRequiresResult(task);
  return <section className="review-actions"><h3>{task.status==='review'?'Принять результат работы':'Сдать работу на приёмку'}</h3><p>{task.status==='review'?'Примите результат или верните задачу исполнителю с замечаниями.':requiresResult?'Укажите выполненный результат. Задача перейдёт в отдельную очередь приёмки.':'Передайте выполненную задачу постановщику. При необходимости добавьте комментарий.'}</p>{withdrawsDeadline&&<p className="muted">{deadlineWithdrawalNote}</p>}<label>{task.status==='review'?'Комментарий (при возврате обязателен)':requiresResult?'Результат работы':'Результат или комментарий · необязательно'}<textarea value={comment} maxLength={4000} onChange={e=>setComment(e.target.value)} placeholder="Что выполнено, где результат или что нужно исправить…"/></label><div className="drawer-actions">{(task.status==='review'?['accept','return']:['submit']).map(action=><button key={action} className={`button ${action==='return'?'secondary':'primary'}`} disabled={busy||((action==='return'||action==='submit'&&requiresResult)&&comment.trim().length<5)} onClick={()=>void act(`/tasks/${task.id}/review`,{action,comment,expectedVersion:task.version}).then(ok=>{if(ok)setComment('');})}>{({submit:'Передать на приёмку',accept:'Принять и завершить',return:'Вернуть в работу'} as Record<string,string>)[action]}</button>)}</div></section>;
 }
-export function CompleteTaskDialog({task,users,busy,error,save,close,withdrawsDeadline=false}:{
- task:Task;users:User[];busy:boolean;error:string;save:(comment:string)=>Promise<boolean>;close:()=>void;withdrawsDeadline?:boolean;
+export function CompleteTaskDialog({task,users,busy,error,save,close,withdrawsDeadline=false,action='complete'}:{
+ task:Task;users:User[];busy:boolean;error:string;save:(comment:string)=>Promise<boolean>;close:()=>void;withdrawsDeadline?:boolean;action?:'complete'|'submit'|'accept';
 }){
  const [comment,setComment]=useState('');
- const requiresResult=taskRequiresResult(task);
+ const requiresResult=action!=='accept'&&taskRequiresResult(task);
+ const title=action==='accept'?'Принять результат':action==='submit'?'Сдать результат':'Завершить задачу';
  return <div className="modal-backdrop"><form className="modal task-editor" role="dialog" aria-modal="true" aria-labelledby="complete-task-heading"
   onSubmit={async event=>{event.preventDefault();if(await save(comment))close();}}>
-  <div className="panel-heading"><h2 id="complete-task-heading">Завершить задачу</h2>
+  <div className="panel-heading"><h2 id="complete-task-heading">{title}</h2>
    <button className="icon-button" type="button" disabled={busy} onClick={close} aria-label="Закрыть">✕</button></div>
   <p className="eyebrow">#{taskNumber(task)}</p><h3>{task.title}</h3>
   <TaskPeople task={task} users={users}/>
+  {action==='submit'&&<p className="muted">Результат будет передан постановщику на приёмку.</p>}
   {withdrawsDeadline&&<p className="muted">{deadlineWithdrawalNote}</p>}
   <label>{requiresResult?'Результат работы · обязательно':'Результат или комментарий · необязательно'}<textarea required={requiresResult} minLength={requiresResult?5:undefined} maxLength={4000} value={comment} onChange={event=>setComment(event.target.value)}/></label>
   {error&&<p className="alert error" role="alert">{error}</p>}
   <div className="drawer-actions"><button type="button" className="button secondary" disabled={busy} onClick={close}>Отмена</button>
-   <button type="submit" className="button primary" disabled={busy||task.status==='completed'}>{task.status==='completed'?'Задача завершена':'Завершить задачу'}</button></div>
+   <button type="submit" className="button primary" disabled={busy||task.status==='completed'}>{task.status==='completed'?'Задача завершена':title}</button></div>
  </form></div>;
 }
 const localDate=(value:string|null|undefined)=>value?new Date(new Date(value).getTime()+10800000).toISOString().slice(0,16):'';

@@ -1,3 +1,4 @@
+import {branchApprovalLead} from '../shared/branches.js';
 import {StaffOnboarding} from './StaffOnboarding.js';
 import {BitrixArchiveStatus} from './BitrixArchiveStatus.js';
 import {PilotReadiness} from './PilotReadiness.js';
@@ -69,7 +70,7 @@ import {approvalChangeLines} from '../shared/approval-changes.js';
 import { CompleteTaskDialog,ReviewActions,TaskEditor,TaskPriceEditor } from './TaskWorkflow.js';
 import {TaskPeople} from './TaskPeople.js';
 import {TaskMeta} from './TaskMeta.js';
-import {activeTaskApproval,approvalTurn,canReview,canComplete,canSetApprovedDeadline,taskNextAction} from '../shared/actions.js';
+import {activeTaskApproval,approvalTurn,canReview,canComplete,canSetApprovedDeadline,canForwardDeadlineToBranch,taskNextAction} from '../shared/actions.js';
 import { History as TaskHistory } from './History.js';
 import { Operations } from './Operations.js';
 import {api,ApiError,loadWorkspace,viewAs} from './api.js';
@@ -132,6 +133,13 @@ export function App(){
  const [discussionFocus,setDiscussionFocus]=useState<string>();
  const [editor,setEditor]=useState<{task:Task|null;copyOf?:Task;companyId?:string;parent?:Task}|null>(null);
  const [completingTask,setCompletingTask]=useState<Task|null>(null);
+ const [completionMode,setCompletionMode]=useState<'complete'|'submit'|'accept'>('complete');
+ const [completionApproval,setCompletionApproval]=useState<Approval|null>(null);
+ function beginCompletion(task:Task,mode?:'complete'|'submit'|'accept',approval?:Approval){
+  if(!data)return;
+  setError('');setCompletionMode(mode??(canComplete(data.user,task,data.approvalScope)?'complete':'submit'));
+  setCompletionApproval(approval??null);setCompletingTask(task);
+ }
  const [boardMove,setBoardMove]=useState<{id:string;deadline?:string}|null>(null);
  const [okbCompany,setOkbCompany]=useState<string|null>(null);
  const refreshGeneration=useRef(0),detailGeneration=useRef(0),toastTimer=useRef<ReturnType<typeof setTimeout>|null>(null);
@@ -446,7 +454,7 @@ export function App(){
      {!viewingEmployee&&!t.workspace_read_only&&t.status==='review'&&canReview(data!.user,t)&&approval?.type!=='deadline'&&(!approval?.clarification_requested_at||!!approval.clarification_answered_at)&&
       <button type="button" className="button primary" disabled={busy} onClick={()=>void act(`/tasks/${t.id}/review`,{action:'accept',comment:'',expectedVersion:t.version},'POST','Результат принят, задача завершена.')}>Принять результат</button>}
      {!viewingEmployee&&!t.workspace_read_only&&canComplete(data!.user,t,data!.approvalScope)&&approval?.type!=='completion'&&!data!.pendingAssignmentIds?.includes(t.id)&&
-      <button type="button" className="button secondary" disabled={busy} onClick={()=>{setError('');setCompletingTask(t);}}>Завершить</button>}
+      <button type="button" className="button secondary" disabled={busy} onClick={()=>{beginCompletion(t);}}>Завершить</button>}
      {!viewingEmployee&&!t.workspace_read_only&&t.status==='active'&&approval?.type==='deadline'&&allowedRequest(data!.user,t)&&
       !canComplete(data!.user,t,data!.approvalScope)&&!data!.pendingAssignmentIds?.includes(t.id)&&
       <button type="button" className="button secondary" disabled={busy} onClick={()=>void openTask(t.id,'result')}>Сдать результат</button>}
@@ -580,10 +588,15 @@ export function App(){
    open={area=>go(area)}/>}
   {error&&<div className="alert error" role="alert"><AlertCircle size={18}/><span>{error}</span><button className="icon-button" aria-label="Скрыть ошибку" onClick={()=>setError('')}><X size={16}/></button></div>}
   {!viewingEmployee&&!selected&&page!=='analytics'&&page!=='guide'&&<UndoAction refreshKey={data.user.id+data.serverTime} busy={busy} act={act}/>}
-  {page==='actions'&&<ActionWorkspace key={data.user.id+':'+workEntry.visit} data={data} initial={workEntry.bucket} queue={myWork} open={openTask} complete={viewingEmployee?undefined:task=>{setError('');setCompletingTask(task);}} busy={busy}/>}
+  {page==='actions'&&<ActionWorkspace key={data.user.id+':'+workEntry.visit} data={data} initial={workEntry.bucket} queue={myWork} open={openTask}
+   complete={viewingEmployee?undefined:task=>beginCompletion(task)} deadline={viewingEmployee?undefined:task=>{setError('');setBoardMove({id:task.id});}}
+   accept={viewingEmployee?undefined:(task,approval)=>beginCompletion(task,'accept',approval)}
+   approve={viewingEmployee?undefined:(_task,approval,forward)=>{void act('/approvals/'+approval.id+'/decision',{
+    decision:'approve',comment:'',expectedStep:approval.current_step,expectedRevision:approval.action_revision,...(forward?{forwardToBranch:true}:{})
+   },'POST',forward?'Перенос передан руководителю филиала':'Перенос согласован');}} busy={busy}/>}
   {page==='bot'&&<BotConversation key={data.user.id} textDraft={new URLSearchParams(location.search).get('draft')==='text'} refresh={refresh}/>}
   {page==='overview'&&<ManagerHome data={data} queue={myWork} open={openTask} actions={bucket=>go('actions',undefined,undefined,bucket)} tasks={filter=>go('tasks',filter,'mine')} placed={()=>go('tasks','all','created')}
-   complete={viewingEmployee?undefined:task=>{setError('');setCompletingTask(task);}} busy={busy}
+   complete={viewingEmployee?undefined:task=>{beginCompletion(task);}} busy={busy}
    team={teamAllowed||data.salesTeams?()=>go('tasks','all','team'):undefined}
    sales={data.salesTeams?()=>go('tasks','all','sales'):undefined} calendar={viewingEmployee?undefined:()=>go('calendar')}/>}
 
@@ -671,7 +684,7 @@ export function App(){
          {detail.editAccess.request?.state==='pending'?'К запросу правки':'Запросить редактирование'}
         </button>}
       </>}
-      {cardCanComplete&&<button type="button" className="button primary" disabled={busy} onClick={()=>{setError('');setCompletingTask(detail!.task);}}>Завершить задачу</button>}
+      {cardCanComplete&&<button type="button" className="button primary" disabled={busy} onClick={()=>{beginCompletion(detail!.task);}}>Завершить задачу</button>}
       <details key={selected} className="task-card-more" onBlur={e=>{if(!e.currentTarget.contains(e.relatedTarget))e.currentTarget.open=false;}} onKeyDown={e=>{
        if(e.key!=='Escape'||!e.currentTarget.open)return;
        e.stopPropagation();e.currentTarget.open=false;e.currentTarget.querySelector('summary')?.focus();
@@ -819,10 +832,11 @@ export function App(){
    }}/>}
   {commandPanel}
   {editor&&<TaskEditor key={editor.task?.id||editor.copyOf?.id||editor.parent?.id||editor.companyId||'new'} task={editor.task} copyOf={editor.copyOf} parent={editor.parent} companyId={editor.companyId} canLink={canUseOkb(data.user)} availableTasks={data.tasks} showPlanning={!!data.rules.showPlanning} users={data.users} user={data.user} busy={busy} saveError={error} save={async(path,body,method,message)=>{const saved=await act(path,body,method,message,editor.copyOf||editor.parent?id=>void openTask(id):undefined);if(saved)void refreshGroups().catch(()=>{});return saved;}} close={()=>setEditor(null)} onConditional={canOpenWorkspacePage(data.user,'processes')?draft=>{setProcessDraft(draft);setEditor(null);go('processes');}:undefined}/>}
-  {completingTask&&<CompleteTaskDialog key={completingTask.id} task={completingTask} users={data.users} busy={busy} error={error}
+  {completingTask&&<CompleteTaskDialog key={completingTask.id+':'+completionMode} action={completionMode} task={completingTask} users={data.users} busy={busy} error={error}
    withdrawsDeadline={data.approvals.some(approval=>approval.type==='deadline'&&activeTaskApproval(completingTask,approval))}
-   close={()=>setCompletingTask(null)} save={comment=>act('/tasks/'+encodeURIComponent(completingTask.id)+'/review',
-    {action:'complete',comment,expectedVersion:completingTask.version},'POST','Задача завершена')}/>}
+   close={()=>setCompletingTask(null)} save={comment=>completionMode==='accept'&&completionApproval?
+    act('/approvals/'+completionApproval.id+'/decision',{decision:'approve',comment,expectedStep:completionApproval.current_step,expectedRevision:completionApproval.action_revision},'POST','Результат принят'):
+    act('/tasks/'+encodeURIComponent(completingTask.id)+'/review',{action:completionMode,comment,expectedVersion:completingTask.version},'POST',completionMode==='submit'?'Результат передан на приёмку':completionMode==='accept'?'Результат принят':'Задача завершена')}/>}
   {toast&&<div className="toast" role="status"><CheckCheck size={18}/>{toast}</div>}
   {tour&&<WorkspaceTour steps={tour.steps} index={tour.index} change={index=>{showTourStep(tour.steps[index],tour.taskId);setTour({...tour,index});}}
    end={()=>{setTour(null);openGuide();window.scrollTo(0,0);}}/>}
@@ -882,10 +896,17 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
  const deadlineError=!Number.isFinite(finalTime)?'Укажите дату и время.':
   finalTime<=Date.now()&&!alreadySet?'Укажите срок в будущем.':'';
 
- const approve=()=>void act(`/approvals/${a.id}/decision`,{
+ const canForward=canDecide&&canForwardDeadlineToBranch(data.user.id,a,task);
+ const branchLead=canForward&&task?branchApprovalLead(task.branch_id,data.users,taskDetail?.branchApprovalLeads??data.branchApprovalLeads):null;
+ const branchAvailable=branchLead&&branchLead.id!==data.user.id&&branchLead.id!==a.requester_id;
+ const approve=(forward=false)=>void act(`/approvals/${a.id}/decision`,{
   decision:'approve',comment:changedDeadline?draft?.comment??'':comment,expectedRevision:a.action_revision,expectedStep:a.current_step,
+  ...(forward?{forwardToBranch:true}:{}),
   ...(changedDeadline?{approvedDeadline:new Date(finalTime).toISOString()}:{})
  });
+ const forwardButton=canForward?<span className="approval-branch-forward"><button type="button" className="button secondary"
+  disabled={busy||!branchAvailable||!!deadlineError} onClick={()=>approve(true)}>Согласовать и передать рукфилу</button>
+  <small>{branchAvailable?branchLead.name:'Руководитель филиала не настроен или совпадает с участником запроса'}</small></span>:null;
  return <section className={`panel approval-card ${inDrawer?'in-drawer':''}`}>
   <div className="approval-header"><div><span className="eyebrow">{a.type==='deadline'?'ПЕРЕНОС КРАЙНЕГО СРОКА':'ЗАКРЫТИЕ ЗАДАЧИ'} · #{task?taskNumber(task):a.task_id}</span>{!inDrawer&&<button className="approval-title" onClick={()=>void openTask(a.task_id,'approvals')}>{task?.title}<ArrowUpRight size={16}/></button>}</div><Badge state={a.canceled_at?'canceled':a.state==='pending'&&!active?'stale':a.state}/></div>
   <div className="approval-task-meta">
@@ -904,9 +925,10 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
     <textarea rows={2} maxLength={4000} value={draft?.comment??''} disabled={busy}
      onChange={e=>setDeadlineDraft({revision,value:finalDate,comment:e.target.value})}/>
    </label>}
-   <button type="button" className="button primary" disabled={busy||!!deadlineError} onClick={approve}>
+   <div className="approval-primary-actions">
+   <button type="button" className="button primary" disabled={busy||!!deadlineError} onClick={()=>approve()}>
     <Check size={16}/>{changedDeadline?'Согласовать с новым сроком':'Согласовать перенос'}
-   </button>
+   </button>{forwardButton}</div>
    {(deadlineError||changedDeadline)&&<div className="approval-deadline-feedback">
     {deadlineError&&<small className="red-text">{deadlineError}</small>}
     {changedDeadline&&proposed&&<button type="button" className="text-button" disabled={busy} onClick={()=>setDeadlineDraft(null)}>Вернуть предложенный</button>}
@@ -945,7 +967,7 @@ function ApprovalCard({a,data,busy,act,openTask,inDrawer=false,taskDetail}: {
    </>)}
   </details>
   {!viewingEmployee&&canDecide&&<div className="decision-form">
-   <input aria-label="Комментарий или вопрос" placeholder="Комментарий обязателен при отказе или уточнении" maxLength={4000} value={comment} onChange={e=>setComment(e.target.value)}/><div>{!editDeadlineInline&&<button className="button primary" disabled={busy} onClick={approve}><Check size={16}/>{a.current_step<a.route.length-1?"Согласовать и передать":a.type==='completion'?"Принять результат":"Согласовать"}</button>}<button className="button reject" disabled={busy||comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'reject',comment,expectedRevision:a.action_revision,expectedStep:a.current_step})}>{resultReview?"Вернуть с замечаниями":"Отклонить запрос"}</button><button className="button secondary" disabled={busy||comment.trim().length<5} type="button" onClick={async()=>{
+   <input aria-label="Комментарий или вопрос" placeholder="Комментарий обязателен при отказе или уточнении" maxLength={4000} value={comment} onChange={e=>setComment(e.target.value)}/><div>{!editDeadlineInline&&<button className="button primary" disabled={busy} onClick={()=>approve()}><Check size={16}/>{a.current_step<a.route.length-1?"Согласовать и передать":a.type==='completion'?"Принять результат":"Согласовать"}</button>}{!editDeadlineInline&&forwardButton}<button className="button reject" disabled={busy||comment.trim().length<5} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'reject',comment,expectedRevision:a.action_revision,expectedStep:a.current_step})}>{resultReview?"Вернуть с замечаниями":"Отклонить запрос"}</button><button className="button secondary" disabled={busy||comment.trim().length<5} type="button" onClick={async()=>{
     if(await act(`/approvals/${a.id}/decision`,{decision:'clarify',comment,expectedRevision:a.action_revision,expectedStep:a.current_step},'POST','Вопрос добавлен в обсуждение. Ждём ответа.'))setComment('');
    }}>Уточнить</button><button className="text-button" disabled={busy} onClick={()=>void act(`/approvals/${a.id}/decision`,{decision:'later',comment,expectedRevision:a.action_revision,expectedStep:a.current_step,remindMinutes:60})}><Clock3 size={15}/>Напомнить через час</button></div></div>}
 

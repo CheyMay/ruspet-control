@@ -22,7 +22,14 @@ export function canSetApprovedDeadline(userId:string,a:Approval,task:Task|undefi
 }){
  if(a.type!=='deadline'||a.route[a.current_step]?.userId!==userId)return false;
  if(userId===policy.deadlineApproverId&&a.current_step===a.route.length-1)return true;
- return !!task&&userId===policy.creatorApproverId&&task.creator_id===userId&&priceBand(task)==='low';
+ return a.branch_review_user_id===userId&&a.current_step===a.route.length-1||
+  !!task&&task.creator_id===userId&&priceBand(task)==='low';
+}
+export function canForwardDeadlineToBranch(userId:string,a:Approval,task:Task|undefined){
+ return !!task&&priceBand(task)==='low'&&a.type==='deadline'&&activeTaskApproval(task,a)&&
+  task.creator_id===userId&&a.requester_id!==userId&&a.route[a.current_step]?.userId===userId&&
+  a.current_step===a.route.length-1&&!a.branch_review_user_id&&!a.task_change?.routeIssue&&
+  (!a.clarification_requested_at||!!a.clarification_answered_at);
 }
 export function taskNextAction(task:Task,approval?:Approval,_scope?:ApprovalScope|null){
  if(approval&&activeTaskApproval(task,approval)){
