@@ -36,7 +36,7 @@ input::placeholder,textarea::placeholder { color:var(--theme-text-muted); opacit
 @media(max-width:650px) { .appearance-heading { flex-direction:column; gap:10px; } .base-palette-options { grid-template-columns:repeat(2,minmax(0,1fr)); } .appearance-group { margin-top:22px; } .appearance-preview { padding:12px; gap:12px; } }
 
 .wallpaper-options {
- display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;
+ display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,152px),1fr));gap:12px;
  max-inline-size:870px;margin-top:6px;
 }
 .wallpaper-swatch {
@@ -75,20 +75,52 @@ input::placeholder,textarea::placeholder { color:var(--theme-text-muted); opacit
  --wallpaper-dark-shade:#0c15238f;
  --wallpaper-mobile-position:83%;
 }
+:root[data-wallpaper="forest-mist"],.wallpaper-swatch[data-preview="forest-mist"] {
+ --wallpaper-image:url('./assets/forest-mist.webp');
+ --wallpaper-tint:#547f5b;
+ --wallpaper-light-shade:#e9f8ecc0;
+ --wallpaper-light-edge-shade:#e9f8ec73;
+ --wallpaper-dark-shade:#0f211aa0;
+ --wallpaper-mobile-position:62%;
+}
+:root[data-wallpaper="golden-dunes"],.wallpaper-swatch[data-preview="golden-dunes"] {
+ --wallpaper-image:url('./assets/golden-dunes.webp');
+ --wallpaper-tint:#e1b54c;
+ --wallpaper-light-shade:#fff3c999;
+ --wallpaper-dark-shade:#2d240ec7;
+ --wallpaper-mobile-position:71%;
+}
+:root[data-wallpaper="scarlet-canyon"],.wallpaper-swatch[data-preview="scarlet-canyon"] {
+ --wallpaper-image:url('./assets/scarlet-canyon.webp');
+ --wallpaper-tint:#953b45;
+ --wallpaper-light-shade:#f9e5e6bd;
+ --wallpaper-light-edge-shade:#f9e5e673;
+ --wallpaper-dark-shade:#26131ac2;
+ --wallpaper-mobile-position:68%;
+}
+:root[data-wallpaper="lilac-ridges"],.wallpaper-swatch[data-preview="lilac-ridges"] {
+ --wallpaper-image:url('./assets/lilac-ridges.webp');
+ --wallpaper-tint:#9f90d4;
+ --wallpaper-light-shade:#eee6fba8;
+ --wallpaper-dark-shade:#201731b0;
+ --wallpaper-mobile-position:76%;
+}
 .wallpaper-swatch[data-preview]:not([data-preview="plain"]) {
  background-color:var(--wallpaper-tint);
  background-image:var(--wallpaper-image);
 }
 :root[data-wallpaper]:not([data-wallpaper="plain"]) {
  --wallpaper-shade:var(--wallpaper-light-shade,#f7e6ee80);
+ --wallpaper-edge-shade:var(--wallpaper-light-edge-shade,var(--wallpaper-shade));
 }
 :root[data-wallpaper]:not([data-wallpaper="plain"])[data-theme="dark"] {
  --wallpaper-shade:var(--wallpaper-dark-shade,#1b1326c7);
+ --wallpaper-edge-shade:var(--wallpaper-shade);
 }
 :root[data-wallpaper]:not([data-wallpaper="plain"]) body {isolation:isolate}
 :root[data-wallpaper]:not([data-wallpaper="plain"]) body::before {
  content:"";position:fixed;inset:0;z-index:-1;pointer-events:none;
- background:linear-gradient(var(--wallpaper-shade),var(--wallpaper-shade)),var(--wallpaper-image) center / cover no-repeat;
+ background:linear-gradient(var(--wallpaper-shade) 44%,var(--wallpaper-edge-shade)),var(--wallpaper-image) center / cover no-repeat;
 }
 :root[data-wallpaper]:not([data-wallpaper="plain"]) .mobile-workspace {background-color:transparent}
 

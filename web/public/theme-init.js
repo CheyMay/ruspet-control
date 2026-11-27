@@ -27,7 +27,11 @@
   'jdm-sakura':{label:'Лососевый JDM',light:'#f4d3c6',dark:'#382726'},
   'iron-garage':{label:'Железный гараж',light:'#eee0d0',dark:'#2c2521'},
   'capybara-break':{label:'Капибара на перерыве',light:'#ede9ce',dark:'#2c2c21'},
-  'night-frequency':{label:'Ночная частота',light:'#dceaf3',dark:'#13273a'}
+  'night-frequency':{label:'Ночная частота',light:'#dceaf3',dark:'#13273a'},
+  'forest-mist':{label:'Лес в тумане',light:'#dcefe0',dark:'#162f25'},
+  'golden-dunes':{label:'Золотые дюны',light:'#f7e7b5',dark:'#302817'},
+  'scarlet-canyon':{label:'Алый каньон',light:'#f3d6d7',dark:'#3b2028'},
+  'lilac-ridges':{label:'Сиреневые горы',light:'#e8dff5',dark:'#2d2340'}
  };
  const read=key=>{try{return localStorage.getItem(key);}catch{return null;}};
  const save=(key,value)=>{try{localStorage.setItem(key,value);}catch{/* Keep the selection for this tab. */}};
