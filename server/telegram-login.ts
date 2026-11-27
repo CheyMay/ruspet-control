@@ -5,6 +5,7 @@ import QRCode from 'qrcode';
 import {z} from 'zod';
 import {pool,transaction,type Db} from './db.js';
 import {assert} from './domain.js';
+import {accountLock,ensureLinkedAccount} from './account-access.js';
 import type {User} from '../shared/types.js';
 import type {BotScreen} from './bot.js';
 
@@ -44,9 +45,9 @@ async function availability(){
 const requestId=z.uuid();
 const terminal=(row:any)=>Date.parse(row.expires_at)<=Date.now()?'expired':row.state;
 async function browserRequest(db:Db,id:string,req:express.Request,lock=false){
- const token=readCookie(req,browserCookie);assert(token&&/^[a-f0-9]{64}$/.test(token),403,'Откройте QR-код в этом браузере заново.');
+ const token=readCookie(req,browserCookie);assert(token&&/^[a-f0-9]{64}$/.test(token),403,'Начните вход через Telegram в этом браузере заново.');
  const row=(await db.query('SELECT * FROM telegram_login_requests WHERE id=$1 AND browser_hash=$2'+(lock?' FOR UPDATE':''),[id,digest(token)])).rows[0];
- assert(row,404,'Запрос входа не найден. Обновите QR-код.');return row;
+ assert(row,404,'Запрос входа не найден. Начните вход заново.');return row;
 }
 export function telegramLoginRouter(){
  const router=express.Router(),limits=new Map<string,{at:number;n:number}>();
@@ -103,23 +104,29 @@ export async function telegramLoginScreen(approval:string,telegramId:string,deci
  assert(/^[A-Za-z0-9_-]{32}$/.test(approval),400,'Некорректный запрос входа.');
  return transaction(async db=>{
   await db.query('SELECT pg_advisory_xact_lock(431008)');
+  // Account changes lock before updating requests. Use the same order when provisioning a linked profile.
+  if(decision==='approve')await db.query('SELECT pg_advisory_xact_lock($1)',[accountLock]);
   const row=(await db.query('SELECT * FROM telegram_login_requests WHERE approval_hash=$1 FOR UPDATE',[digest(approval)])).rows[0];
-  assert(row&&Date.parse(row.expires_at)>Date.now(),410,'QR-код устарел. Обновите его на странице входа.');
-  const binding=(await db.query(`SELECT b.*,u.name FROM telegram_binding b JOIN users u ON u.id=b.user_id
-   WHERE b.chat_id=$1 AND EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=b.user_id AND a.enabled)
+  assert(row&&Date.parse(row.expires_at)>Date.now(),410,'Код входа устарел. Начните вход заново на сайте.');
+  const binding=(await db.query(`SELECT b.*,u.name,u.root_access,
+   EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id) AS has_account,
+   EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id AND a.enabled) AS account_active
+   FROM telegram_binding b JOIN users u ON u.id=b.user_id WHERE b.chat_id=$1
    AND EXISTS(SELECT 1 FROM telegram_settings WHERE id=1 AND enabled)`,[telegramId])).rows[0];
-  assert(binding,403,'Для входа сначала подключитесь к сотруднику через /start или обратитесь к администратору.');
-  assert(!row.binding_id||row.binding_id===binding.id,403,'Этот QR-код уже открыт другим сотрудником. Обновите код на сайте.');
-  if(row.state!=='pending')return {text:row.state==='approved'||row.state==='consumed'?'Вход уже подтверждён. Вернитесь в браузер.':'Этот запрос входа отменён. Обновите QR-код на сайте.',buttons:[]};
+  assert(binding,403,'Telegram не подключён к учётной записи. Отправьте /start или обратитесь к администратору.');
+  assert(binding.account_active||(!binding.has_account&&!binding.root_access),403,'Вход для этой учётной записи недоступен. Обратитесь к администратору.');
+  assert(!row.binding_id||row.binding_id===binding.id,403,'Этот код входа уже открыт другим сотрудником. Начните вход заново на сайте.');
+  if(row.state!=='pending')return {text:row.state==='approved'||row.state==='consumed'?'Вход уже подтверждён. Вернитесь на страницу входа.':'Этот запрос входа отменён. Начните вход заново на сайте.',buttons:[]};
   if(decision){
    // A confirmation must refer to the same binding that opened the screen.
-   assert(row.binding_id===binding.id,409,'Сначала откройте QR-код заново.');
+   assert(row.binding_id===binding.id,409,'Сначала откройте ссылку для входа с сайта.');
+   if(decision==='approve'&&!binding.has_account)await ensureLinkedAccount({id:binding.user_id,root_access:binding.root_access});
    await db.query('UPDATE telegram_login_requests SET state=$2,decided_at=now() WHERE id=$1',[row.id,decision==='approve'?'approved':'denied']);
-   return {text:decision==='approve'?'Вход подтверждён. Вернитесь в браузер — там откроется ваша учётная запись.':'Вход отклонён.',buttons:[]};
+   return {text:decision==='approve'?'Вход подтверждён. Вернитесь на страницу, с которой начали вход.':'Вход отклонён.',buttons:[]};
   }
   await db.query('UPDATE telegram_login_requests SET binding_id=$2,user_id=$3 WHERE id=$1',[row.id,binding.id,binding.user_id]);
   const origin=process.env.PUBLIC_ORIGIN?new URL(process.env.PUBLIC_ORIGIN).origin:'РУСПЭТ';
-  return {text:`Войти в РУСПЭТ?\n\nСотрудник: ${binding.name}\nСайт: ${origin}\nКод проверки: ${row.verification_code}\n\nСравните код с экраном браузера. Подтверждайте только вход, который начали сами. QR действует 2 минуты.`,buttons:[[{text:'Подтвердить вход',token:'ql_a_'+approval}],[{text:'Отклонить',token:'ql_d_'+approval}]]};
+  return {text:`Войти в РУСПЭТ?\n\nСотрудник: ${binding.name}\nСайт: ${origin}\nКод проверки: ${row.verification_code}\n\nСравните код с экраном входа. Подтверждайте только вход, который начали сами. Код действует 2 минуты.`,buttons:[[{text:'Подтвердить вход',token:'ql_a_'+approval}],[{text:'Отклонить',token:'ql_d_'+approval}]]};
  });
 }
 

@@ -48,7 +48,7 @@ export async function clearBotDraft(u:User,ch:string){await transaction(async db
 export async function botView(u:User,ch:string,p:Payload={op:'home'}):Promise<BotScreen>{
  const result=await renderView(u,ch,p);
  if(p.id&&(taskScreens.includes(p.op)||p.op==='task_reminders'))await saveDialog(pool,u,ch,{payload:{op:'context',id:p.id},fields:[],index:0,values:{}},15);
- if(p.op==='home'&&process.env.PUBLIC_ORIGIN)result.links=[...(result.links||[]),{text:'Войти на сайт',url:new URL('/',process.env.PUBLIC_ORIGIN).href},{text:'Клиенты',url:new URL('/?view=okb&full=1',process.env.PUBLIC_ORIGIN).href}];
+ if(p.op==='home'&&process.env.PUBLIC_ORIGIN)result.links=[...(result.links||[]),{text:'Открыть мобильную версию',url:new URL('/mobile',process.env.PUBLIC_ORIGIN).href},{text:'Клиенты',url:new URL('/?view=okb&full=1',process.env.PUBLIC_ORIGIN).href}];
  if(p.op==='home'||p.op==='task')result.timingKind=p.op==='home'?'menu':'task';
  return result;
 }

@@ -24,11 +24,11 @@ before(async()=>{
  db=await import('../server/db.js');await(await import('../scripts/migrate.js')).migrate();
  const fixtures=await import('../scripts/seed.js');await fixtures.seed();admin=fixtures.demoUsers.find(u=>u.role==='admin')!;
  const hash=await(await import('../server/passwords.js')).hashPassword(password);
- for(const id of [admin.id,'anna','director'])await db.pool.query('INSERT INTO login_accounts(username,user_id,password_hash) VALUES($1,$1,$2)',[id,hash]);
+ for(const id of [admin.id,'anna','ivan'])await db.pool.query('INSERT INTO login_accounts(username,user_id,password_hash) VALUES($1,$1,$2)',[id,hash]);
  await db.pool.query('UPDATE telegram_settings SET enabled=true,delivery=false WHERE id=1');
  await db.pool.query("INSERT INTO telegram_runtime(id,username,last_poll_at,heartbeat_at) VALUES(1,'fixture_qr_bot',now(),now()) ON CONFLICT(id) DO UPDATE SET username=excluded.username,last_poll_at=now(),error=NULL");
  qr=await import('../server/telegram-login.js');pilot=await import('../server/telegram-pilot.js');
- await qr.setTelegramBinding(admin,'anna','81001');await qr.setTelegramBinding(admin,'director','81002');
+ await qr.setTelegramBinding(admin,'anna','81001');await qr.setTelegramBinding(admin,'ivan','81002');
  server=(await import('../server/app.js')).createApp().listen(0,'127.0.0.1');await new Promise<void>(r=>server.once('listening',r));base=`http://127.0.0.1:${(server.address() as {port:number}).port}`;
  const login=await request('/auth/login','POST','',{username:admin.id,password});assert.equal(login.status,200);adminCookie=login.headers.getSetCookie().find(c=>c.startsWith('ruspet_session='))!.split(';')[0];
  process.env.TELEGRAM_PROXY_URL='https://fixture-qr-bridge.example/forward';process.env.TELEGRAM_PROXY_SECRET='fixture-qr-secret';
@@ -76,6 +76,27 @@ test('unknown, group, missing or mismatched Telegram senders cannot authorize; a
  assert.equal(await state(r),'pending');
  await qr.telegramLoginScreen(r.approval,'81001','deny');assert.equal(await state(r),'denied');assert.equal((await consume(r)).status,409);
  await qr.telegramLoginScreen(r.approval,'81001','approve');assert.equal(await state(r),'denied');
+});
+
+test('a trusted legacy Telegram binding can confirm mobile login without first opening the bot menu',async()=>{
+ const user=(await db.pool.query<User>(`SELECT * FROM users u WHERE u.role='employee'
+  AND NOT EXISTS(SELECT 1 FROM login_accounts a WHERE a.user_id=u.id) ORDER BY u.id LIMIT 1`)).rows[0];
+ await qr.setTelegramBinding(admin,user.id,'81003');
+ const r=await create();
+ const account=async()=>(await db.pool.query('SELECT enabled,password_login FROM login_accounts WHERE user_id=$1',[user.id])).rows[0];
+ await assert.rejects(()=>qr.telegramLoginScreen(r.approval,'81003','approve'),/Сначала/);
+ const chat={id:81003,type:'private'},from={id:81003};
+ await pilot.handlePilotUpdate({message:{message_id:1,chat,from,text:'/start login_'+r.approval}});
+ const confirm=sent.at(-1).reply_markup.inline_keyboard[0][0];
+ assert.equal(confirm.text,'Подтвердить вход');
+ assert.equal(await account(),undefined);
+ await pilot.handlePilotUpdate({callback_query:{id:'mobile-confirm',from,data:confirm.callback_data,message:{message_id:100,chat}}});
+ assert.deepEqual(await account(),{enabled:true,password_login:false});
+ const result=await consume(r);
+ assert.equal(result.status,200);
+ assert.equal((await result.json()).user.id,user.id);
+ const {botView}=await import('../server/bot.js');
+ assert((await botView(user,'telegram:81003')).links?.some(link=>link.url==='https://qr.example/mobile'));
 });
 
 test('expiry, regeneration, explicit cancellation and logout invalidate outstanding approvals',async()=>{

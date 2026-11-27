@@ -1,4 +1,5 @@
-import {onboardingMessage,ensureLinkedAccount} from './telegram-onboarding.js';
+import {onboardingMessage} from './telegram-onboarding.js';
+import {ensureLinkedAccount} from './account-access.js';
 import {ownerTimeReply,sendOwnerTimePrompt} from './owner-time.js';
 import {TelegramRejected,type TelegramMethod} from './telegram-errors.js';
 import {telegramLoginScreen} from './telegram-login.js';
@@ -93,7 +94,7 @@ export async function handlePilotUpdate(update:any){
   try{await reply(chat,await telegramLoginScreen(login||loginCallback![2],chat,loginCallback?(loginCallback[1]==='a'?'approve':'deny'):undefined),started,c?m.message_id:undefined);}
   catch(e){
    if(e instanceof TelegramTextUnconfirmed)throw e;
-   await send(chat,{text:e instanceof AppError?e.message:'Не удалось обработать вход. Обновите QR-код на сайте.',buttons:[]},c?m.message_id:undefined);
+   await send(chat,{text:e instanceof AppError?e.message:'Не удалось обработать вход. Начните вход заново на сайте.',buttons:[]},c?m.message_id:undefined);
   }
   finally{await acknowledged;}return;
  }

@@ -19,14 +19,6 @@ export async function staffReviewNotices(db:Db=pool){
    AND NOT EXISTS(SELECT 1 FROM outbox o WHERE o.dedupe_key LIKE 'staff-review:'||r.id||':%')`)).rows;
  for(const request of pending)await notifyStaffReview(db,request.id,request.entered_name);
 }
-export async function ensureLinkedAccount(user:User){
- if(user.root_access)return;
- await transaction(async db=>{
-  await db.query('SELECT pg_advisory_xact_lock(431026)');
-  if(!(await db.query('SELECT 1 FROM login_accounts WHERE user_id=$1',[user.id])).rowCount)
-   await db.query("INSERT INTO login_accounts(username,user_id,password_hash,password_login) VALUES($1,$2,'',false)",[suggestedLogin(user.id),user.id]);
- });
-}
 async function finish(db:Db,request:any,staff:any,actor:User|null,selectedUserId?:string,forceNew=false){
  assert(staff?.enabled,409,'Выберите действующего сотрудника справочника.');
  const selected=selectedUserId||staff.user_id;

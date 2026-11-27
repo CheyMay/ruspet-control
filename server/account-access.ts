@@ -7,8 +7,16 @@ import type {User} from '../shared/types.js';
 import {mayManageStaffIdentity} from '../shared/workspace-access.js';
 
 export type NewAccount={userId:string;name:string;role:User['role'];username:string;password:string};
-const accountLock=431026;
+export const accountLock=431026;
 export const suggestedLogin=(userId:string)=>'staff-'+createHash('sha256').update(userId).digest('hex').slice(0,16);
+export async function ensureLinkedAccount(user:Pick<User,'id'|'root_access'>){
+ if(user.root_access)return;
+ await transaction(async db=>{
+  await db.query('SELECT pg_advisory_xact_lock($1)',[accountLock]);
+  if(!(await db.query('SELECT 1 FROM login_accounts WHERE user_id=$1',[user.id])).rowCount)
+   await db.query("INSERT INTO login_accounts(username,user_id,password_hash,password_login) VALUES($1,$2,'',false)",[suggestedLogin(user.id),user.id]);
+ });
+}
 const validLogin=(username:string)=>/^[a-z0-9._-]{3,32}$/.test(username);
 async function insertAccount(db:Db,user:User,username:string,actorId:string|null):Promise<NewAccount>{
  assert(validLogin(username),400,'Логин: 3–32 символа, латинские строчные буквы, цифры, точка, дефис или подчёркивание.');

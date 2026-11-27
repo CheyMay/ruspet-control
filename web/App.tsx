@@ -482,7 +482,7 @@ export function App(){
  }
  if(loading)return <WorkspaceLoading/>;
  if(!data&&viewingEmployee)return <div className="boot"><h2>Просмотр недоступен</h2><p role="alert">{error}</p><a className="button secondary" href="/">Перейти в панель</a></div>;
- if(!data&&!demo&&!error)return <Login onLogin={value=>{snapshot.current=undefined;pendingWrites.current.clear();setConnectionIssue(null);setData(value);}}/>;
+ if(!data&&!demo&&!error)return <Login mobile={compact} onLogin={value=>{snapshot.current=undefined;pendingWrites.current.clear();setConnectionIssue(null);setData(value);}}/>;
  if(!data)return <div className="boot"><h2>Не удалось открыть систему</h2><p>{error}</p><button onClick={()=>location.reload()}>Попробовать снова</button></div>;
  const connectionNotice=connectionIssue&&<div className="alert error connection-notice" role="status">
   <span>{connectionIssue==='expired'?'Сессия завершилась. Войдите снова в другой вкладке, чтобы сохранить открытые формы.':
