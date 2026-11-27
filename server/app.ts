@@ -14,7 +14,7 @@ import {listCompanies,saveCompany,getCompany,companyContacts,recordCompanyContac
 import {saveSchedule,listSchedules,toggleSchedule,saveProcess,listProcesses,previewProcess,toggleProcess} from './work-design.js';
 import {taskInput,taskPriceInput} from './task-input.js';
 import {formatPrice,priceLabels,priceBand} from '../shared/pricing.js';
-import {changeUserAccount,createUserAccount} from './account-access.js';
+import {changeUserAccount,createUserAccount,ownAccounts,staffAccounts,updateOwnAccount} from './account-access.js';
 import {createEmployeeProfile,linkStaffProfile,updateEmployeeProfile} from './employee-profiles.js';
 import {setStaffRollout,setStaffWorkOverride,staffRolloutStatus} from './staff-rollout.js';
 import {notificationPreference,notificationPreferenceInput,personalNotifications,readNotifications,saveNotificationPreference} from './notifications.js';
@@ -77,6 +77,7 @@ const viewAsReads=new Set(['/bootstrap','/journal','/management/progress','/aler
 const viewAsTaskRead=/^\/tasks\/[^/]+(?:\/(?:integration|delegation|reminders|discussion|results))?$/;
 const viewAsReportRead=/^\/reports\/[a-f0-9-]{36}$/i;
 const hash=(token:string)=>createHash('sha256').update(token).digest('hex');
+const accountUsername=z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,32}$/);
 const webBotChannel=(req:express.Request)=>req.query.channel==='mobile'?'mobile':'preview';
 export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  const app=express(); app.disable('x-powered-by');
@@ -124,7 +125,11 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const account=(await pool.query('SELECT a.password_hash,u.* FROM login_accounts a JOIN users u ON u.id=a.user_id WHERE a.username=$1 AND a.enabled AND a.password_login',[username])).rows[0];
   if(!account||!await verifyPassword(password,account.password_hash)){loginAttempts.set(key,{count:now-(attempt?.since||0)<60_000?(attempt?.count||0)+1:1,since:now-(attempt?.since||0)<60_000?attempt!.since:now});throw new AppError(401,'Неверный логин или пароль.');}
   loginAttempts.delete(key);
-  const token=randomBytes(32).toString('hex');await pool.query("INSERT INTO sessions(token_hash,user_id,expires_at) VALUES($1,$2,now()+$3::interval)",[hash(token),account.id,sessionIdleInterval]);
+  const token=randomBytes(32).toString('hex');
+  const session=await pool.query(`INSERT INTO sessions(token_hash,user_id,expires_at)
+   SELECT $1,user_id,now()+$3::interval FROM login_accounts
+   WHERE user_id=$2 AND username=$4 AND password_hash=$5 AND enabled AND password_login FOR SHARE`,[hash(token),account.id,sessionIdleInterval,username,account.password_hash]);
+  assert(session.rowCount,401,'Данные входа изменились. Войдите снова.');
   res.cookie('ruspet_session',token,sessionCookieOptions());
   await clearBrowserLogin(req,res);
   delete account.password_hash;res.json({user:account});
@@ -135,6 +140,17 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.post('/api/auth/activity',async(req,res)=>{
   await touchSession(readCookie(req,'ruspet_session')!,res);
   res.json({ok:true});
+ });
+ app.get('/api/auth/accounts',async(req,res)=>res.json(await ownAccounts(req.actor,hash(readCookie(req,'ruspet_session')!))));
+ app.put('/api/auth/accounts/:username',async(req,res)=>{
+  const input=z.object({username:accountUsername,password:z.string().min(10).max(200).optional(),
+   currentPassword:z.string().min(1).max(200).optional()}).strict().parse(req.body);
+  const key='account:'+req.actor.id,now=Date.now(),attempt=loginAttempts.get(key);
+  const count=attempt&&now-attempt.since<60_000?attempt.count:0;
+  assert(count<8,429,'Слишком много попыток. Повторите через минуту.');
+  loginAttempts.set(key,{count:count+1,since:count?attempt!.since:now});
+  const result=await updateOwnAccount(req.actor,hash(readCookie(req,'ruspet_session')!),accountUsername.parse(req.params.username),input);
+  loginAttempts.delete(key);res.json(result);
  });
  app.get('/api/bootstrap',compress,async(req,res)=>{
   const {serverTime,...workspace}=await service.bootstrap(req.actor,false,req.query.view==='workspace',req.get(viewAsHeader)===undefined);
@@ -258,6 +274,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.get('/api/system/registrations',async(req,res)=>res.json(await listRegistrations(req.actor)));
  app.post('/api/system/registrations/:id',async(req,res)=>{const input=z.object({action:z.enum(['approve','reject']),staffId:z.uuid().optional(),userId:z.string().max(100).optional(),forceNew:z.boolean().optional(),confirmed:z.literal(true)}).parse(req.body);res.json(await reviewRegistration(req.actor,z.uuid().parse(req.params.id),input));});
  app.get('/api/system/access',async(req,res)=>res.json(await accessDirectory(req.actor)));
+ app.get('/api/system/accounts',async(req,res)=>res.json(await staffAccounts(req.actor)));
  app.post('/api/system/access',async(req,res)=>res.status(201).json(await createEmployeeProfile(req.actor,req.body)));
  app.put('/api/system/staff-directory/:id/profile',async(req,res)=>{
   const {userId}=z.object({userId:z.string().min(1).max(100)}).parse(req.body);
@@ -274,8 +291,11 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  });
  app.patch('/api/system/access/:id',async(req,res)=>res.json(await updateEmployeeProfile(req.actor,String(req.params.id),req.body)));
  app.put('/api/system/access/:id/account/:username',async(req,res)=>{
-  const {action}=z.object({action:z.enum(['enable','disable','reset']),confirmed:z.literal(true)}).parse(req.body);
-  res.json(await changeUserAccount(req.actor,String(req.params.id),String(req.params.username),action));
+  const input=z.discriminatedUnion('action',[
+   z.object({action:z.enum(['enable','disable','reset']),confirmed:z.literal(true)}),
+   z.object({action:z.literal('rename'),username:accountUsername,confirmed:z.literal(true)}),
+  ]).parse(req.body);
+  res.json(await changeUserAccount(req.actor,String(req.params.id),accountUsername.parse(req.params.username),input));
  });
  app.put('/api/owner/bitrix/exchange',async(req,res)=>{
   const {enabled}=z.object({enabled:z.boolean(),confirmed:z.literal(true)}).parse(req.body);
@@ -284,7 +304,7 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
  app.put('/api/system/access/:id/telegram',async(req,res)=>{const input=z.object({telegramId:z.string().trim().max(16).nullable(),confirmed:z.literal(true)}).parse(req.body);res.json(await setTelegramBinding(req.actor,String(req.params.id),input.telegramId));});
  app.get('/api/system/pilot',async(req,res)=>{assert(req.actor.role==='admin',403,'Подготовку пилота видит администратор.');res.json(await pilotReadiness());});
  app.get('/api/system/pilot/queue',async(req,res)=>{assert(req.actor.role==='admin',403,'Очередь пилота видит администратор.');res.json(await pilotQueue());});
- app.post('/api/system/access/:id/account',async(req,res)=>{const input=z.object({username:z.string().trim().toLowerCase().regex(/^[a-z0-9._-]{3,32}$/)}).parse(req.body);res.status(201).json(await createUserAccount(req.actor,String(req.params.id),input.username));});
+ app.post('/api/system/access/:id/account',async(req,res)=>{const input=z.object({username:accountUsername}).parse(req.body);res.status(201).json(await createUserAccount(req.actor,String(req.params.id),input.username));});
  app.get('/api/operations',async(req,res)=>{assert(req.actor.role!=='employee',403,'Расписание доступно руководителю.');res.json(await operationsStatus());});
  app.put('/api/operations',async(req,res)=>{const time=z.string().regex(/^([01]\d|2[0-3]):[0-5]\d$/);await saveAutomation(req.actor,z.object({enabled:z.boolean(),morning:time,evening:time}).parse(req.body));await tick();res.json({ok:true});});
  app.post('/api/operations/retry',async(req,res)=>{await retryJob(req.actor,z.object({key:text}).parse(req.body).key);await tick();res.json({ok:true});});

@@ -75,9 +75,10 @@ test('manager sections, employee profile edits and owner-only integration respec
  assert.equal((await db.pool.query('SELECT enabled FROM bitrix_live_config WHERE id=1')).rows[0].enabled,false);
  assert.equal((await http('/owner/bitrix/exchange','root','PUT',{enabled:true,confirmed:true})).status,409);
  assert.equal((await http('/system/access/owner-root/account/root','admin','PUT',{action:'disable',confirmed:true})).status,403);
- assert.equal((await http('/system/access/olga/account/olga','admin','PUT',{action:'disable',confirmed:true})).status,200);
+ assert.equal((await http('/system/access/olga/account/olga','admin','PUT',{action:'disable',confirmed:true})).status,403);
+ assert.equal((await http('/system/access/olga/account/olga','root','PUT',{action:'disable',confirmed:true})).status,200);
  assert.equal((await http('/auth/me','olga')).status,401);
- const reset=await http('/system/access/anna/account/anna','admin','PUT',{action:'reset',confirmed:true});
+ const reset=await http('/system/access/anna/account/anna','root','PUT',{action:'reset',confirmed:true});
  assert.equal(reset.status,200);
  const {password}=await reset.json();
  assert.equal((await http('/auth/me','anna')).status,401);

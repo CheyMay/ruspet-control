@@ -46,7 +46,7 @@ export async function pilotStatus(user?:User){
 }
 export async function pairPilot(u:User,targetUserId=u.id){
  assert(targetUserId===u.id||u.role==='admin',403,'Другую учётную запись подключает администратор.');
- const target=(await pool.query('SELECT id,role,root_access FROM users WHERE id=$1',[targetUserId])).rows[0];
+ const target=(await pool.query('SELECT id,role,root_access,account_manage_access FROM users WHERE id=$1',[targetUserId])).rows[0];
  assert(target,404,'Пользователь не найден.');
  assert(targetUserId===u.id||mayManageStaffIdentity(u,target),403,'Для этого профиля ссылку создаёт владелец.');
  const cfg=(await pool.query('SELECT * FROM telegram_settings WHERE id=1')).rows[0];assert(cfg.enabled,409,'Сначала включите личный пилот.');

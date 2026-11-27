@@ -24,12 +24,16 @@ export async function unlockNotificationSound(){
  }catch{return false;}
 }
 
-export function playNotificationSound(userId:string,preview=false){
+export async function playNotificationSound(userId:string,preview=false){
  const {enabled,tone}=preferences(userId);
  if(!preview&&(!enabled||document.visibilityState!=='visible'))return false;
  if(!context||context.state!=='running')return false;
- playTone(context,tone);
- return true;
+ try{
+  return await playTone(context,tone,()=>{
+   const latest=preferences(userId);
+   return latest.tone===tone&&(preview||latest.enabled&&document.visibilityState==='visible');
+  });
+ }catch{return false;}
 }
 
 export function NotificationSound({userId}:{userId:string}){
@@ -62,8 +66,8 @@ export function NotificationSound({userId}:{userId:string}){
     </select>
    </label>
    <button type="button" className="button secondary" onClick={async()=>{
-    if(await unlockNotificationSound()&&playNotificationSound(userId,true))setMessage('Сигнал воспроизведён.');
-    else setMessage('Браузер не разрешил воспроизвести звук.');
+    if(await unlockNotificationSound()&&await playNotificationSound(userId,true))setMessage('Сигнал воспроизведён.');
+    else setMessage('Не удалось воспроизвести сигнал.');
    }}><Volume2 size={16}/> Прослушать</button>
   </div>
   {message&&<small role="status">{message}</small>}

@@ -1,0 +1,8 @@
+The three samples below are released under CC0 1.0 (https://creativecommons.org/publicdomain/zero/1.0/).
+Source distribution and license: https://github.com/sonic-pi-net/sonic-pi/tree/9bc0b578e8aa8f53052ca8a440919787752d8d55/etc/samples
+
+bell.mp3 — elec_bell by looppool, https://freesound.org/people/looppool/sounds/13116/
+drops.mp3 — elec_plip by looppool, https://freesound.org/people/looppool/sounds/13093/
+radio.mp3 — glitch_robot2 by hullum, https://freesound.org/people/hullum/sounds/415556/
+
+Converted from FLAC to mono MP3.

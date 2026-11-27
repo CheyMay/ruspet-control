@@ -2,7 +2,7 @@ import {useEffect,useState} from 'react';
 import type {User} from '../shared/types.js';
 import {api,viewAsLink} from './api.js';
 import {EmployeeProfileEditor,type StaffDraft} from './EmployeeProfileEditor.js';
-import {mayManageStaffIdentity} from '../shared/workspace-access.js';
+import {mayManageStaffAccounts,mayManageStaffIdentity} from '../shared/workspace-access.js';
 import {EmployeeFilter,matchesFilter} from './SearchFilter.js';
 import {useRememberedFilter} from './remembered-filter.js';
 
@@ -230,6 +230,7 @@ export function AccessDirectory({roles,actor}:{roles:Record<string,string>;actor
    </div>
    <div className="table-scroll"><table><thead><tr><th>Сотрудник и должность</th><th>Права в системе</th><th>Контроль сроков</th><th>Вход в панель</th><th>Telegram</th><th>Просмотр</th></tr></thead><tbody>{people.map(({person:p,login})=>{
    const editable=mayManageStaffIdentity(actor,p);
+   const accountEditable=mayManageStaffAccounts(actor)&&!p.root_access&&p.id!==actor.id;
    return <tr key={p.id}>
     <td><strong>{p.name}</strong><br/><small>{[p.position,p.branch_id].filter(Boolean).join(' · ')}</small></td>
     <td>{p.root_access?'Владелец':roles[p.role]}{editable&&<div><button className="text-button" aria-label={'Изменить доступ для '+p.name} onClick={()=>setProfile(p)}>Изменить</button></div>}</td>
@@ -245,13 +246,13 @@ export function AccessDirectory({roles,actor}:{roles:Record<string,string>;actor
     </td>
     <td><small className="access-login-status" data-state={login.state}>{login.label}</small>{p.active_session&&<small className="muted"> · есть активная сессия</small>}{p.accounts.length?p.accounts.map(a=><div key={a.username}>
      {a.password_login===false?'Telegram / QR':a.username}{a.enabled?'':' · отключён'}
-     {editable&&p.id!==currentUserId&&<div className="notice-actions">
+     {accountEditable&&<div className="notice-actions">
       <button className="text-button" disabled={accountBusy} onClick={()=>void changeAccount(p,a.username,a.enabled?'disable':'enable')}>{a.enabled?'Отключить вход':'Включить вход'}</button>
       {a.enabled&&(a.password_login===false
        ?<button className="text-button" onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setAccountError('');}}>Создать пароль</button>
        :<button className="text-button" disabled={accountBusy} onClick={()=>void changeAccount(p,a.username,'reset')}>Сбросить пароль</button>)}
      </div>}
-    </div>):editable&&<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
+    </div>):accountEditable&&<button className="text-button" disabled={accountBusy} onClick={()=>{setAccountPerson(p);setAccountLogin(p.suggestedLogin);setNewAccount(null);setNotice('');setAccountError('');}}>Создать вход</button>}</td>
     <td>{p.paired_at?<><span>Подключён · {moscowTimestamp(p.paired_at)}</span>{editable&&<><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramConfirmed(false);setInviteError('');}}>Отключить</button></>}</>:editable?<>{p.invitation_expires&&<small>Приглашение до {moscowTimestamp(p.invitation_expires)}<br/></small>}<button className="text-button" disabled={creating} onClick={()=>void createInvite(p)}>{p.invitation_expires?'Перевыпустить ссылку':'Создать приглашение'}</button><br/><button className="text-button" onClick={()=>{setTelegramPerson(p);setTelegramId('');setTelegramConfirmed(false);setInviteError('');}}>Привязать по ID</button></>:<small>Подключает владелец</small>}</td>
     <td>{!p.root_access&&<a className="text-button" href={viewAsLink(p.id)} target="_blank" rel="noopener" aria-label={`Открыть как ${p.name}`}>Открыть как сотрудник ↗</a>}<br/><small>{p.visibleTasks} задач</small></td>
    </tr>;})}</tbody></table></div>{!people.length&&<p>По этому запросу сотрудники не найдены.</p>}</>}

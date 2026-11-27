@@ -16,6 +16,7 @@ before(async()=>{
  const url=new URL(current);url.pathname='/'+database;process.env.DATABASE_URL=url.toString();
  db=await import('../server/db.js');await (await import('../scripts/migrate.js')).migrate();
  const fixture=await import('../scripts/seed.js');await fixture.seed();admin=fixture.demoUsers.find(u=>u.role==='admin')!;
+ await db.pool.query('UPDATE users SET account_manage_access=true WHERE id=$1',[admin.id]);
  const {hashPassword}=await import('../server/passwords.js');
  for(const role of ['admin','director'])await db.pool.query('INSERT INTO login_accounts(username,user_id,password_hash) SELECT $1,id,$2 FROM users WHERE role=$1',[role,await hashPassword(originalPassword)]);
  // An alias must not count as a second person; disabled access must stay disabled.
@@ -70,4 +71,90 @@ test('administrator creates a specific staff login once; other roles, occupied n
  const directory=await fetch(base+'/api/system/access',{headers:{Cookie:cookies.get(admin.id)!}});assert.equal(directory.status,200);const text=await directory.text();assert(!text.includes(success.password));assert(!text.includes('password_hash'));
  assert.equal((await db.pool.query("SELECT role FROM users WHERE id='manual-person'")).rows[0].role,'employee');
  await assert.rejects(()=>accounts.planAccounts(1000),/Недостаточно/);
+});
+
+async function request(path:string,cookie='',method='GET',body?:unknown){
+ return fetch(base+'/api'+path,{method,headers:{Cookie:cookie,'Content-Type':'application/json'},body:body===undefined?undefined:JSON.stringify(body)});
+}
+async function signIn(username:string,password:string){
+ const response=await request('/auth/login','','POST',{username,password});
+ assert.equal(response.status,200);
+ return response.headers.getSetCookie().find(item=>item.startsWith('ruspet_session='))!.split(';')[0];
+}
+
+test('personal credential change verifies the current password and keeps only the current session',async()=>{
+ const {hashPassword}=await import('../server/passwords.js');
+ await db.pool.query("INSERT INTO login_accounts(username,user_id,password_hash) VALUES('self.anna','anna',$1)",[await hashPassword(originalPassword)]);
+ const active=await signIn('self.anna',originalPassword),other=await signIn('self.anna',originalPassword);
+ const path='/auth/accounts/self.anna',password=randomBytes(20).toString('hex');
+ const changes={username:'Self.ANNA.New',password,currentPassword:originalPassword};
+ const list=await (await request('/auth/accounts',active)).json();
+ const ownLogins=(await db.pool.query("SELECT username FROM login_accounts WHERE user_id='anna' AND enabled ORDER BY username")).rows;
+ assert.deepEqual(list.accounts.map(({username}:{username:string})=>({username})),ownLogins);
+ assert.equal((await request('/auth/accounts/director',active,'PUT',changes)).status,404);
+ assert.equal((await request(path,active,'PUT',{...changes,currentPassword:'incorrect'})).status,403);
+ assert.equal((await request(path,active,'PUT',{...changes,username:'director'})).status,409);
+ assert.equal((await request(path,active,'PUT',changes)).status,200);
+ assert.equal((await request('/auth/me',active)).status,200);
+ assert.equal((await request('/auth/me',other)).status,401);
+ assert.equal((await request('/auth/login','','POST',{username:'self.anna',password:originalPassword})).status,401);
+ assert(await signIn('self.anna.new',password));
+ const events=JSON.stringify((await db.pool.query("SELECT data FROM task_events WHERE kind='account_changed'")).rows);
+ assert(!events.includes(password));assert(!events.includes(originalPassword));
+});
+
+test('the owner and a named delegate can manage employee logins while a regular administrator cannot',async()=>{
+ await db.pool.query(`INSERT INTO users(id,name,role,branch_id,position,root_access,account_manage_access) VALUES
+  ('fixture-owner','Владелец','admin','Тест','Тест',true,false),
+  ('fixture-delegate','Уполномоченный сотрудник','employee','Тест','Тест',false,true),
+  ('fixture-other-admin','Обычный администратор','admin','Тест','Тест',false,false)`);
+ const {hashPassword}=await import('../server/passwords.js');
+ const passwordHash=await hashPassword(originalPassword);
+ for(const id of ['fixture-owner','fixture-delegate','fixture-other-admin'])
+  await db.pool.query('INSERT INTO login_accounts(username,user_id,password_hash) VALUES($1,$1,$2)',[id,passwordHash]);
+ const owner=await signIn('fixture-owner',originalPassword),delegate=await signIn('fixture-delegate',originalPassword);
+ const other=await signIn('fixture-other-admin',originalPassword);
+ const rename={action:'rename',confirmed:true,username:'director.updated'};
+ assert.equal((await request('/system/accounts',other)).status,403);
+ assert.equal((await request('/system/access/director/account/director',other,'PUT',rename)).status,403);
+ assert.equal((await request('/system/access/fixture-delegate/telegram',other,'PUT',{telegramId:'89901',confirmed:true})).status,403);
+ const staffList=await (await request('/system/accounts',delegate)).json();
+ assert(staffList.some((user:{id:string})=>user.id==='director'));
+ assert(!staffList.some((user:{id:string})=>user.id==='fixture-owner'));
+ assert.equal((await request('/system/access/fixture-owner/account/fixture-owner',delegate,'PUT',rename)).status,403);
+ assert.equal((await request('/system/access/director/account/director',delegate,'PUT',rename)).status,200);
+ const reset=await request('/system/access/director/account/director.updated',owner,'PUT',{action:'reset',confirmed:true});
+ assert.equal(reset.status,200);
+ assert(await signIn('director.updated',(await reset.json()).password));
+});
+
+test('a Telegram-only login can add a password from a recent bound session',async()=>{
+ const {createHash}=await import('node:crypto');
+ await db.pool.query("INSERT INTO users(id,name,role,branch_id,position) VALUES('fixture-telegram','Тестовый Telegram','employee','Тест','Тест')");
+ await db.pool.query("INSERT INTO login_accounts(username,user_id,password_hash,password_login) VALUES('telegram.fixture','fixture-telegram','',false)");
+ await db.pool.query('UPDATE telegram_settings SET enabled=true WHERE id=1');
+ const binding=(await db.pool.query("INSERT INTO telegram_binding(chat_id,user_id) VALUES('89902','fixture-telegram') RETURNING id")).rows[0].id;
+ const token=randomBytes(32).toString('hex'),tokenHash=createHash('sha256').update(token).digest('hex');
+ const cookie='ruspet_session='+token,path='/auth/accounts/telegram.fixture';
+ const changes={username:'telegram.updated',password:randomBytes(20).toString('hex')};
+ await db.pool.query(`INSERT INTO sessions(token_hash,user_id,auth_method,telegram_binding_id,expires_at,authenticated_at)
+  VALUES($1,'fixture-telegram','telegram',$2,now()+interval '1 hour',now()-interval '20 minutes')`,[tokenHash,binding]);
+ assert.equal((await request(path,cookie,'PUT',changes)).status,409);
+ await db.pool.query('UPDATE sessions SET authenticated_at=now() WHERE token_hash=$1',[tokenHash]);
+ assert.equal((await request(path,cookie,'PUT',changes)).status,200);
+ assert(await signIn(changes.username,changes.password));
+});
+
+test('the migration grants access only to the uniquely verified profile',async()=>{
+ const migration=await readFile('server/migrations/063_account_settings.sql','utf8');
+ await db.transaction(async client=>{
+  await client.query(`CREATE TEMP TABLE users(id text,name text,root_access boolean DEFAULT false,staff_undo_access boolean DEFAULT false) ON COMMIT DROP;
+   CREATE TEMP TABLE sessions(id text) ON COMMIT DROP;
+   CREATE TEMP TABLE telegram_pairings(user_id text) ON COMMIT DROP;
+   INSERT INTO users VALUES ('known','Руднева Надежда',false,true),('same-name','Надежда Руднева',false,false),('other','Надежда Тестовая',false,true);
+   INSERT INTO telegram_pairings VALUES ('known'),('same-name');`);
+  await client.query(migration);
+  assert.deepEqual((await client.query('SELECT id FROM users WHERE account_manage_access')).rows,[{id:'known'}]);
+  assert.deepEqual((await client.query('SELECT user_id FROM telegram_pairings')).rows,[{user_id:'same-name'}]);
+ });
 });

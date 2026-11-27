@@ -1079,7 +1079,7 @@ test('staff rollout covers the approved groups and keeps individual settings and
  }finally{await setStaffRollout(owner,false);}
 });
 
-test('the staff administrator can create a profile and account while privileged access stays with the owner',async()=>{
+test('profile administration does not grant credential management',async()=>{
  const actor=users.find(user=>user.role==='admin')!;
  const director=users.find(user=>user.role==='director')!;
  const person={name:'Андрей Чистов',position:'Аналитик',branchId:'Технический отдел'};
@@ -1089,7 +1089,7 @@ test('the staff administrator can create a profile and account while privileged 
  assert.equal((await request(actor.id,'/system/access',{...person,role:'employee'})).status,409);
  const id=created.data.user.id;
  assert.equal((await request(actor.id,'/system/access/'+id,{...person,role:'director',expectedVersion:1},'PATCH')).status,403);
- assert.equal((await request(actor.id,'/system/access/'+id+'/account',{username:'a.chistov'})).status,201);
+ assert.equal((await request(actor.id,'/system/access/'+id+'/account',{username:'a.chistov'})).status,403);
  assert.equal((await request(actor.id,'/system/access/'+director.id+'/account',{username:'protected-director'})).status,403);
  assert.equal((await request(actor.id,'/system/access/'+director.id+'/telegram',{telegramId:'12345678',confirmed:true},'PUT')).status,403);
  assert.equal((await request(actor.id,'/telegram/pairing',{userId:director.id})).status,403);

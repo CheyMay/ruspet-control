@@ -21,6 +21,7 @@ import {BitrixActivity} from './BitrixActivity.js';
 import {TaskDiscussion,TaskResults} from './TaskDiscussion.js';
 import {EmployeeFilter,SearchFilter} from './SearchFilter.js';
 import {AccessDirectory,SystemHealth,moscowTimestamp} from './SystemHealth.js';
+import {AccountSettings} from './AccountSettings.js';
 import {readFilterSelection,useRememberedFilter,writeFilterSelection} from './remembered-filter.js';
 import {Journal} from './Journal.js';
 import {DirectorWeeklyTasks} from './DirectorApprovals.js';
@@ -317,7 +318,7 @@ export function App(){
   const notices=data.notifications.filter(notice=>!notice.read_at&&notice.created_at>(previous?.at??data.serverTime));
   if(previous?.userId===data.user.id&&notices.length){
    showToast(notices.some(notice=>!notice.push_invitation)?'Новые рабочие уведомления':'Разрешите push в разделе «Уведомления»');
-   if(notices.some(notice=>!notice.push_invitation))playNotificationSound(data.user.id);
+   if(notices.some(notice=>!notice.push_invitation))void playNotificationSound(data.user.id);
   }
  },[data]);
  useEffect(()=>{const escape=(e:KeyboardEvent)=>{if(e.key==='Escape'&&!tour&&!commandOpen){if(boardMove){if(!busy){setBoardMove(null);setError('');}}else if(completingTask&&!busy)setCompletingTask(null);else if(editor)setEditor(null);else if(requestType)setRequestType(null);else closeTask();}};window.addEventListener('keydown',escape);return()=>window.removeEventListener('keydown',escape);},[requestType,editor,completingTask,boardMove,busy,tour,commandOpen]);
@@ -676,6 +677,7 @@ export function App(){
   {page==='delegations'&&managed(data.user)&&<DelegationInbox open={openTask}/>}
   {page==='processes'&&<WorkspaceSection label="Загружаем бизнес-процессы…"><WorkDesign key={data.user.id} user={data.user} users={data.users} draft={processDraft} open={openTask} tasks={data.tasks} approvals={data.approvals} serverTime={data.serverTime}/></WorkspaceSection>}
   {page==='settings'&&<SettingsSections key={data.user.id+':'+(settingsTarget??'')} userId={data.user.id} initial={data.user.role==='admin'?'staff':'notices'} initialSelection={settingsTarget} items={[
+   ...(!viewingEmployee?[{id:'account',label:'Вход и пароль',content:<AccountSettings key={data.user.id} user={data.user}/>}]:[]),
    ...(data.user.role==='admin'?[{id:'staff',label:'Сотрудники и права',content:<AccessDirectory roles={roles} actor={data.user}/>},
     {id:'registrations',label:'Заявки и подключение',content:<StaffOnboarding roles={roles}/>}]:[]),
    ...(managed(data.user)?[{id:'rules',label:'Правила и согласования',content:<>{data.user.role==='admin'&&<ApprovalHierarchySettings users={data.users}/>}<Settings key={data.rulesVersion} data={data} busy={busy} act={act}/></>}]:[]),
