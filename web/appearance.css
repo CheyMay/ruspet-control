@@ -36,7 +36,7 @@ input::placeholder,textarea::placeholder { color:var(--theme-text-muted); opacit
 @media(max-width:650px) { .appearance-heading { flex-direction:column; gap:10px; } .base-palette-options { grid-template-columns:repeat(2,minmax(0,1fr)); } .appearance-group { margin-top:22px; } .appearance-preview { padding:12px; gap:12px; } }
 
 .wallpaper-options {
- display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,152px),1fr));gap:12px;
+ display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,180px),1fr));gap:12px;
  max-inline-size:870px;margin-top:6px;
 }
 .wallpaper-swatch {
@@ -104,6 +104,21 @@ input::placeholder,textarea::placeholder { color:var(--theme-text-muted); opacit
  --wallpaper-light-shade:#eee6fba8;
  --wallpaper-dark-shade:#201731b0;
  --wallpaper-mobile-position:76%;
+}
+:root[data-wallpaper="turquoise-surf"],.wallpaper-swatch[data-preview="turquoise-surf"] {
+ --wallpaper-image:url('./assets/turquoise-surf.webp');
+ --wallpaper-tint:#52b7ac;
+ --wallpaper-light-shade:#e0fff69e;
+ --wallpaper-light-edge-shade:#e0fff662;
+ --wallpaper-dark-shade:#142a2db8;
+ --wallpaper-mobile-position:72%;
+}
+:root[data-wallpaper="first-snow"],.wallpaper-swatch[data-preview="first-snow"] {
+ --wallpaper-image:url('./assets/first-snow.webp');
+ --wallpaper-tint:#d9e3e9;
+ --wallpaper-light-shade:#f3f8fa59;
+ --wallpaper-dark-shade:#1b2538cb;
+ --wallpaper-mobile-position:67%;
 }
 .wallpaper-swatch[data-preview]:not([data-preview="plain"]) {
  background-color:var(--wallpaper-tint);

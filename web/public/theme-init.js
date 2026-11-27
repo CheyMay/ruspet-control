@@ -31,7 +31,9 @@
   'forest-mist':{label:'Лес в тумане',light:'#dcefe0',dark:'#162f25'},
   'golden-dunes':{label:'Золотые дюны',light:'#f7e7b5',dark:'#302817'},
   'scarlet-canyon':{label:'Алый каньон',light:'#f3d6d7',dark:'#3b2028'},
-  'lilac-ridges':{label:'Сиреневые горы',light:'#e8dff5',dark:'#2d2340'}
+  'lilac-ridges':{label:'Сиреневые горы',light:'#e8dff5',dark:'#2d2340'},
+  'turquoise-surf':{label:'Бирюзовый прибой',light:'#d4f2ec',dark:'#132e31'},
+  'first-snow':{label:'Первый снег',light:'#eef3f6',dark:'#222d3a'}
  };
  const read=key=>{try{return localStorage.getItem(key);}catch{return null;}};
  const save=(key,value)=>{try{localStorage.setItem(key,value);}catch{/* Keep the selection for this tab. */}};
