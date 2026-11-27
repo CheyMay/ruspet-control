@@ -19,6 +19,13 @@
 .device-notification-row > div:first-child {flex:1 1 17rem;min-width:0;overflow-wrap:anywhere}
 .notification-sound {border-top:1px solid var(--line);padding:10px 0}
 .notification-sound > label {display:inline-flex;align-items:center;gap:6px}
+.notification-sound-controls {
+ display:flex;flex-wrap:wrap;align-items:center;gap:8px;max-inline-size:100%;
+}
+.notification-sound-controls label {display:flex;align-items:center;gap:6px;min-inline-size:0}
+.notification-sound-controls select {
+ min-inline-size:0;min-block-size:36px;padding:4px 8px;border:1px solid var(--line);border-radius:6px;
+}
 .notification-sound > small {flex-basis:100%}
 @media (max-width:520px){
  .notice-heading {padding:12px}
