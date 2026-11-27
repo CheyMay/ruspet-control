@@ -17,11 +17,11 @@ const nextDay=(now:Date,n:number)=>businessDay(new Date(now.getTime()+n*86400000
 const dateLabel=(day:string)=>day.split('-').reverse().join('.');
 
 export function spokenTime(value:string){
- const match=value.match(new RegExp(String.raw`^(?:в\s+|к\s+|до\s+)?(\d{1,2}|${words.join('|')}|час)(?::(\d{2})|\s+час(?:а|ов)?(?:\s+(\d{1,2})\s+минут(?:а|ы)?)?)?(?:\s+(утра|дня|вечера|ночи))?(?=$|[\s.,;:])`,'iu'));
+ const match=value.match(new RegExp(String.raw`^(?:в\s+|к\s+|до\s+)?(?:(\d{1,2})(\d{2})|(\d{1,2}|${words.join('|')}|час)(?:\s*[:.]\s*(\d{2})|\s+час(?:а|ов)?(?:\s+(\d{1,2})\s+минут(?:а|ы)?)?)?)(?:\s+(утра|дня|вечера|ночи))?(?=$|[\s,;]|\.(?!\d))`,'iu'));
  if(!match)return null;
- const [,hourText,minutes,spokenMinutes,period]=match;
+ const [,compactHour,compactMinutes,hourText=compactHour,minutes,spokenMinutes,period]=match;
  let hours=/^\d+$/.test(hourText)?Number(hourText):hourText.toLowerCase()==='час'?1:words.indexOf(hourText.toLowerCase());
- const mins=Number(minutes??spokenMinutes??0);
+ const mins=Number(compactMinutes??minutes??spokenMinutes??0);
  if(period&&hours<12&&['вечера','дня'].includes(period.toLowerCase()))hours+=12;
  if(period&&hours===12&&['ночи','утра'].includes(period.toLowerCase()))hours=0;
  if(hours<0||hours>23||mins>59)return null;
@@ -40,7 +40,8 @@ export function spokenDeadline(value:string,now=new Date(),baseDay?:string){
    return {day,stamp:day+' '+time,rest:clean(raw.slice(relative[0].length))};
   }
  }
- const dayMatch=raw.match(new RegExp(String.raw`^(?:на\s+|до\s+|в\s+)?(сегодня|завтра|послезавтра|\d{1,2}\.\d{1,2}(?:\.\d{4})?|\d{1,2}\s+(?:${months.join('|')})(?:\s+\d{4})?|${weekWord})(?=$|[\s,.;:])`,'iu'));
+ const numericDay=String.raw`\d{1,2}(?<separator>[./-])\d{1,2}(?:\k<separator>(?:\d{4}|\d{2}))?|\d{8}|\d{6}`;
+ const dayMatch=raw.match(new RegExp(String.raw`^(?:на\s+|до\s+|в\s+)?(сегодня|завтра|послезавтра|${numericDay}|\d{1,2}\s+(?:${months.join('|')})(?:\s+\d{4})?|${weekWord})(?=$|[\s,;:]|\.(?!\d))`,'iu'));
  if(!dayMatch&&!baseDay)return null;
  let day=baseDay!;
  if(dayMatch){
@@ -51,7 +52,8 @@ export function spokenDeadline(value:string,now=new Date(),baseDay?:string){
    const current=(new Date(now.getTime()+10800000).getUTCDay()+6)%7;
    day=dateLabel(nextDay(now,(weekday-current+7)%7||7));
   }else{
-   const [date,month,year=businessDay(now).slice(0,4)]=name.split(/[.\s]+/u);
+   const [date,month,providedYear]=/^\d+$/.test(name)?[name.slice(0,2),name.slice(2,4),name.slice(4)]:name.split(/[./\s-]+/u);
+   const year=providedYear?.length===2?'20'+providedYear:providedYear??businessDay(now).slice(0,4);
    day=date.padStart(2,'0')+'.'+(months.includes(month)?String(months.indexOf(month)+1):month).padStart(2,'0')+'.'+year;
   }
  }
@@ -114,7 +116,7 @@ function createIntent(text:string,now:Date):VoiceIntent|null{
  if(values.deadline&&!/^без срока$/iu.test(values.deadline)){
   const parsed=spokenDeadline(values.deadline,now);
   if(parsed?.day)values.dueDay=parsed.day;
-  values.deadline=parsed?.stamp||values.deadline;
+  if(parsed?.stamp&&!parsed.rest)values.deadline=parsed.stamp;
  }
  return {kind:'create_task',values};
 }

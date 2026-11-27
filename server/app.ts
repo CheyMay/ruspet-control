@@ -30,9 +30,8 @@ import {reminderInput,listTaskReminders,saveTaskReminder,disableTaskReminder,ack
 import {botView,botClick,botText,clearBotDraft,botVoiceDraft,savedVoiceDraft,type BotScreen} from './bot.js';
 import {taskGroups,createTaskGroup,groupTask,groupCompanyTask} from './task-groups.js';
 import {clientNotes,addClientNote} from './client-notes.js';
-import {parseMoscowInput} from './bot.js';
 import {parseVoiceIntent} from './voice-intent.js';
-import {resolveAssignee} from './bot-voice-actions.js';
+import {parseMoscowInput,resolveAssignee} from './bot-voice-actions.js';
 import {browserAudioFormat,transcribeAudio,voiceEnabled} from './transcription.js';
 import {voiceMaxBytes} from '../shared/voice.js';
 import {pilotStatus,pairPilot,configurePilot} from './telegram-pilot.js';
@@ -329,13 +328,13 @@ export function createApp({managerPreview=false}:{managerPreview?:boolean}={}) {
   const format=browserAudioFormat(req.get('Content-Type')||'',req.body);
   const transcript=await transcribeAudio(new Blob([new Uint8Array(req.body)]),format,req.actor.id);
   if(req.query.mode!=='task'){res.json({transcript});return;}
-  const direct=parseVoiceIntent(transcript);
-  const intent=direct?.kind==='create_task'?direct:parseVoiceIntent('Создай задачу. '+transcript);
+  const now=new Date(),direct=parseVoiceIntent(transcript,now);
+  const intent=direct?.kind==='create_task'?direct:parseVoiceIntent('Создай задачу. '+transcript,now);
   const values=intent?.values??{};
   const person=values.assignee?await resolveAssignee(req.actor,{op:'form',kind:'create_task'},values.assignee,pool):null;
   let deadline:string|undefined;
-  if(values.deadline!=='без срока'){
-   try{deadline=parseMoscowInput(values.dueDay&&!/^\d{2}\.\d{2}\.\d{4} \d{2}:\d{2}$/.test(values.deadline??'')?values.dueDay+' 18:00':values.deadline??'');}catch{}
+  if(values.deadline&&!/^без срока$/iu.test(values.deadline)){
+   try{deadline=parseMoscowInput(values.deadline,now,{defaultTime:'18:00'});}catch{}
   }
   res.json({transcript,values,deadline,assigneeId:person?.id});
  });

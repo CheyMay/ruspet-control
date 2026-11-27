@@ -145,6 +145,20 @@ test('an unknown customer can be corrected without repeating the voice message',
  await assert.rejects(()=>bot.botClick(actor,channel,button.token),/отменён или заменён/);
 });
 
+test('Moscow deadlines accept short numeric dates and reject invalid times',async()=>{
+ const {parseMoscowInput}=await import('../server/bot-voice-actions.js');
+ const now=new Date('2026-11-29T21:30:00.000Z');
+ for(const input of ['завтра в 15','01.12.26 15:00','011226 1500','01.12.2026 15:00','01/12/26 в 15.00 МСК']){
+  assert.equal(parseMoscowInput(input,now),'2026-12-01T12:00:00.000Z',input);
+ }
+ assert.equal(parseMoscowInput('011226',now,{defaultTime:'18:00'}),'2026-12-01T15:00:00.000Z');
+ for(const input of ['011226 15:99','011226 24:00','011226 15:00 лишний текст','01.12.2 15:00']){
+  assert.throws(()=>parseMoscowInput(input,now,{defaultTime:'18:00'}),/Дата и время по Москве/,input);
+ }
+ assert.throws(()=>parseMoscowInput('31.02.27 15:00',now),/Такой даты или времени нет/);
+ assert.throws(()=>parseMoscowInput('291126 23:59',now),/должны быть в будущем/);
+});
+
 test('voice creates a personal task once and carries a partial deadline into the next answer',async()=>{
  const bot=await import('../server/bot.js'),channel='mobile-creation';
  const actor=(await db.pool.query("SELECT * FROM users WHERE id='anna'")).rows[0];

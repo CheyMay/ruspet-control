@@ -145,13 +145,6 @@ async function renderView(u:User,ch:string,p:Payload):Promise<BotScreen>{
  }
  return renderBotNavigation(u,ch,p);
 }
-export function parseMoscowInput(value:string,now=new Date()){
- const match=value.match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2})$/);
- assert(match,400,'Укажите дату и время по Москве, например «завтра в 15:00».');
- const [,d,m,y,h,min]=match,date=new Date(y+'-'+m+'-'+d+'T'+h+':'+min+':00+03:00');
- assert(!isNaN(+date)&&new Date(+date+10800000).toISOString().slice(0,16)===y+'-'+m+'-'+d+'T'+h+':'+min,400,'Такой даты или времени нет.');
- assert(date>now,400,'Дата и время должны быть в будущем.');return date.toISOString();
-}
 function missingLabel(d:Dialog){
  const field=d.fields[d.index];
  if(field.key==='deadline'&&d.payload.values?.dueDay)return 'Дата уже указана: '+d.payload.values.dueDay+'. Назовите время по Москве.';
@@ -239,7 +232,7 @@ async function voiceActionDraft(u:User,ch:string,intent:VoiceIntent,db:Db,at:Dat
  const draft:Dialog={payload,fields,index:0,values};
  for(const f of fields){
   const value=intent.values[f.key];if(!value||(f.key==='assignee'&&values.assignment==='auto'))continue;
-  try{values[f.key]=await normalizeActionField(u,payload,f,value,db,stamp=>parseMoscowInput(stamp,at),at);}
+  try{values[f.key]=await normalizeActionField(u,payload,f,value,db,at);}
   catch(error){if(!(error instanceof AppError)||error.status!==400)throw error;}
  }
  const heading=voiceLabels[kind]+(payload.id?' · #'+payload.id+'\n'+title.slice(0,180):'')+client;
@@ -511,7 +504,7 @@ async function handleBotText(db:Db,u:User,ch:string,text:string,inputId:string):
    return response;
   }
   const f=d.fields[d.index];
-  d.values[f.key]=await normalizeActionField(u,d.payload,f,text,db,parseMoscowInput);
+  d.values[f.key]=await normalizeActionField(u,d.payload,f,text,db);
   if(d.payload.kind==='accept_assignment'&&f.key==='deadline'){
    const task=(await db.query<{deadline:string|null}>('SELECT deadline FROM tasks WHERE id=$1',[d.payload.id])).rows[0];
    if(task)checkAssignmentPlanDeadline(d.values.deadline,task.deadline);

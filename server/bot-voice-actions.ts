@@ -22,7 +22,8 @@ export const voiceLabels:Record<VoiceKind|'complete',string>={
 };
 
 const field=(key:string,label:string,min=5,max?:number):Field=>({key,label,min,max});
-const deadlineField=field('deadline','Дата и время по Москве, например «завтра в 15:00»',1);
+const deadlineFormat='Дата и время по Москве. Например, «завтра в 15». Подойдут также ДД.ММ.ГГ ЧЧ:ММ и ДДММГГ ЧЧММ.';
+const deadlineField=field('deadline',deadlineFormat,1);
 const assigneeField=field('assignee','Имя и фамилия исполнителя или «себе»',2,200);
 const priceField=field('price','Цена задачи в рублях',1,80);
 const reasonField=field('reason','Причина изменения');
@@ -33,7 +34,7 @@ export function taskActionFields(kind:string|undefined,min:number,withAssignee=t
   case 'create_task':return [field('title','Название задачи',3,500),assigneeField,priceField,field('deadline','Крайний срок по Москве или «без срока»',1),descriptionField];
   case 'reminder_once':
   case 'edit_personal_plan':return [deadlineField];
-  case 'accept_assignment':return [field('deadline','Когда планируете заняться задачей? Укажите дату и время по Москве, например «завтра в 15:00».',1)];
+  case 'accept_assignment':return [field('deadline','Когда планируете заняться задачей? '+deadlineFormat,1)];
   case 'personal_step':return [field('nextStep','Какой конкретный шаг запланировать?',2,500),deadlineField];
   case 'reminder':return [field('days','Дни недели, например «понедельник и среда»',1),field('times','Время по Москве, например 09:00 или 09:00, 15:30',4),field('weeks','Число недель от 1 до 52',1)];
   case 'edit_price':return [priceField,reasonField];
@@ -97,14 +98,28 @@ function parseDays(value:string){
  const days=weekdays.flatMap((day,index)=>value.toLocaleLowerCase('ru-RU').includes(day)?[index+1]:[]);
  return days.length?days.join(','):null;
 }
-export async function normalizeActionField(actor:User,payload:Payload,f:Field,input:string,db:Db,parseDate:(value:string)=>string,now=new Date()){
+export function parseMoscowInput(value:string,now=new Date(),options:{baseDay?:string;defaultTime?:string}={}){
+ const input=value.trim().replace(/\s+(?:мск\.?|по\s+москве\.?)$/iu,'');
+ const spoken=spokenDeadline(input,now,options.baseDay);
+ assert(spoken&&!spoken.rest,400,deadlineFormat);
+ const stamp=spoken.stamp??(options.defaultTime?spoken.day+' '+options.defaultTime:'');
+ const match=stamp.match(/^(\d{2})\.(\d{2})\.(\d{4}) (\d{2}):(\d{2})$/);
+ assert(match,400,deadlineFormat);
+ const [,day,month,year,hours,minutes]=match;
+ const local=`${year}-${month}-${day}T${hours}:${minutes}`;
+ const date=new Date(local+':00+03:00');
+ assert(!isNaN(+date)&&new Date(+date+10800000).toISOString().slice(0,16)===local,400,'Такой даты или времени нет.');
+ assert(date>now,400,'Дата и время должны быть в будущем.');
+ return date.toISOString();
+}
+
+export async function normalizeActionField(actor:User,payload:Payload,f:Field,input:string,db:Db,now=new Date()){
  const value=input.trim();
  assert(value.length>=f.min&&value.length<=(f.max||4000),400,`Ответ: от ${f.min} до ${f.max||4000} символов.`);
  if(f.key==='deadline'){
   if(payload.kind==='create_task'&&/^без срока$/iu.test(value))return 'none';
-  const spoken=spokenDeadline(value,now,payload.values?.dueDay);
-  const defaultTime=spoken&&!spoken.rest&&['create_task','deadline','approve_with_deadline'].includes(payload.kind??'');
-  return parseDate(spoken?.stamp||(defaultTime?spoken.day+' 18:00':value));
+  const defaultTime=['create_task','deadline','approve_with_deadline'].includes(payload.kind??'')?'18:00':undefined;
+  return parseMoscowInput(value,now,{baseDay:payload.values?.dueDay,defaultTime});
  }
  if(f.key==='assignee'){
   const person=await resolveAssignee(actor,payload,value,db);
